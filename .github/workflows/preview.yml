@@ -1,8 +1,9 @@
 name: web preview
 
 # Every push to a feature/** branch deploys the web app and the API Worker under separate preview names, so it can be
-# tested without merging into main. Production (web.yml, server.yml) is never touched: different Worker names, and the
-# preview API has its own D1 database. The links go into this branch's pre-release notes.
+# tested without merging into main. The production Workers (web.yml, server.yml) are never touched. The preview API is
+# bound to the PRODUCTION D1 database on purpose, so real accounts, profiles and history work on the preview; it never
+# applies migrations, so it cannot change the production schema. The links go into this branch's pre-release notes.
 on:
   push:
     branches: ['feature/**']
@@ -38,7 +39,7 @@ jobs:
         with:
           node-version: 22
 
-      # ---- API: same code as server/, deployed as reelm-api-preview with its own database ----
+      # ---- API: same code as server/, deployed as reelm-api-preview, bound to the production database ----
       - name: Deploy preview API
         id: api
         if: steps.cf.outputs.enabled == 'true'
@@ -46,14 +47,7 @@ jobs:
         run: |
           npm ci
           npm test
-          npx wrangler d1 create reelm-preview || true # already exists on every run after the first
-          id=$(npx wrangler d1 list --json | jq -r '.[] | select(.name == "reelm-preview") | (.uuid // .database_id // .id)')
-          [ -n "$id" ] || { echo "::error::could not find the reelm-preview database"; exit 1; }
-          sed -e 's/^name = "reelm-api"/name = "reelm-api-preview"/' \
-              -e 's/^database_name = "reelm"/database_name = "reelm-preview"/' \
-              -e "s/^database_id = .*/database_id = \"$id\"/" wrangler.toml > wrangler.preview.toml
-          npx wrangler d1 migrations apply reelm-preview --remote --config wrangler.preview.toml
-          npx wrangler deploy --config wrangler.preview.toml 2>&1 | tee deploy.log
+          npx wrangler deploy --name reelm-api-preview 2>&1 | tee deploy.log
           url=$(grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' deploy.log | head -1)
           [ -n "$url" ] || { echo "::error::no workers.dev url in the deploy output"; exit 1; }
           echo "url=$url" >> "$GITHUB_OUTPUT"
@@ -87,7 +81,7 @@ jobs:
             echo "<!-- web-preview-start -->"
             echo "**Web preview:** $WEB_URL"
             echo
-            echo "Built from \`${GITHUB_SHA::7}\` ($(git log -1 --pretty=%s)). Separate from production: its own Worker, API and database, so accounts made here do not exist on the real site."
+            echo "Built from \`${GITHUB_SHA::7}\` ($(git log -1 --pretty=%s)). Separate Workers from production, but the same account database: real logins, profiles and history work here, and anything you change here is real data."
             echo "<!-- web-preview-end -->"
           } > block.md
 
