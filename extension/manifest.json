@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Reelm Helper",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Lets the Reelm website play movies by sending the video host the user agent it expects.",
   "icons": {
     "128": "icon.png"
@@ -11,6 +11,8 @@
   ],
   "host_permissions": [
     "*://*.hakunaymatata.com/*",
+    "https://reelm-puneet-bhardwajs-projects-cfe0ba4b.vercel.app/*",
+    "https://reelm-tv.vercel.app/*",
     "https://reelm-web.ssbeyonder.workers.dev/*",
     "http://localhost/*",
     "https://4khdhub.one/*",
@@ -41,7 +43,9 @@
     {
       "matches": [
         "https://reelm-web.ssbeyonder.workers.dev/*",
-        "http://localhost/*"
+        "http://localhost/*",
+        "https://reelm-tv.vercel.app/*",
+        "https://reelm-puneet-bhardwajs-projects-cfe0ba4b.vercel.app/*"
       ],
       "js": [
         "content.js"
