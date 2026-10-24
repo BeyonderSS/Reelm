@@ -85,7 +85,7 @@ class MovieDetailViewModel @Inject constructor(
                             webFallback = if (d.playable) null else defaultTarget(d)
                         )
                     }
-                    _uiState.update { it.copy(isFavorite = favorites.isFavorite(d.id).getOrNull() ?: false) }
+                    _uiState.update { it.copy(isFavorite = favorites.isSaved(d.asFavorite()).getOrNull() ?: false) }
                     refreshHistory()
                 }
                 is Result.Error -> _uiState.update { it.copy(isLoading = false, error = r.message ?: "Failed to load") }
@@ -188,13 +188,18 @@ class MovieDetailViewModel @Inject constructor(
         }
     }
 
+    private fun MediaDetail.asFavorite() = FavoriteAnime(
+        animeSlug = id, animeTitle = title, posterUrl = posterUrl, score = rating,
+        kind = "media", mediaType = if (type == MediaType.SERIES) "series" else "movie", year = year
+    )
+
     private fun defaultTarget(d: MediaDetail) =
         if (d.type == MediaType.SERIES) Resume(d.seasons.firstOrNull()?.number ?: 1, 1) else Resume(0, 0)
 
     fun toggleFavorite() {
         val d = _uiState.value.detail ?: return
         viewModelScope.launch {
-            val r = favorites.toggle(FavoriteAnime(animeSlug = d.id, animeTitle = d.title, posterUrl = d.posterUrl, score = d.rating))
+            val r = favorites.toggle(d.asFavorite())
             if (r is Result.Success) _uiState.update { it.copy(isFavorite = r.data) }
         }
     }

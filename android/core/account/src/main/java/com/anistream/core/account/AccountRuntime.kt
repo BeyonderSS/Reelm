@@ -28,6 +28,7 @@ class AccountRuntime @Inject constructor(
     private val account: AccountRepository,
     private val hub: HubClient,
     private val sync: HistorySync,
+    private val favSync: FavoriteSync,
     private val api: AccountApi
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -67,11 +68,12 @@ class AccountRuntime @Inject constructor(
         scope.launch {
             combine(foreground, account.session.map { it?.activeProfile?.id }.distinctUntilChanged()) { fg, p -> fg && p != null }
                 .distinctUntilChanged()
-                .collectLatest { ok -> if (ok) runCatching { sync.pull(); sync.push() } } // push too: rows saved just before the process died
+                .collectLatest { ok -> if (ok) runCatching { sync.pull(); sync.push() }; runCatching { favSync.pull(); favSync.push() } } // push too: rows saved just before the process died
         }
         // push shortly after local writes, and when leaving the app
-        scope.launch { ActiveProfile.changes.debounce(5_000).collect { runCatching { sync.push() } } }
-        scope.launch { foreground.collect { fg -> if (!fg) runCatching { sync.push() } } }
+        scope.launch { ActiveProfile.changes.debounce(5_000).collect { runCatching { sync.push() }; runCatching { favSync.push() } } }
+        scope.launch { foreground.collect { fg -> if (!fg) { runCatching { sync.push() }; runCatching { favSync.push() } } } }
+        scope.launch { hub.favoritePings.collect { p -> if (p == account.session.value?.activeProfile?.id) runCatching { favSync.pull() } } }
         // another device pushed history for our profile
         scope.launch { hub.historyPings.collect { p -> if (p == account.session.value?.activeProfile?.id) runCatching { sync.pull() } } }
     }

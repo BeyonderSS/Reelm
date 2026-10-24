@@ -5,7 +5,7 @@ import { Loader2, Pencil, Plus, X } from "lucide-react";
 import { AuthShell } from "@/components/auth";
 import { Avatar, AvatarPicker, pill } from "@/components/app";
 import { BlurFade } from "@/components/ui/blur-fade";
-import { GUEST, reelm, syncHistory, type Profile } from "@/lib/core";
+import { GUEST, reelm, syncFavs, syncHistory, type Profile } from "@/lib/core";
 import { useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
@@ -18,7 +18,7 @@ export default function Profiles() {
   async function pick(p: Profile) {
     setBusy(p.id);
     // pull synced history first so Continue watching is right on the first paint
-    if (s.token) await Promise.race([syncHistory(p.id, s.token).catch(() => {}), new Promise((r) => setTimeout(r, 2500))]);
+    if (s.token) await Promise.race([Promise.all([syncHistory(p.id, s.token), syncFavs(p.id, s.token)]).catch(() => {}), new Promise((r) => setTimeout(r, 2500))]);
     set({ ...s, profile: p }); router.replace("/");
   }
   async function save() {

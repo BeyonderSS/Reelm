@@ -29,6 +29,12 @@ opaque JSON the client uses to rebuild the row (title, poster, kind, season, epi
 - `GET /v1/profiles/:id/history?since=<ms>` → `{entries:[…], now}` (includes tombstones; client stores `now` as next `since`)
 - `PUT /v1/profiles/:id/history` `{entries:[…]}` → `{now}`; server keeps an entry only if its `updatedAt` is newer
 
+## Favourites sync (per profile, last-write-wins)
+Entry: `{key, payload, updatedAt, deleted}`. `key` is the canonical title key, same scheme as history titles:
+`anime:<slug>` or `media:<movie|series>:<normtitle>`. `payload` carries what a card needs: `{title, poster, kind, id, mediaId, type, year}`.
+- `GET /v1/profiles/:id/favorites?since=<ms>` → `{entries:[…], now}` (includes tombstones; `since` compares server `synced_at`)
+- `PUT /v1/profiles/:id/favorites` `{entries:[…]}` → `{now}`; an entry wins only if its `updatedAt` is newer. Broadcasts `{type:"favorites", profileId}` on the hub.
+
 ## TV sign-in with a QR (device-code flow)
 1. TV: `POST /v1/pair` → `{code, expiresAt}` (8 chars, 10 min). TV shows a QR of `<base>/pair/<code>` plus the code as text.
 2. Phone (signed in): opens the QR link (deep link into the app, or types the code) → `POST /v1/pair/:code/claim` (Bearer) → `204`.

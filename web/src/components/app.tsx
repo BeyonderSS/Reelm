@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { BlurFade } from "@/components/ui/blur-fade";
 import { ReelMark } from "@/components/reel";
 import { frac } from "@/lib/eps";
-import { avatarUrl, continueWatching, EMOJI_GROUPS, entryHref, entrySub, getFavs, kids, recSeeds, removeHistory, toggleFav, type CardData, type Entry } from "@/lib/core";
+import { avatarUrl, continueWatching, EMOJI_GROUPS, entryHref, entrySub, getFavs, kids, syncFavs, recSeeds, removeHistory, syncHistory, toggleFav, type CardData, type Entry } from "@/lib/core";
 import { useApi, useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
@@ -286,7 +286,15 @@ export function useContinue() {
   const { s } = useSession();
   const [items, setItems] = useState<Entry[]>([]);
   const load = () => { if (s.profile) setItems(continueWatching(s.profile.id)); };
-  useEffect(load, [s.profile]); // eslint-disable-line react-hooks/exhaustive-deps
+  // pull what the TV/phone watched: on open and whenever the tab comes back into view (Home never pulled, so it showed stale episodes)
+  useEffect(() => {
+    load();
+    if (!s.profile || !s.token) return;
+    const pull = () => syncHistory(s.profile!.id, s.token!).then(load).catch(() => {});
+    const onVis = () => document.visibilityState === "visible" && pull();
+    pull(); document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [s.profile, s.token]); // eslint-disable-line react-hooks/exhaustive-deps
   const remove = (e: Entry) => removeHistory(s.profile!.id, s.token, e.payload).then(load);
   return [items, remove] as const;
 }
@@ -320,9 +328,13 @@ export function RecommendedRow() {
 }
 
 export function FavButton({ c }: { c: CardData }) {
-  const [on, setOn] = useState(false);
-  useEffect(() => setOn(getFavs().some((f) => f.href === c.href)), [c.href]);
-  return <button type="button" aria-pressed={on} className={pill.secondary} onClick={() => setOn(toggleFav(c))}><Heart className={cn(on && "fill-primary text-primary")} />{on ? "Saved to library" : "Favourite"}</button>;
+  const { s } = useSession(), pid = s.profile?.id ?? "guest", [on, setOn] = useState(false);
+  useEffect(() => {
+    const read = () => setOn(getFavs(pid).some((f) => f.href === c.href));
+    read();
+    if (s.token) syncFavs(pid, s.token).then(read).catch(() => {});
+  }, [c.href, pid, s.token]);
+  return <button type="button" aria-pressed={on} className={pill.secondary} onClick={() => setOn(toggleFav(pid, s.token, c))}><Heart className={cn(on && "fill-primary text-primary")} />{on ? "Saved to library" : "Favourite"}</button>;
 }
 
 export function AvatarPicker({ value, onChange }: { value: string; onChange: (id: string) => void }) {

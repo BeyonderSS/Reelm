@@ -47,6 +47,8 @@ interface WatchHistoryRepository {
 interface FavoriteRepository {
     suspend fun getAll(): Result<List<com.anistream.domain.model.FavoriteAnime>>
     suspend fun isFavorite(slug: String): Result<Boolean>
+    /** by canonical key, so a title saved elsewhere under another id still counts */
+    suspend fun isSaved(favorite: com.anistream.domain.model.FavoriteAnime): Result<Boolean>
     suspend fun toggle(favorite: com.anistream.domain.model.FavoriteAnime): Result<Boolean>
     suspend fun add(favorite: com.anistream.domain.model.FavoriteAnime): Result<Unit>
     suspend fun remove(slug: String): Result<Unit>

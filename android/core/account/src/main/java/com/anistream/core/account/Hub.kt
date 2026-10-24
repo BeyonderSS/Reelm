@@ -41,6 +41,10 @@ class HubClient @Inject constructor(private val account: AccountRepository, priv
     /** profileId whose history another device just pushed */
     val historyPings: SharedFlow<String> = _historyPings.asSharedFlow()
 
+    private val _favoritePings = MutableSharedFlow<String>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    /** profileId whose favourites another device just pushed */
+    val favoritePings: SharedFlow<String> = _favoritePings.asSharedFlow()
+
     @Volatile private var socket: WebSocket? = null
 
     /** Other TVs on this account. */
@@ -89,6 +93,7 @@ class HubClient @Inject constructor(private val account: AccountRepository, priv
                 Device(str(d, "deviceId").ifEmpty { str(d, "id") }, str(d, "deviceName").ifEmpty { str(d, "name") }, str(d, "kind"))
             }.orEmpty()
             "history" -> _historyPings.tryEmit(str(m, "profileId"))
+            "favorites" -> _favoritePings.tryEmit(str(m, "profileId"))
             "handoff" -> m["playback"]?.jsonObject?.let { p ->
                 val payload = p["payload"]?.jsonObject ?: return
                 _handoffs.tryEmit(Handoff(str(m, "profileId"), payload, p["position"]?.jsonPrimitive?.doubleOrNull?.toLong() ?: 0L))

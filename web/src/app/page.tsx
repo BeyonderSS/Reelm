@@ -5,7 +5,7 @@ import { Info, Play } from "lucide-react";
 import { animeCard, Chips, ContinueStrip, Marquee, RecommendedRow, kidsOk, mediaCard, pill, Row, useContinue } from "@/components/app";
 import { ShimmerButton } from "@/components/ui/shimmer-button";
 import { useApi, useSession } from "@/lib/session";
-import { entryHref, entrySub, watchHref, type Entry } from "@/lib/core";
+import { entryHref, entrySub, syncFavs, watchHref, type Entry } from "@/lib/core";
 import { cn } from "@/lib/utils";
 import { useRouter } from "next/navigation";
 
@@ -80,6 +80,7 @@ function Hero({ slides }: { slides: Slide[] }) {
 
 export default function HomePage() {
   const { s } = useSession();
+  useEffect(() => { if (s.token && s.profile) syncFavs(s.profile.id, s.token).catch(() => {}); }, [s.token, s.profile?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const anime = useApi("anime/home"), movies = useApi("movies/catalog?key=movie/top");
   const [cw, removeCw] = useContinue();
   const k = s.profile?.kids;

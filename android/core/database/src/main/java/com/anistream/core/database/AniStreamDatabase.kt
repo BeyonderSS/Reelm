@@ -31,7 +31,7 @@ import com.anistream.core.database.entity.WatchHistoryEntity
         PlaylistEntity::class,
         RecommendationEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class AniStreamDatabase : RoomDatabase() {
@@ -63,6 +63,16 @@ abstract class AniStreamDatabase : RoomDatabase() {
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `recommendations` (`kind` TEXT NOT NULL, `id` TEXT NOT NULL, `title` TEXT NOT NULL, `posterUrl` TEXT, `year` INTEGER, `rating` REAL, `mediaType` TEXT, `because` TEXT, `position` INTEGER NOT NULL, PRIMARY KEY(`kind`, `id`))")
+            }
+        }
+
+        /** v8: favourites are per profile, keep tombstones for sync, and carry what a card needs (kind, type, year). */
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `favorites_new` (`animeSlug` TEXT NOT NULL, `malId` INTEGER, `animeTitle` TEXT NOT NULL, `posterUrl` TEXT, `score` REAL, `addedTimestamp` INTEGER NOT NULL, `totalEpisodes` INTEGER NOT NULL, `lastEpisodeWatched` INTEGER NOT NULL, `profileId` TEXT NOT NULL DEFAULT '', `deleted` INTEGER NOT NULL DEFAULT 0, `kind` TEXT NOT NULL DEFAULT 'anime', `mediaType` TEXT, `year` INTEGER, PRIMARY KEY(`animeSlug`, `profileId`))")
+                db.execSQL("INSERT INTO favorites_new (animeSlug, malId, animeTitle, posterUrl, score, addedTimestamp, totalEpisodes, lastEpisodeWatched, kind) SELECT animeSlug, malId, animeTitle, posterUrl, score, addedTimestamp, totalEpisodes, lastEpisodeWatched, CASE WHEN animeSlug LIKE 'mb:%' OR animeSlug LIKE 'movie:%' OR animeSlug LIKE 'series:%' OR animeSlug GLOB 'tt[0-9]*' THEN 'media' ELSE 'anime' END FROM favorites")
+                db.execSQL("DROP TABLE favorites")
+                db.execSQL("ALTER TABLE favorites_new RENAME TO favorites")
             }
         }
 

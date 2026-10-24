@@ -200,6 +200,7 @@ async function deleteProfile(c: Ctx) {
   const r = await c.env.DB.prepare(
     "DELETE FROM profiles WHERE id = ? AND (SELECT COUNT(*) FROM profiles WHERE user_id = ?) > 1").bind(cur.id, u.id).run();
   if (!r.meta.changes) fail(409, "cannot delete the last profile");
+  await c.env.DB.prepare("DELETE FROM favorites WHERE profile_id = ?").bind(cur.id).run();
   await c.env.DB.prepare("DELETE FROM history WHERE profile_id = ?").bind(cur.id).run(); // D1 FKs are not always enforced
   await logEvent(c.env, c.req, "profile_delete", u.id, { name: cur.name }, cur.id);
   return none();
@@ -238,6 +239,41 @@ async function putHistory(c: Ctx) {
   if (batch.length) await c.env.DB.batch([...batch, eventStmt(c.env, c.req, "history_push", u.id, { count: batch.length }, p.id)]);
   await c.env.USER_HUB.getByName(u.id).fetch("https://hub/notify", {
     method: "POST", body: JSON.stringify({ type: "history", profileId: p.id }),
+  });
+  return json({ now: t });
+}
+
+async function getFavorites(c: Ctx) {
+  const u = await auth(c);
+  const p: any = await ownProfile(c, u, c.params[0]);
+  const since = Number(c.url.searchParams.get("since") ?? 0) || 0;
+  const t = now();
+  const { results } = await c.env.DB.prepare("SELECT * FROM favorites WHERE profile_id = ? AND synced_at > ? ORDER BY synced_at")
+    .bind(p.id, since).all<any>();
+  return json({
+    entries: results.map((r) => ({ key: r.key, payload: JSON.parse(r.payload), updatedAt: r.updated_at, deleted: !!r.deleted })),
+    now: t,
+  });
+}
+
+async function putFavorites(c: Ctx) {
+  const u = await auth(c);
+  const p: any = await ownProfile(c, u, c.params[0]);
+  const { entries } = await body(c.req);
+  if (!Array.isArray(entries) || entries.length > 500) fail(400, "entries must be an array of at most 500");
+  const t = now();
+  const stmt = c.env.DB.prepare(
+    `INSERT INTO favorites (profile_id, key, payload, updated_at, synced_at, deleted) VALUES (?,?,?,?,?,?)
+     ON CONFLICT(profile_id, key) DO UPDATE SET payload=excluded.payload,
+       updated_at=excluded.updated_at, synced_at=excluded.synced_at, deleted=excluded.deleted
+     WHERE excluded.updated_at > favorites.updated_at`);
+  const batch = entries.map((e: any) => {
+    if (!e || typeof e.key !== "string" || !e.key || typeof e.updatedAt !== "number") fail(400, "invalid entry");
+    return stmt.bind(p.id, e.key, JSON.stringify(e.payload ?? null), Math.round(e.updatedAt), t, e.deleted ? 1 : 0);
+  });
+  if (batch.length) await c.env.DB.batch(batch);
+  await c.env.USER_HUB.getByName(u.id).fetch("https://hub/notify", {
+    method: "POST", body: JSON.stringify({ type: "favorites", profileId: p.id }),
   });
   return json({ now: t });
 }
@@ -464,6 +500,7 @@ async function adminDeleteUser(c: Ctx) {
   const me = await admin(c), u = await targetUser(c, me), db = c.env.DB;
   await db.batch([ // D1 FKs are not always enforced
     db.prepare("DELETE FROM history WHERE profile_id IN (SELECT id FROM profiles WHERE user_id = ?)").bind(u.id),
+    db.prepare("DELETE FROM favorites WHERE profile_id IN (SELECT id FROM profiles WHERE user_id = ?)").bind(u.id),
     db.prepare("DELETE FROM profiles WHERE user_id = ?").bind(u.id),
     db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(u.id),
     db.prepare("DELETE FROM users WHERE id = ?").bind(u.id),
@@ -680,6 +717,8 @@ const routes: [string, RegExp, (c: Ctx) => Response | Promise<Response>][] = [
   ["DELETE", /^\/v1\/profiles\/([^/]+)$/, deleteProfile],
   ["GET", /^\/v1\/profiles\/([^/]+)\/history$/, getHistory],
   ["PUT", /^\/v1\/profiles\/([^/]+)\/history$/, putHistory],
+  ["GET", /^\/v1\/profiles\/([^/]+)\/favorites$/, getFavorites],
+  ["PUT", /^\/v1\/profiles\/([^/]+)\/favorites$/, putFavorites],
   ["POST", /^\/v1\/pair$/, pairStart],
   ["POST", /^\/v1\/pair\/([^/]+)\/claim$/, pairClaim],
   ["GET", /^\/v1\/pair\/([^/]+)$/, pairPoll],

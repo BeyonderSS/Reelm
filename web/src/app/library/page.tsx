@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Grid, Marquee, Notice, pill, Stub } from "@/components/app";
-import { getFavs, getHistory, removeHistory, type CardData, type Entry } from "@/lib/core";
+import { getFavs, getHistory, removeHistory, syncFavs, syncHistory, type CardData, type Entry } from "@/lib/core";
 import { useSession } from "@/lib/session";
 
 export default function Library() {
@@ -11,10 +11,10 @@ export default function Library() {
   const [favs, setFavs] = useState<CardData[]>([]), [hist, setHist] = useState<Entry[]>([]);
   const pid = s.profile?.id ?? "guest";
   const load = () => {
-    setFavs(getFavs());
+    setFavs(getFavs(pid));
     setHist(Object.values(getHistory(pid)).filter((e) => !e.deleted && e.payload.kind !== "live").sort((a, b) => b.updatedAt - a.updatedAt));
   };
-  useEffect(load, [s.profile]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); if (s.token) Promise.all([syncFavs(pid, s.token), syncHistory(pid, s.token)]).then(load).catch(() => {}); }, [s.profile]); // eslint-disable-line react-hooks/exhaustive-deps
   const n = tab === "fav" ? favs.length : hist.length;
   return (
     <main className="mx-auto max-w-[1500px] space-y-7 px-4 pt-6 pb-16 md:px-10 md:pt-10">

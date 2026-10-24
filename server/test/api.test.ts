@@ -96,6 +96,27 @@ describe("history", () => {
   });
 });
 
+describe("favorites", () => {
+  it("is last-write-wins with tombstones, since, and owner-only", async () => {
+    const u = await signup(), other = await signup();
+    const pid = (await j(await call("/v1/profiles", { token: u.token }))).profiles[0].id;
+    const url = `/v1/profiles/${pid}/favorites`;
+    const e = (updatedAt: number, extra = {}) => ({ key: "anime:x", payload: { title: "X" }, updatedAt, deleted: false, ...extra });
+    const put = (entries: unknown[]) => call(url, { method: "PUT", token: u.token, json: { entries } });
+    const t1 = (await j(await put([e(100)]))).now;
+    await put([e(50, { deleted: true })]); // older, ignored
+    let g = await j(await call(`${url}?since=0`, { token: u.token }));
+    expect(g.entries).toHaveLength(1);
+    expect(g.entries[0]).toMatchObject({ key: "anime:x", deleted: false, payload: { title: "X" } });
+    await new Promise((r) => setTimeout(r, 5));
+    await put([e(300, { deleted: true })]);
+    g = await j(await call(`${url}?since=${t1}`, { token: u.token }));
+    expect(g.entries[0].deleted).toBe(true);
+    expect((await call(`${url}?since=${g.now}`, { token: u.token }).then(j)).entries).toHaveLength(0);
+    expect((await call(url, { token: other.token })).status).toBe(404);
+  });
+});
+
 describe("pair", () => {
   it("TV starts, phone claims, TV gets a one-shot token", async () => {
     const u = await signup();

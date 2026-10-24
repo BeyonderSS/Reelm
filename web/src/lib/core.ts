@@ -121,8 +121,53 @@ const ls = {
   get<T>(k: string, d: T): T { try { return JSON.parse(localStorage.getItem(k) ?? "") ?? d; } catch { return d; } },
   set(k: string, v: unknown) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
-export const getFavs = () => ls.get<CardData[]>("reelm.fav", []);
-export const toggleFav = (c: CardData) => { const f = getFavs(), has = f.some((x) => x.href === c.href); ls.set("reelm.fav", has ? f.filter((x) => x.href !== c.href) : [c, ...f]); return !has; };
+// ---- Favourites: per profile, synced like history (key `anime:<slug>` / `media:<movie|series>:<normtitle>`, LWW on updatedAt, tombstones) ----
+export type FavEntry = { key: string; payload: any; updatedAt: number; deleted: boolean };
+const fKey = (pid: string) => `reelm.favs.${pid}`;
+/** Local favourites of a profile. The pre-sync flat list (`reelm.fav`) joins the first profile that reads it, and syncFavs uploads it. */
+function rawFavs(pid: string): Record<string, FavEntry> {
+  const h = ls.get<Record<string, FavEntry>>(fKey(pid), {}), old = ls.get<CardData[]>("reelm.fav", []);
+  if (old.length) {
+    const now = Date.now();
+    old.forEach((c, i) => { const e = favEntry(c, false, now - i); if (!h[e.key]) h[e.key] = e; });
+    ls.set(fKey(pid), h); ls.set("reelm.fav", []);
+  }
+  return h;
+}
+function favEntry(c: CardData, deleted: boolean, updatedAt: number): FavEntry {
+  const u = new URL(c.href, "http://x"), id = decodeURIComponent(u.pathname.split("/").pop() ?? ""), anime = c.kind === "anime" || u.pathname.startsWith("/anime/");
+  const type = u.searchParams.get("type") === "series" ? "series" : "movie", year = Number(/\b(\d{4})\b/.exec(c.sub ?? "")?.[1]) || undefined;
+  const key = anime ? `anime:${id}` : `media:${type}:${normTitle(c.title)}`;
+  return { key, deleted, updatedAt, payload: { id, mediaId: anime ? undefined : id, slug: anime ? id : undefined, kind: anime ? "anime" : "media", type: anime ? undefined : type, year,
+    title: c.title, poster: c.poster, sub: c.sub, rating: c.rating, genres: c.genres } };
+}
+/** Saved cards of a profile, newest first. Entries from the Android apps ({id|mediaId|slug, title, poster, type, year}) become web cards. */
+export function getFavs(pid: string): CardData[] {
+  return Object.values(rawFavs(pid)).filter((e) => !e.deleted && e.payload).sort((a, b) => b.updatedAt - a.updatedAt).map(({ payload: p }) => {
+    const anime = p.kind === "anime", id = String(anime ? p.id ?? p.slug : p.mediaId ?? p.id ?? ""), type = p.type === "series" ? "series" : "movie";
+    return { href: anime ? `/anime/${id}` : `/title/${encodeURIComponent(id)}?type=${type}`, title: p.title ?? "", poster: p.poster || undefined, kind: anime ? "anime" : "media",
+      sub: p.sub ?? (anime ? undefined : [type === "series" ? "Series" : "Movie", p.year].filter(Boolean).join(", ")), rating: p.rating, genres: p.genres } as CardData;
+  });
+}
+const pushFavs = (pid: string, token: string | undefined, entries: FavEntry[]) => token && entries.length
+  ? Promise.all(Array.from({ length: Math.ceil(entries.length / 500) }, (_, i) => reelm(`/v1/profiles/${pid}/favorites`, { method: "PUT", token, json: { entries: entries.slice(i * 500, i * 500 + 500) } }))).catch(() => {})
+  : Promise.resolve();
+/** Flip a favourite (a fresh updatedAt; removal keeps a tombstone) and push it when signed in. Returns whether it is now saved. */
+export function toggleFav(pid: string, token: string | undefined, c: CardData) {
+  const h = rawFavs(pid), n = favEntry(c, false, 0), cur = h[n.key], on = !cur || cur.deleted;
+  const e: FavEntry = { ...(on ? n : cur), deleted: !on, updatedAt: Math.max(Date.now(), (cur?.updatedAt ?? 0) + 1) };
+  ls.set(fKey(pid), { ...h, [e.key]: e });
+  void pushFavs(pid, token, [e]);
+  return on;
+}
+/** Pull the profile's favourites (last write wins), then upload whatever is newer here, which covers the first sync of pre-existing local favourites. */
+export async function syncFavs(pid: string, token: string) {
+  const { entries } = await reelm<{ entries: FavEntry[] }>(`/v1/profiles/${pid}/favorites?since=0`, { token }); // ponytail: full pull, a few KB; keep the returned `now` as `since` if lists get large
+  const h = rawFavs(pid), remote = new Map(entries.map((e) => [e.key, e]));
+  for (const e of entries) if (!h[e.key] || h[e.key].updatedAt < e.updatedAt) h[e.key] = e;
+  ls.set(fKey(pid), h);
+  await pushFavs(pid, token, Object.values(h).filter((e) => (remote.get(e.key)?.updatedAt ?? -1) < e.updatedAt));
+}
 
 const hKey = (pid: string) => `reelm.hist.${pid}`;
 const rawHist = (pid: string) => ls.get<Record<string, Entry>>(hKey(pid), {});
