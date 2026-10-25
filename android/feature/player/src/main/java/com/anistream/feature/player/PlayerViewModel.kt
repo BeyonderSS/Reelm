@@ -25,6 +25,7 @@ import com.anistream.domain.model.Episode
 import com.anistream.domain.model.SkipInterval
 import com.anistream.domain.model.StreamSource
 import com.anistream.domain.model.WatchHistory
+import com.anistream.domain.usecase.pickSource
 import com.anistream.domain.repository.AnidbRepository
 import com.anistream.domain.repository.DownloadRepository
 import com.anistream.domain.repository.SkipTimesRepository
@@ -51,6 +52,9 @@ data class PlayerUiState(
     val streamSource: StreamSource? = null,
     val availableQualities: List<StreamSource> = emptyList(),
     val selectedQuality: String = "best",
+    /** "Auto" / "Pinned 1080p" on the entry the pick chose; "" after a manual pick */
+    val autoNote: String = "",
+    val autoQuality: String = "",
     val language: String = "sub",
     val error: String? = null,
     val animeSlug: String = "",
@@ -105,6 +109,7 @@ class PlayerViewModel @Inject constructor(
     private var startedAt = 0L
 
     private val lowEnd = LowEnd.isOn(context)
+    private val appContext = context
 
     val player: ExoPlayer = buildPlayer(context).apply {
         addListener(object : Player.Listener {
@@ -194,9 +199,9 @@ class PlayerViewModel @Inject constructor(
                 loadJob = null
                 return@launch load(keepPosition)
             }
-            val stream = variants.firstOrNull { it.qualityLabel == state.selectedQuality }
-                ?: (if (lowEnd) variants.firstOrNull { it.height <= LowEnd.maxHeight } else null)
-                ?: variants.first()
+            val pin = QualityPick.pinned(appContext, animeSlug)
+            val stream = variants.firstOrNull { it.qualityLabel == state.selectedQuality && keepAt != null }
+                ?: variants[pickSource(variants, QualityPick.bandwidth(appContext), pin) { !lowEnd || it.height <= LowEnd.maxHeight }]
 
             if (keepAt == null) recordStart(number)
             play(stream, keepAt)
@@ -211,6 +216,8 @@ class PlayerViewModel @Inject constructor(
                     availableQualities = variants,
                     streamSource = stream,
                     selectedQuality = stream.qualityLabel,
+                    autoNote = if (pin != null) "Pinned ${pin}p" else "Auto",
+                    autoQuality = if (keepAt != null) it.autoQuality else stream.qualityLabel,
                     hasPrevious = episodes.any { e -> e.number < number },
                     hasNext = episodes.any { e -> e.number > number }
                 )
@@ -280,6 +287,7 @@ class PlayerViewModel @Inject constructor(
     fun selectQuality(label: String) {
         val stream = _uiState.value.availableQualities.firstOrNull { it.qualityLabel == label } ?: return
         play(stream, player.currentPosition)
+        QualityPick.pin(appContext, animeSlug, stream.height)
         _uiState.update { it.copy(selectedQuality = label, streamSource = stream, error = null) }
     }
 

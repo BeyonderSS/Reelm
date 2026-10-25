@@ -196,7 +196,7 @@ fun MediaPlayerScreen(
                     Spacer(Modifier.height(Space.md))
                     Text(source, style = AppType.label.copy(color = Ink.muted), modifier = Modifier.padding(horizontal = Space.sm))
                     streams.forEach { (i, s) ->
-                        SheetOption(s.detailLabel().ifBlank { source }, selected = i == ui.streamIndex) {
+                        SheetOption(s.detailLabel().ifBlank { source }, selected = i == ui.streamIndex, caption = ui.autoNote.takeIf { i == ui.autoIndex }) {
                             viewModel.selectStream(i)
                             showSettings = false
                         }

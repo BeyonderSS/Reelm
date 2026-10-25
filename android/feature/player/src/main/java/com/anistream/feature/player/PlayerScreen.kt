@@ -214,7 +214,7 @@ fun PlayerScreen(
                 Text("Quality", style = AppType.heading)
                 Spacer(Modifier.height(Space.sm))
                 ui.availableQualities.forEach { source ->
-                    SheetOption(source.qualityLabel, selected = source.qualityLabel == ui.selectedQuality) {
+                    SheetOption(source.qualityLabel, selected = source.qualityLabel == ui.selectedQuality, caption = ui.autoNote.takeIf { source.qualityLabel == ui.autoQuality }) {
                         viewModel.selectQuality(source.qualityLabel)
                         showSettings = false
                     }

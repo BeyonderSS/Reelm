@@ -1,0 +1,11 @@
+import assert from "node:assert/strict";
+import { pickStream } from "./pick-stream.ts";
+const l = [{ height: 480, label: "MovieBox · 480p" }, { height: 1080, label: "4KHDHub · 1080p", codec: "H.264" }, { height: 720, label: "MovieBox · 720p" }];
+assert.equal(pickStream(l, { bandwidthBps: 20e6 }), 1);
+assert.equal(pickStream(l, { bandwidthBps: 2e6 }), 0);
+assert.equal(pickStream(l, { bandwidthBps: 2e6, pinnedHeight: 1080 }), 1);
+assert.equal(pickStream(l, { bandwidthBps: 20e6, pinnedHeight: 900 }), 2);
+assert.equal(pickStream([{ height: 1080, codec: "HEVC" }, { height: 480 }], { bandwidthBps: 20e6 }), 1);
+assert.equal(pickStream([{ height: 1080, codec: "HEVC" }], { bandwidthBps: 20e6 }), 0);
+assert.equal(pickStream([{ height: 1080, dolby: true }, { height: 1080 }], { bandwidthBps: 20e6 }), 1);
+console.log("ok");

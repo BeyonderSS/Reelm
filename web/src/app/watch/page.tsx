@@ -14,10 +14,11 @@ import { frac } from "@/lib/eps";
 import { deviceId, get, getHistory, epKey, playKey, proxied, reelm, saveProgress, syncHistory, toPlay, WS, type Play as P } from "@/lib/core";
 import { track } from "@/lib/telemetry";
 import { helperOld } from "@/lib/bridge";
+import { bitrate, getBandwidth, getPin, pickStream, saveBandwidth, setPin } from "@/lib/pick-stream";
 import { useApi, useSession } from "@/lib/session";
 import { useLibavAudio } from "@/lib/use-libav-audio";
 import { cn } from "@/lib/utils";
-type Source = { src: string; hls: boolean; label: string; codec?: string; dolby?: boolean };
+type Source = { src: string; hls: boolean; label: string; codec?: string; dolby?: boolean; height?: number };
 type Sub = { url: string; label: string; lang: string; default?: boolean };
 type Member = { id: string; name: string; avatar: string };
 type Device = { deviceId: string; deviceName: string; kind: string };
@@ -60,13 +61,13 @@ function Opts<T extends string | number>({ label, items, value, onPick, name = S
 }
 
 /** A source as a stub: quality big, then the host, codec and audio; the one playing says so. */
-function SourceStub({ x, on, onPick }: { x: Source; on: boolean; onPick: () => void }) {
+function SourceStub({ x, on, tag, onPick }: { x: Source; on: boolean; tag?: string; onPick: () => void }) {
   const parts = x.label.split(" · "), q = parts.find((t) => /^(\d{3,4}p|auto|4k)$/i.test(t)) ?? parts[parts.length - 1];
   const host = parts.length > 1 ? parts[0] : "Stream", extra = parts.slice(1).filter((t) => t !== q);
   return (
     <button onClick={onPick} aria-pressed={on} className={cn("beam grid w-full grid-cols-[auto_1fr] items-center gap-x-4 gap-y-1 rounded-xl border-l-2 border-dashed border-white/25 bg-gradient-to-br from-[#25222f] to-[#121219] px-4 py-3 text-left", on && "shadow-[inset_0_0_0_2px_#f2b45a]")}>
       <span className="row-span-2 min-w-16 font-display text-2xl leading-none font-extrabold">{q}{x.codec && <small className="mt-1 block font-sans text-xs font-medium text-[#a3a1ae]">{x.codec}</small>}</span>
-      <b className="text-[15px]">{host}{on && <span className="ml-2 text-xs font-semibold text-signal">Playing</span>}</b>
+      <b className="text-[15px]">{host}{on && <span className="ml-2 text-xs font-semibold text-signal">Playing</span>}{tag && <span className="ml-2 text-[10px] font-semibold text-[#a3a1ae]">{tag}</span>}</b>
       <span className="flex flex-wrap gap-1 text-xs text-[#cfcbd9]">
         {x.hls && <span className="rounded-full bg-white/8 px-2 py-0.5">Adaptive</span>}
         {extra.map((t) => <span key={t} className={cn("rounded-full px-2 py-0.5", /dolby/i.test(t) ? "bg-primary/16 text-primary" : "bg-white/8")}>{t}</span>)}
@@ -90,7 +91,7 @@ function Player() {
   const video = useRef<HTMLVideoElement>(null), keep = useRef(0);
   const wsRef = useRef<WebSocket | null>(null), hub = useRef<WebSocket | null>(null);
   const applying = useRef(false), youId = useRef("");
-  const [sources, setSources] = useState<Source[]>([]), [si, setSi] = useState(0);
+  const [sources, setSources] = useState<Source[]>([]), [si, setSi] = useState(0), [tag, setTag] = useState({ i: -1, pin: 0 });
   const [subs, setSubs] = useState<Sub[]>([]), [subIdx, setSubIdx] = useState(-1);
   const [err, setErr] = useState(""), [nonce, setNonce] = useState(0), [embed, setEmbed] = useState(false);
   // same VidSrc fallback as the apps' WebEmbedPlayer; needs an IMDb id (Cinemeta titles have one, MovieBox ids don't)
@@ -107,7 +108,7 @@ function Player() {
   useEffect(() => {
     if (!p) return;
     let live = true;
-    setErr(""); setSources([]); setSubs([]); setSkips([]); setSi(0); keep.current = 0;
+    setErr(""); setSources([]); setSubs([]); setSkips([]); setSi(0); setTag({ i: -1, pin: 0 }); keep.current = 0;
     (async () => {
       if (p.kind === "live") return [[{ src: proxied(p.url!, "", true), hls: true, label: "Live" }], []] as const;
       if (p.kind === "anime") {
@@ -130,11 +131,13 @@ function Player() {
       if (!document.documentElement.dataset.reelmHelper) throw new Error("helper");
       const list = await get<any[]>(`movies/stream?id=${encodeURIComponent(p.id)}&type=${p.type}&title=${encodeURIComponent(p.title)}&year=${p.year ?? ""}&s=${p.season ?? 0}&e=${p.episode ?? 0}`);
       if (!list.length) throw new Error("No streams found for this title.");
-      return [list.map((x) => ({ src: x.url, hls: /\.m3u8(\?|$)/.test(x.url), label: x.label, codec: x.codec, dolby: x.dolby })), (list.find((x) => x.subtitles?.length)?.subtitles ?? []).map((x: Sub) => ({ ...x, url: `/api/sub?u=${encodeURIComponent(x.url)}` }))] as const;
+      return [list.map((x) => ({ src: x.url, hls: /\.m3u8(\?|$)/.test(x.url), label: x.label, codec: x.codec, dolby: x.dolby, height: x.height })), (list.find((x) => x.subtitles?.length)?.subtitles ?? []).map((x: Sub) => ({ ...x, url: `/api/sub?u=${encodeURIComponent(x.url)}` }))] as const;
     })().then((r) => {
       if (!live || !r) return;
       const [a, b] = r;
       setSources([...a]); setSubs([...b]);
+      const sa = a as Source[];
+      if (p.kind === "movie" && sa.length > 1) { const pin = getPin(playKey(p)) ?? 0, i = pickStream(sa, { bandwidthBps: getBandwidth(), pinnedHeight: pin }); setSi(i); setTag({ i, pin: pin && sa[i].height === pin ? pin : 0 }); }
       const d = b.findIndex((x: Sub) => x.default);
       setSubIdx(b.length ? (d >= 0 ? d : 0) : -1);
     }).catch((e) => live && setErr(e.message));
@@ -155,6 +158,17 @@ function Player() {
   };
   const startedAt = useRef(0);
   useEffect(() => { startedAt.current = src ? Date.now() : 0; }, [src]);
+  // refine the bandwidth estimate ~10 s into a direct file: buffered seconds x bitrate / wall time
+  useEffect(() => {
+    if (!src || src.hls || p?.kind !== "movie") return;
+    const t = setTimeout(() => {
+      const v = video.current, b = v?.buffered;
+      if (!v || v.paused || !b?.length) return;
+      const end = b.end(b.length - 1), est = end * bitrate(src) / 10;
+      if (est > 0) saveBandwidth(est, end - v.currentTime >= 3); // ponytail: a full buffer only proves a lower bound, so it can raise the estimate but not drop it
+    }, 10_000);
+    return () => clearTimeout(t);
+  }, [src]); // eslint-disable-line react-hooks/exhaustive-deps
   const onPlaying = () => {
     if (!startedAt.current) return;
     track("play", info());
@@ -407,7 +421,7 @@ function Player() {
                   {panel === "watch" && <>
                     <h3 className={h3}>Watch</h3>
                     {sources.length > 0 && <p className="mt-2 text-sm text-[#a3a1ae]">{sources.length > 1 ? "Source" : "Source (only one available)"}</p>}
-                    <div className="space-y-2">{sources.map((x, i) => <SourceStub key={i} x={x} on={si === i && !embed} onPick={() => { setEmbed(false); setSi(i); }} />)}</div>
+                    <div className="space-y-2">{sources.map((x, i) => <SourceStub key={i} x={x} on={si === i && !embed} tag={tag.i === i ? (tag.pin ? `Pinned ${tag.pin}p` : "Auto") : undefined} onPick={() => { setEmbed(false); setSi(i); if (p?.kind === "movie" && x.height) { setPin(playKey(p), x.height); setTag({ i, pin: x.height }); } }} />)}</div>
                     {embedUrl && <button onClick={() => { setEmbed(true); setErr(""); setPanel(null); }} aria-pressed={embed} className={cn("beam w-full rounded-xl border-l-2 border-dashed border-white/25 bg-white/5 px-4 py-3 text-left", embed && "shadow-[inset_0_0_0_2px_#f2b45a]")}>
                       <b className="font-display text-lg">Web player</b><span className="block text-xs text-[#a3a1ae]">Plays in an embedded page when no source works here</span></button>}
                     {helperOld() && <a href={HELPER_URL()} target="_blank" rel="noreferrer" className="block text-xs text-foreground/52 underline">Update Reelm Helper for more sources</a>}

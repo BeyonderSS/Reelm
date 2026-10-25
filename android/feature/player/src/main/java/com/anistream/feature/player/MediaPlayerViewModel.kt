@@ -22,6 +22,9 @@ import com.anistream.domain.KidsPolicy
 import com.anistream.domain.model.MediaStream
 import com.anistream.domain.model.PlaybackRequest
 import com.anistream.domain.model.WatchHistory
+import com.anistream.domain.usecase.canPlayLowEnd
+import com.anistream.domain.usecase.canPlayPhone
+import com.anistream.domain.usecase.pickStream
 import com.anistream.domain.repository.DownloadRepository
 import com.anistream.domain.repository.MoviesRepository
 import com.anistream.domain.repository.NowPlaying
@@ -45,6 +48,9 @@ private const val DEFAULT_USER_AGENT =
 data class MediaPlayerUiState(
     val request: PlaybackRequest? = null,
     val streamIndex: Int = 0,
+    /** the stream the auto-pick chose, and why ("Auto" / "Pinned 1080p"); null when none */
+    val autoIndex: Int = -1,
+    val autoNote: String = "",
     /** index into the current stream's subtitles; -1 = off */
     val subtitleIndex: Int = -1,
     val isLoading: Boolean = true,
@@ -113,6 +119,16 @@ class MediaPlayerViewModel @Inject constructor(
     private val lowEnd = LowEnd.isOn(context)
     private fun ordered(r: PlaybackRequest) = if (lowEnd) r.copy(streams = lowEndOrder(r.streams)) else r
 
+    private val appContext = context
+    private fun pinKey(r: PlaybackRequest) = r.historyKey ?: r.mediaId ?: r.title
+    private fun pick(r: PlaybackRequest): Int {
+        if (r.isLive || r.streams.size < 2) return 0
+        val pin = QualityPick.pinned(appContext, pinKey(r))
+        val i = pickStream(r.streams, QualityPick.bandwidth(appContext), pin, if (lowEnd) ::canPlayLowEnd else ::canPlayPhone)
+        _uiState.update { it.copy(autoIndex = i, autoNote = if (pin != null) "Pinned ${pin}p" else "Auto") }
+        return i
+    }
+
     private val _uiState = MutableStateFlow(MediaPlayerUiState(request = NowPlaying.request?.let(::ordered)))
     val uiState: StateFlow<MediaPlayerUiState> = _uiState.asStateFlow()
 
@@ -168,7 +184,7 @@ class MediaPlayerViewModel @Inject constructor(
                     else request.mediaId?.let { movies.detail(it).exceptionOrNull() is KidsBlockedException } == true
                 if (blocked) return@launch _uiState.update { it.copy(request = null, isLoading = false, error = KidsPolicy.BLOCKED) }
                 recordStart(request)
-                play(0, null)
+                play(pick(request), null)
             }
             viewModelScope.launch {
                 while (true) {
@@ -234,6 +250,7 @@ class MediaPlayerViewModel @Inject constructor(
     /** Source sheet pick. VOD keeps its position. */
     fun selectStream(index: Int) {
         if (index == _uiState.value.streamIndex && _uiState.value.error == null) return
+        _uiState.value.request?.let { r -> if (!r.isLive) r.streams.getOrNull(index)?.let { QualityPick.pin(appContext, pinKey(r), it.height) } }
         play(index, if (_uiState.value.isLive) null else player.currentPosition)
     }
 
@@ -311,7 +328,7 @@ class MediaPlayerViewModel @Inject constructor(
                     fellBackFrom = -1
                     _uiState.update { it.copy(request = next, downloadStarted = false) }
                     recordStart(next)
-                    play(0, null)
+                    play(pick(next), null)
                 }
                 is Result.Error -> _uiState.update { it.copy(isLoading = false, error = res.message ?: "Couldn't load episode $episode") }
                 is Result.Loading -> {}

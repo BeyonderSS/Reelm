@@ -7,7 +7,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test src/lib/eps.test.ts",
+    "test": "node --test src/lib/eps.test.ts && node src/lib/pick-stream.check.ts",
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "cf-build": "opennextjs-cloudflare build"
   },

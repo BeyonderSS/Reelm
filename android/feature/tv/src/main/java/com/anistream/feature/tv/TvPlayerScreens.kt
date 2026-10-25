@@ -871,7 +871,7 @@ fun TvAnimePlayerScreen(onExit: () -> Unit, vm: PlayerViewModel = hiltViewModel(
         onExit = onExit,
         settings = listOf(
             SettingGroup("Audio", listOf("sub", "dub"), { if (it == "dub") "Dub" else "Sub" }, { it == s.language }, vm::setLanguage),
-            SettingGroup("Quality", s.availableQualities.map { it.qualityLabel }, { it }, { it == s.selectedQuality }, vm::selectQuality)
+            SettingGroup("Quality", s.availableQualities.map { it.qualityLabel }, { if (it == s.autoQuality) "$it · ${s.autoNote}" else it }, { it == s.selectedQuality }, vm::selectQuality)
         ),
         strip = EpisodeStrip(s.episodeNumbers, s.episodeNumber, s.watchedBelow, vm::playEpisode),
         upNext = next?.let { "Episode $it" }.takeIf { s.hasNext },
@@ -933,7 +933,7 @@ fun TvMediaPlayerScreen(
             // WEB_SOURCE = last-resort web player, after the real sources
             SettingGroup(
                 "Source", streams.indices.toList() + listOfNotNull(WEB_SOURCE.takeIf { s.canWebPlay }),
-                { i -> if (i == WEB_SOURCE) "Web player" else streams[i].let { listOf(it.sourceName, it.qualityLabel).filter(String::isNotBlank).joinToString(" ") } },
+                { i -> if (i == WEB_SOURCE) "Web player" else streams[i].let { listOf(it.sourceName, it.qualityLabel).filter(String::isNotBlank).joinToString(" ") + if (i == s.autoIndex) " · ${s.autoNote}" else "" } },
                 { it == s.streamIndex },
                 { i -> if (i == WEB_SOURCE) vm.openWebPlayer() else vm.selectStream(i) }
             ).apply { stub = { i -> streams.getOrNull(i)?.let(::srcInfo) } },
