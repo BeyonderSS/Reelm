@@ -28,6 +28,7 @@ import com.anistream.domain.usecase.pickStream
 import com.anistream.domain.repository.DownloadRepository
 import com.anistream.domain.repository.MoviesRepository
 import com.anistream.domain.repository.NowPlaying
+import com.anistream.domain.model.localStream
 import com.anistream.domain.repository.WatchHistoryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -318,7 +319,9 @@ class MediaPlayerViewModel @Inject constructor(
         val episode = r.episode + 1
         _uiState.update { it.copy(ended = false, isLoading = true, error = null) }
         viewModelScope.launch {
-            when (val res = movies.streams(mediaId, r.season, episode)) {
+            val local = downloads.getAll().getOrNull().orEmpty()
+                .firstOrNull { it.animeTitle == r.title && it.subtitle == "S${r.season} · E$episode" }?.localStream()
+            when (val res = if (local != null) Result.success(listOf(local)) else movies.streams(mediaId, r.season, episode)) {
                 is Result.Success -> {
                     if (res.data.isEmpty()) {
                         _uiState.update { it.copy(isLoading = false, error = "No streams for episode $episode") }

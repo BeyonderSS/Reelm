@@ -20,3 +20,17 @@ data class DownloadItem(
 enum class DownloadState {
     PENDING, DOWNLOADING, COMPLETED, FAILED, PAUSED
 }
+
+/** The finished file (+ its .vtt/.srt sidecar) as a playable stream; null while it isn't fully on the device. */
+fun DownloadItem.localStream(): MediaStream? {
+    val path = filePath?.takeIf { state == DownloadState.COMPLETED && java.io.File(it).exists() } ?: return null
+    val base = path.substringBeforeLast('.')
+    val subs = listOf("vtt" to "text/vtt", "srt" to "application/x-subrip")
+        .map { (ext, mime) -> java.io.File("$base.$ext") to mime }
+        .filter { it.first.exists() }
+        .map { (f, mime) -> SubtitleTrack(f.toURI().toString(), "en", "English", mime) }
+    return MediaStream(
+        url = java.io.File(path).toURI().toString(), qualityLabel = quality, sourceName = "On this phone",
+        subtitles = subs, mimeType = if (path.endsWith(".ts")) "video/mp2t" else null
+    )
+}

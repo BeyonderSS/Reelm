@@ -1,5 +1,7 @@
 package com.anistream.feature.player
 
+import com.anistream.domain.model.localStream
+
 import com.anistream.core.common.LowEnd
 import android.content.Context
 import android.net.Uri
@@ -163,6 +165,25 @@ class PlayerViewModel @Inject constructor(
             val keepAt = if (keepPosition) player.currentPosition else null
             _uiState.update { it.copy(isLoading = true, error = null, ended = false) }
 
+            // downloaded episode: play the file before touching the network (works offline)
+            val n = _uiState.value.episodeNumber
+            val row = if (keepAt == null) downloads.getAll().getOrNull().orEmpty()
+                .firstOrNull { it.filePath?.endsWith("/${animeSlug.replace('/', '_')}-ep$n.ts") == true } else null
+            row?.localStream()?.let { local ->
+                val src = StreamSource(qualityLabel = local.qualityLabel, m3u8Url = local.url, subtitleUrl = local.subtitles.firstOrNull()?.url)
+                _uiState.update { it.copy(animeTitle = it.animeTitle.ifBlank { row.animeTitle }, posterUrl = it.posterUrl ?: row.posterUrl) }
+                recordStart(n)
+                play(src, null)
+                _uiState.update {
+                    it.copy(
+                        isLoading = false, availableQualities = listOf(src), streamSource = src, selectedQuality = src.qualityLabel,
+                        autoNote = "On this phone", autoQuality = src.qualityLabel,
+                        hasPrevious = episodes.any { e -> e.number < n }, hasNext = episodes.any { e -> e.number > n }
+                    )
+                }
+                return@launch
+            }
+
             if (episodes.isEmpty()) {
                 val detailCall = async { anidb.getAnimeDetail(animeSlug) }
                 when (val r = anidb.getEpisodes(animeSlug)) {
@@ -244,11 +265,11 @@ class PlayerViewModel @Inject constructor(
         })
         val item = MediaItem.Builder()
             .setUri(stream.m3u8Url)
-            .setMimeType(MimeTypes.APPLICATION_M3U8)
+            .setMimeType(if (stream.m3u8Url.startsWith("file:")) MimeTypes.VIDEO_MP2T else MimeTypes.APPLICATION_M3U8)
             .setSubtitleConfigurations(subtitles)
             .build()
         startedAt = System.currentTimeMillis()
-        player.setMediaSource(DefaultMediaSourceFactory(http).createMediaSource(item), startMs ?: 0L)
+        player.setMediaSource(DefaultMediaSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(appContext, http)).createMediaSource(item), startMs ?: 0L)
         player.prepare()
         player.playWhenReady = true
     }

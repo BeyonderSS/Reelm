@@ -7,6 +7,7 @@ import com.anistream.core.common.Result
 import com.anistream.core.ui.components.DownloadOption
 import com.anistream.core.ui.components.formatBytes
 import com.anistream.domain.model.DownloadItem
+import com.anistream.domain.model.localStream
 import com.anistream.domain.model.DownloadState
 import com.anistream.domain.model.FavoriteAnime
 import com.anistream.domain.model.MediaDetail
@@ -187,10 +188,13 @@ class MovieDetailViewModel @Inject constructor(
     fun play(season: Int, episode: Int) {
         val d = _uiState.value.detail ?: return
         if (_uiState.value.resolving) return
+        // already downloaded: play the file, no network needed
+        val local = _uiState.value.dlRows.firstOrNull { it.subtitle == (if (episode > 0) "S$season · E$episode" else null) }?.localStream()
         viewModelScope.launch {
-            _uiState.update { it.copy(resolving = true) }
-            val streams = movies.streams(d.id, season, episode)
-            _uiState.update { it.copy(resolving = false) }
+            val streams = if (local != null) Result.success(listOf(local)) else {
+                _uiState.update { it.copy(resolving = true) }
+                movies.streams(d.id, season, episode).also { _uiState.update { it.copy(resolving = false) } }
+            }
             val list = streams.getOrNull().orEmpty()
             if (list.isEmpty()) {
                 val web = Resume(season, episode)
