@@ -162,7 +162,8 @@ fun MediaPlayerScreen(
                             )
                             Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "Change source", tint = Ink.body, modifier = Modifier.size(20.dp))
                         }
-                        if (!ui.isLive) {
+                        // a downloaded file is already on the phone
+                        if (!ui.isLive && ui.stream?.url?.startsWith("file:") != true) {
                             IconButton(
                                 onClick = viewModel::download,
                                 enabled = request != null && !ui.downloadStarted,

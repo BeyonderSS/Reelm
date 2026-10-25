@@ -163,7 +163,7 @@ private fun TvApp() {
             composable(TvRoutes.ANIME) { TvHomeScreen(HomeFilter.ANIME, homeVm, moviesVm, nav) }
             composable(TvRoutes.SEARCH) { TvSearchScreen(onOpen = { nav.navigate(TvRoutes.detail(it)) }) }
             composable(TvRoutes.LIVE) { TvLiveScreen(onPlay = { nav.navigate(TvRoutes.MEDIA_PLAYER) }) }
-            composable(TvRoutes.LIBRARY) { TvLibraryScreen(onOpen = { nav.navigate(TvRoutes.detail(it)) }) }
+            composable(TvRoutes.LIBRARY) { TvLibraryScreen(onOpen = { nav.navigate(TvRoutes.detail(it)) }, onPlayer = { nav.navigate(TvRoutes.MEDIA_PLAYER) }) }
             composable(TvRoutes.MORE) {
                 TvMoreScreen(onOpen = { dest ->
                     nav.navigate(

@@ -44,7 +44,7 @@ import com.anistream.core.ui.theme.Ink
 import com.anistream.core.ui.theme.Radius
 import com.anistream.domain.model.DownloadState
 import com.anistream.feature.downloads.DownloadsViewModel
-import com.anistream.feature.downloads.LocalPlayerDialog
+import com.anistream.feature.downloads.playOffline
 import com.anistream.feature.favorites.FavoritesViewModel
 import com.anistream.feature.livetv.IPTV_ORG_URL
 import com.anistream.feature.livetv.LiveTvViewModel
@@ -97,10 +97,9 @@ fun TvLiveScreen(onPlay: () -> Unit, vm: LiveTvViewModel = hiltViewModel()) {
 }
 
 @Composable
-fun TvLibraryScreen(onOpen: (id: String) -> Unit, favVm: FavoritesViewModel = hiltViewModel(), dlVm: DownloadsViewModel = hiltViewModel()) {
+fun TvLibraryScreen(onOpen: (id: String) -> Unit, onPlayer: () -> Unit, favVm: FavoritesViewModel = hiltViewModel(), dlVm: DownloadsViewModel = hiltViewModel()) {
     val fav by favVm.uiState.collectAsStateWithLifecycle()
     val dl by dlVm.uiState.collectAsStateWithLifecycle()
-    var playing by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { favVm.loadFavorites() }
     val restore = remember { androidx.compose.ui.focus.FocusRequester() }
 
@@ -119,7 +118,7 @@ fun TvLibraryScreen(onOpen: (id: String) -> Unit, favVm: FavoritesViewModel = hi
                 DownloadState.PENDING -> "Waiting"
             },
             progress = d.progress.takeIf { d.state == DownloadState.DOWNLOADING },
-            onClick = { if (d.state == DownloadState.COMPLETED && path != null) playing = path }
+            onClick = { if (d.state == DownloadState.COMPLETED && path != null) { playOffline(path, d); onPlayer() } }
         )
     }, wide = true)
     val rows = listOf(favRow, dlRow).filter { it.items.isNotEmpty() }
@@ -134,5 +133,4 @@ fun TvLibraryScreen(onOpen: (id: String) -> Unit, favVm: FavoritesViewModel = hi
             }
         }
     }
-    playing?.let { LocalPlayerDialog(filePath = it, onDismiss = { playing = null }) }
 }

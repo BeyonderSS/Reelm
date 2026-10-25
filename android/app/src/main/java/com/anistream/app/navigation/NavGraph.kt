@@ -250,7 +250,8 @@ fun AniStreamNavGraph() {
                 Insetted {
                     LibraryScreen(
                         onOpen = { id -> navController.navigate(Routes.detailFor(id)) },
-                        onDiscoverClick = { navigateToTab(Routes.HOME) }
+                        onDiscoverClick = { navigateToTab(Routes.HOME) },
+                        onOpenPlayer = { navController.navigate(Routes.MEDIA_PLAYER) }
                     )
                 }
             }
@@ -269,7 +270,7 @@ fun AniStreamNavGraph() {
                 Routes.DOWNLOADS,
                 arguments = listOf(navArgument("play") { type = NavType.StringType; nullable = true; defaultValue = null })
             ) { entry ->
-                Insetted { DownloadsScreen(initialPlay = entry.arguments?.getString("play")) }
+                Insetted { DownloadsScreen(initialPlay = entry.arguments?.getString("play"), onOpenPlayer = { navController.navigate(Routes.MEDIA_PLAYER) }) }
             }
 
             composable(Routes.MOVIES) {
@@ -408,7 +409,7 @@ fun AniStreamNavGraph() {
 
 /** Favourites | Downloads under one tab; one marquee header, the child screens skip their own. */
 @Composable
-private fun LibraryScreen(onOpen: (String) -> Unit, onDiscoverClick: () -> Unit) {
+private fun LibraryScreen(onOpen: (String) -> Unit, onDiscoverClick: () -> Unit, onOpenPlayer: () -> Unit) {
     val account = androidx.hilt.navigation.compose.hiltViewModel<AccountViewModel>()
     val session by account.session.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -441,7 +442,7 @@ private fun LibraryScreen(onOpen: (String) -> Unit, onDiscoverClick: () -> Unit)
         }
         Box(Modifier.weight(1f)) {
             if (tab == 0) FavoritesScreen(onAnimeClick = onOpen, onDiscoverClick = onDiscoverClick, showHeader = false)
-            else DownloadsScreen(showHeader = false)
+            else DownloadsScreen(showHeader = false, onOpenPlayer = onOpenPlayer)
         }
     }
 }

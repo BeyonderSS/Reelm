@@ -93,11 +93,14 @@ private val DisplayName = AppType.heading.copy(fontSize = 18.sp, lineHeight = 23
 fun DownloadsScreen(
     initialPlay: String? = null,
     showHeader: Boolean = true,
+    onOpenPlayer: () -> Unit,
     viewModel: DownloadsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var playing by rememberSaveable { mutableStateOf(initialPlay) }
-    playing?.let { LocalPlayerDialog(filePath = it, onDismiss = { playing = null }) }
+    val play: (String) -> Unit = { path -> playOffline(path, uiState.downloads.firstOrNull { it.filePath == path }); onOpenPlayer() }
+    // a notification's "play" link opens the player once, not again on every return to this screen
+    var pending by rememberSaveable { mutableStateOf(initialPlay) }
+    pending?.let { p -> androidx.compose.runtime.LaunchedEffect(p) { pending = null; play(p) } }
 
     val downloads = uiState.downloads
     Column(Modifier.fillMaxSize().background(Bg.base)) {
@@ -157,13 +160,13 @@ fun DownloadsScreen(
                                 eps.first(),
                                 onCancel = { viewModel.cancelDownload(it) },
                                 onDelete = { viewModel.deleteDownload(it) },
-                                onPlay = { playing = it },
+                                onPlay = play,
                                 modifier = Modifier.animateItem()
                             ) else SeriesCard(
                                 eps,
                                 onCancel = { viewModel.cancelDownload(it) },
                                 onDelete = { viewModel.deleteDownload(it) },
-                                onPlay = { playing = it },
+                                onPlay = play,
                                 modifier = Modifier.animateItem()
                             )
                         }

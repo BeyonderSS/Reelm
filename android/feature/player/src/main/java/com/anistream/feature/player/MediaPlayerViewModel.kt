@@ -218,7 +218,8 @@ class MediaPlayerViewModel @Inject constructor(
             })
             .apply { if (request.isLive) setLiveConfiguration(MediaItem.LiveConfiguration.Builder().build()) }
             .build()
-        val source = DefaultMediaSourceFactory(http).createMediaSource(item)
+        // DefaultDataSource reads file:// too, so downloads play here with the same controls
+        val source = DefaultMediaSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(appContext, http)).createMediaSource(item)
         // live: no position = start at the live edge
         startedAt = System.currentTimeMillis()
         if (request.isLive || startMs == null) player.setMediaSource(source) else player.setMediaSource(source, startMs)
