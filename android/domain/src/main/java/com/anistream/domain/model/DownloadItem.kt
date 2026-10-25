@@ -12,7 +12,9 @@ data class DownloadItem(
     val createdAt: Long = System.currentTimeMillis(),
     /** movies & TV: "S1 · E2"; null for anime episodes and movies */
     val subtitle: String? = null,
-    val posterUrl: String? = null
+    val posterUrl: String? = null,
+    val stillUrl: String? = null,
+    val episodeTitle: String? = null
 )
 
 enum class DownloadState {

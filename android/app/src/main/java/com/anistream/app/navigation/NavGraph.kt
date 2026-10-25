@@ -43,6 +43,11 @@ import androidx.compose.runtime.setValue
 import com.anistream.core.ui.components.SegmentedControl
 import com.anistream.core.ui.theme.Space
 import androidx.compose.ui.Modifier
+import com.anistream.core.ui.theme.AppType
+import com.anistream.core.ui.theme.Accent
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -401,7 +406,7 @@ fun AniStreamNavGraph() {
     }
 }
 
-/** Favorites | Downloads under one tab; each keeps its own screen and title. */
+/** Favourites | Downloads under one tab; one marquee header, the child screens skip their own. */
 @Composable
 private fun LibraryScreen(onOpen: (String) -> Unit, onDiscoverClick: () -> Unit) {
     val account = androidx.hilt.navigation.compose.hiltViewModel<AccountViewModel>()
@@ -409,12 +414,7 @@ private fun LibraryScreen(onOpen: (String) -> Unit, onDiscoverClick: () -> Unit)
     var tab by rememberSaveable { mutableIntStateOf(0) }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(start = Space.lg, end = Space.xs, top = Space.sm), verticalAlignment = Alignment.CenterVertically) {
-            SegmentedControl(
-                options = listOf("Favorites", "Downloads"),
-                selectedIndex = tab,
-                onSelect = { tab = it },
-                modifier = Modifier.weight(1f)
-            )
+            com.anistream.core.ui.components.MarqueeTitle("Library", null, Modifier.weight(1f))
             // accounts are optional and hidden when REELM_API_URL is blank; the avatar reopens "Who's watching?"
             if (account.repo.enabled) IconButton(onClick = account.repo::openGate) {
                 val p = session?.activeProfile
@@ -422,9 +422,26 @@ private fun LibraryScreen(onOpen: (String) -> Unit, onDiscoverClick: () -> Unit)
                 else Icon(Icons.Outlined.AccountCircle, contentDescription = "Sign in or switch profile", tint = Ink.high)
             }
         }
+        // ticket-stub switcher: two stubs, the selected one amber
+        Row(Modifier.padding(horizontal = Space.lg, vertical = Space.md), horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(Space.sm)) {
+            listOf("Favourites", "Downloads").forEachIndexed { i, label ->
+                val on = tab == i
+                androidx.compose.material3.Text(
+                    label,
+                    style = AppType.label,
+                    color = if (on) Accent.on else Ink.body,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.weight(1f)
+                        .clip(com.anistream.core.ui.components.TicketShape(corner = 14.dp, notch = 6.dp))
+                        .background(if (on) Accent.main else Bg.raised)
+                        .clickable { tab = i }
+                        .padding(vertical = Space.md)
+                )
+            }
+        }
         Box(Modifier.weight(1f)) {
-            if (tab == 0) FavoritesScreen(onAnimeClick = onOpen, onDiscoverClick = onDiscoverClick)
-            else DownloadsScreen()
+            if (tab == 0) FavoritesScreen(onAnimeClick = onOpen, onDiscoverClick = onDiscoverClick, showHeader = false)
+            else DownloadsScreen(showHeader = false)
         }
     }
 }

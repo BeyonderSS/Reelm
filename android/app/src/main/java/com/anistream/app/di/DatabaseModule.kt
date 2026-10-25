@@ -29,7 +29,7 @@ object DatabaseModule {
             context,
             AniStreamDatabase::class.java,
             AniStreamDatabase.DATABASE_NAME
-        ).addMigrations(AniStreamDatabase.MIGRATION_1_2, AniStreamDatabase.MIGRATION_2_3, AniStreamDatabase.MIGRATION_3_4, AniStreamDatabase.MIGRATION_4_5, AniStreamDatabase.MIGRATION_5_6, AniStreamDatabase.MIGRATION_6_7, AniStreamDatabase.MIGRATION_7_8).build()
+        ).addMigrations(AniStreamDatabase.MIGRATION_1_2, AniStreamDatabase.MIGRATION_2_3, AniStreamDatabase.MIGRATION_3_4, AniStreamDatabase.MIGRATION_4_5, AniStreamDatabase.MIGRATION_5_6, AniStreamDatabase.MIGRATION_6_7, AniStreamDatabase.MIGRATION_7_8, AniStreamDatabase.MIGRATION_8_9).build()
     }
 
     @Provides

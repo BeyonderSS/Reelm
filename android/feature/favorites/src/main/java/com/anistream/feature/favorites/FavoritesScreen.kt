@@ -6,6 +6,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -29,7 +30,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
@@ -56,6 +57,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -63,12 +66,14 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import com.anistream.core.ui.components.EmptyState
+import com.anistream.core.ui.components.MarqueeTitle
+import com.anistream.core.ui.components.TicketShape
 import com.anistream.core.ui.components.ErrorContent
 import com.anistream.core.ui.components.LoadingShimmer
 import com.anistream.core.ui.theme.Accent
 import com.anistream.core.ui.theme.AppType
 import com.anistream.core.ui.theme.Bg
+import com.anistream.core.ui.theme.DisplayHeavy
 import com.anistream.core.ui.theme.Ink
 import com.anistream.core.ui.theme.Radius
 import com.anistream.core.ui.theme.Space
@@ -79,6 +84,7 @@ import kotlinx.coroutines.launch
 fun FavoritesScreen(
     onAnimeClick: (String) -> Unit,
     onDiscoverClick: () -> Unit = {},
+    showHeader: Boolean = true,
     viewModel: FavoritesViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -116,11 +122,12 @@ fun FavoritesScreen(
         snackbarHost = { SnackbarHost(snackbar) }
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
+            if (showHeader) MarqueeTitle("Favourites", null, Modifier.padding(start = Space.lg, end = Space.lg, top = Space.sm))
             Row(
                 modifier = Modifier.fillMaxWidth().padding(start = Space.lg, end = Space.sm, top = Space.sm, bottom = Space.sm),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Favourites", style = AppType.title, modifier = Modifier.weight(1f))
+                Spacer(Modifier.weight(1f))
                 if (uiState.favorites.isNotEmpty()) SortMenu(uiState.sortOption, viewModel::onSortChange)
                 TextButton(onClick = { confirmClear = true }) { Text("Clear history", style = AppType.label, color = Ink.body) }
             }
@@ -200,22 +207,36 @@ private fun PosterTile(fav: FavoriteAnime, onClick: () -> Unit, onLongClick: () 
                 indication = null,
                 onClick = onClick,
                 onLongClick = onLongClick,
-                onLongClickLabel = "Remove from favorites"
+                onLongClickLabel = "Remove from favourites"
             )
     ) {
-        AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current).data(fav.posterUrl).crossfade(true).build(),
-            contentDescription = fav.animeTitle,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(2f / 3f)
-                .clip(Radius.md)
-                .clip(Radius.md)
-                .background(Bg.raised)
-        )
+        // ticket stub: notches near the bottom edge of the poster
+        Box(
+            Modifier.fillMaxWidth().aspectRatio(2f / 3f)
+                .clip(TicketShape(corner = 12.dp, notch = 6.dp, at = 0.9f)).background(Bg.raised)
+        ) {
+            Text(
+                fav.animeTitle.trim().take(1).uppercase(),
+                style = AppType.title.copy(fontFamily = DisplayHeavy, color = Accent.live.copy(alpha = 0.5f)),
+                modifier = Modifier.align(Alignment.Center)
+            )
+            AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current).data(fav.posterUrl).crossfade(true).build(),
+                contentDescription = fav.animeTitle,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            Icon(
+                Icons.Rounded.Favorite, contentDescription = "Remove from favourites", tint = Accent.main,
+                modifier = Modifier.align(Alignment.TopEnd).padding(Space.xs).size(28.dp)
+                    .background(Bg.badge, Radius.round).clickable(onClick = onLongClick).padding(5.dp)
+            )
+        }
         Spacer(Modifier.height(Space.sm))
-        Text(fav.animeTitle, style = AppType.captionStrong, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(fav.animeTitle, style = AppType.captionStrong.copy(fontWeight = FontWeight.SemiBold, color = Ink.high), maxLines = 2, overflow = TextOverflow.Ellipsis)
+        val type = when { fav.kind == "anime" -> "Anime"; fav.mediaType == "movie" -> "Movie"; fav.mediaType == "series" -> "Series"; else -> null }
+        val meta = listOfNotNull(type, fav.year?.toString()).joinToString(" · ")
+        if (meta.isNotEmpty()) Text(meta, style = AppType.caption, maxLines = 1)
     }
 }
 
@@ -230,11 +251,19 @@ private fun PosterSkeleton() {
 
 @Composable
 private fun EmptyFavorites(onDiscoverClick: () -> Unit) {
-    EmptyState(
-        message = "Nothing saved yet",
-        subtitle = "Tap the heart on any anime to keep it here",
-        icon = Icons.Rounded.FavoriteBorder,
-        actionLabel = "Discover anime",
-        onAction = onDiscoverClick
-    )
+    Column(
+        Modifier.fillMaxSize().padding(Space.xxl),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        MarqueeTitle("Nothing saved", "yet", size = 30)
+        Text(
+            "Tap the heart on any title to keep it here",
+            style = AppType.body, textAlign = TextAlign.Center, modifier = Modifier.padding(top = Space.md, bottom = Space.xl)
+        )
+        Button(
+            onClick = onDiscoverClick,
+            colors = ButtonDefaults.buttonColors(containerColor = Accent.main, contentColor = Accent.on)
+        ) { Text("Discover", style = AppType.button, color = Accent.on) }
+    }
 }

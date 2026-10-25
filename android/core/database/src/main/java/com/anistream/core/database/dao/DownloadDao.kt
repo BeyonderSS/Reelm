@@ -21,6 +21,9 @@ interface DownloadDao {
     @Query("UPDATE downloads SET progress = :progress, state = :state WHERE episodeId = :episodeId")
     suspend fun updateProgress(episodeId: Long, progress: Float, state: String)
 
+    @Query("UPDATE downloads SET posterUrl = :url WHERE episodeId = :episodeId")
+    suspend fun setPoster(episodeId: Long, url: String)
+
     @Query("DELETE FROM downloads WHERE episodeId = :episodeId")
     suspend fun delete(episodeId: Long)
 }

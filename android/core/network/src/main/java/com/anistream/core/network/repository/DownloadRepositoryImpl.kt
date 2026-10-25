@@ -98,7 +98,9 @@ class DownloadRepositoryImpl @Inject constructor(
         animeSlug: String,
         title: String,
         episodeNumber: Int,
-        posterUrl: String?
+        posterUrl: String?,
+        stillUrl: String?,
+        episodeTitle: String?
     ): Result<Unit> {
         return try {
             val id = downloadId(animeSlug, episodeNumber)
@@ -112,7 +114,9 @@ class DownloadRepositoryImpl @Inject constructor(
                     quality = stream.qualityLabel,
                     filePath = video.path,
                     state = DownloadState.PENDING.name,
-                    posterUrl = posterUrl
+                    posterUrl = posterUrl,
+                    stillUrl = stillUrl,
+                    episodeTitle = episodeTitle
                 )
             )
             enqueue(
@@ -124,7 +128,7 @@ class DownloadRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun startMediaDownload(stream: MediaStream, key: String, title: String, subtitle: String?, posterUrl: String?): Result<Unit> {
+    override suspend fun startMediaDownload(stream: MediaStream, key: String, title: String, subtitle: String?, posterUrl: String?, stillUrl: String?, episodeTitle: String?): Result<Unit> {
         return try {
             if (!stream.isDirectFile) return Result.error(IOException("Only direct files can be downloaded"))
             val id = downloadId(key, 0)
@@ -140,7 +144,9 @@ class DownloadRepositoryImpl @Inject constructor(
                     filePath = video.path,
                     state = DownloadState.PENDING.name,
                     subtitle = subtitle,
-                    posterUrl = posterUrl
+                    posterUrl = posterUrl,
+                    stillUrl = stillUrl,
+                    episodeTitle = episodeTitle
                 )
             )
             val track = stream.subtitles.firstOrNull()
@@ -308,6 +314,8 @@ class DownloadRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun setPoster(episodeId: Long, url: String) = dao.setPoster(episodeId, url)
+
     override suspend fun deleteDownload(episodeId: Long): Result<Unit> {
         return try {
             workManager.cancelUniqueWork(downloadWorkName(episodeId))
@@ -348,6 +356,8 @@ class DownloadRepositoryImpl @Inject constructor(
         state = runCatching { DownloadState.valueOf(state) }.getOrDefault(DownloadState.PENDING),
         createdAt = createdAt,
         subtitle = subtitle,
-        posterUrl = posterUrl
+        posterUrl = posterUrl,
+        stillUrl = stillUrl,
+        episodeTitle = episodeTitle
     )
 }

@@ -57,13 +57,15 @@ interface FavoriteRepository {
 interface DownloadRepository {
     suspend fun getAll(): Result<List<com.anistream.domain.model.DownloadItem>>
     /** stream is the chosen quality variant (carries referer/subtitles); runs in the background, progress lands in the DB */
-    suspend fun startDownload(stream: StreamSource, animeSlug: String, title: String, episodeNumber: Int, posterUrl: String? = null): Result<Unit>
+    suspend fun startDownload(stream: StreamSource, animeSlug: String, title: String, episodeNumber: Int, posterUrl: String? = null, stillUrl: String? = null, episodeTitle: String? = null): Result<Unit>
     /**
      * Movies & TV: a direct file (stream.isDirectFile) saved as "<title>.mp4" plus the first subtitle as ".srt".
      * key = the history key ("mb:<id>" or "mb:<id>:s1e2"); subtitle e.g. "S1 · E2", null for movies.
      */
-    suspend fun startMediaDownload(stream: com.anistream.domain.model.MediaStream, key: String, title: String, subtitle: String?, posterUrl: String? = null): Result<Unit> =
+    suspend fun startMediaDownload(stream: com.anistream.domain.model.MediaStream, key: String, title: String, subtitle: String?, posterUrl: String? = null, stillUrl: String? = null, episodeTitle: String? = null): Result<Unit> =
         Result.error(UnsupportedOperationException("Media downloads not supported"))
     suspend fun cancelDownload(episodeId: Long): Result<Unit>
+    /** backfills artwork for rows saved without a poster */
+    suspend fun setPoster(episodeId: Long, url: String) {}
     suspend fun deleteDownload(episodeId: Long): Result<Unit>
 }

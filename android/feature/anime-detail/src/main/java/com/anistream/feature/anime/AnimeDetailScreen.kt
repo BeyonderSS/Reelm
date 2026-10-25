@@ -1,6 +1,7 @@
 package com.anistream.feature.anime
 
 import android.os.Build
+import android.widget.Toast
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
@@ -52,6 +53,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -61,6 +63,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
@@ -77,6 +80,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.anistream.core.ui.components.AnimeCarousel
+import com.anistream.core.ui.components.DownloadSheet
+import com.anistream.core.ui.components.DownloadStubButton
+import com.anistream.core.ui.components.DownloadedBadge
 import com.anistream.core.ui.components.ErrorContent
 import com.anistream.core.ui.components.LoadingShimmer
 import com.anistream.core.ui.components.PrimaryButton
@@ -99,6 +105,7 @@ import kotlinx.coroutines.launch
 private const val TILES_PER_ROW = 5
 private const val RANGE_SIZE = 100
 private val BarHeight = 56.dp
+private val ActionBarExtra = 64.dp
 private val Tabular = AppType.bodyStrong.copy(fontFeatureSettings = "tnum")
 
 private enum class Phase { Loading, Error, Content }
@@ -122,6 +129,11 @@ fun AnimeDetailScreen(
         uiState.isLoading -> Phase.Loading
         uiState.anime == null -> Phase.Error
         else -> Phase.Content
+    }
+
+    val context = LocalContext.current
+    LaunchedEffect(uiState.message) {
+        uiState.message?.let { Toast.makeText(context, it, Toast.LENGTH_SHORT).show(); viewModel.messageShown() }
     }
 
     val listState = rememberLazyListState()
@@ -148,6 +160,9 @@ fun AnimeDetailScreen(
                             episodes = uiState.episodes,
                             episodesError = uiState.episodesError,
                             history = uiState.history,
+                            downloaded = uiState.downloaded,
+                            activeEpisode = uiState.activeEpisode,
+                            activeProgress = uiState.activeProgress,
                             onRetry = viewModel::loadAnimeDetail,
                             onAnimeClick = onAnimeClick,
                             onGenreClick = onGenreClick,
@@ -183,7 +198,50 @@ fun AnimeDetailScreen(
             val history = uiState.history
             val firstEpisode = uiState.episodes.firstOrNull()?.number ?: 1
             val resume = history?.takeIf { it.lastEpisodeWatched > 0 }?.resumeEpisode()
+            val nextUp = resume ?: firstEpisode
+            val epNumbers = uiState.episodes.map { it.number }
+            val anime = uiState.anime
+            if (uiState.sheetOpen && anime != null) {
+                val rangeLabel = epNumbers.chunked(RANGE_SIZE).takeIf { it.size > 1 }
+                    ?.firstOrNull { nextUp in it }?.let { "${it.first()}–${it.last()}" }
+                val quality = uiState.options?.firstOrNull { it.id == uiState.selectedId }?.quality
+                DownloadSheet(
+                    title = "Download",
+                    subtitle = if (rangeLabel != null) "${anime.title} · $rangeLabel" else anime.title,
+                    options = uiState.options,
+                    selectedId = uiState.selectedId,
+                    onSelect = viewModel::select,
+                    episodes = epNumbers,
+                    downloaded = uiState.downloaded,
+                    picked = uiState.picked,
+                    onPickedChange = viewModel::setPicked,
+                    nextEpisode = nextUp,
+                    summary = quality?.let { "${uiState.picked.size} episode${if (uiState.picked.size == 1) "" else "s"} · $it" },
+                    confirmLabel = "Download ${uiState.picked.size} episode${if (uiState.picked.size == 1) "" else "s"}",
+                    onConfirm = viewModel::confirmDownload,
+                    onDismiss = viewModel::closeSheet
+                )
+            }
+            val active = uiState.activeEpisode
             ActionBar(
+                downloadLabel = when {
+                    active != null -> "Downloading Ep $active"
+                    uiState.downloaded.isNotEmpty() -> "Download more"
+                    else -> "Download"
+                },
+                downloadCaption = when {
+                    active != null -> null
+                    uiState.downloaded.isNotEmpty() -> "${uiState.downloaded.size} of ${epNumbers.size} on this phone"
+                    else -> "Choose quality"
+                },
+                downloadTrailing = when {
+                    active != null -> "${(uiState.activeProgress * 100).toInt()}%" + if (uiState.queued > 0) " · ${uiState.queued} queued" else ""
+                    uiState.downloaded.isNotEmpty() -> null
+                    else -> "Change"
+                },
+                downloadProgress = if (active != null) uiState.activeProgress else null,
+                downloadEnabled = epNumbers.isNotEmpty(),
+                onDownload = { viewModel.openSheet(nextUp) },
                 label = when {
                     resume != null -> "Continue Ep $resume"
                     uiState.episodes.isEmpty() -> "Not released yet"
@@ -207,6 +265,9 @@ private fun DetailContent(
     episodes: List<Episode>,
     episodesError: String?,
     history: WatchHistory?,
+    downloaded: Set<Int>,
+    activeEpisode: Int?,
+    activeProgress: Float,
     onRetry: () -> Unit,
     onAnimeClick: (String) -> Unit,
     onGenreClick: (String) -> Unit,
@@ -228,7 +289,7 @@ private fun DetailContent(
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = bottomInset + BarHeight + Space.xxxl)
+        contentPadding = PaddingValues(bottom = bottomInset + BarHeight + ActionBarExtra + Space.xxxl)
     ) {
         item(key = "hero") { Hero(anime) }
 
@@ -348,11 +409,32 @@ private fun DetailContent(
                             watched = watched(ep.number),
                             progress = progress(ep.number),
                             next = ep.number == nextUp,
+                            downloaded = ep.number in downloaded,
+                            downloadProgress = if (ep.number == activeEpisode) activeProgress else null,
                             onClick = { onPlay(ep.number) },
                             modifier = Modifier.weight(1f)
                         )
                     }
                     repeat(TILES_PER_ROW - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+
+        if (episodes.isNotEmpty()) {
+            item(key = "legend") {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Space.lg),
+                    modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.xs)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.xs)) {
+                        Box(Modifier.size(8.dp).background(Accent.live, CircleShape))
+                        Text("On this phone", style = AppType.label)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.xs)) {
+                        Box(Modifier.size(8.dp).border(1.5.dp, Accent.main, CircleShape))
+                        Text("Up next", style = AppType.label)
+                    }
                 }
             }
         }
@@ -510,7 +592,7 @@ private fun Chip(text: String, selected: Boolean = false, numeric: Boolean = fal
 }
 
 @Composable
-private fun EpisodeTile(number: Int, watched: Boolean, progress: Float, next: Boolean, onClick: () -> Unit, modifier: Modifier) {
+private fun EpisodeTile(number: Int, watched: Boolean, progress: Float, next: Boolean, downloaded: Boolean, downloadProgress: Float?, onClick: () -> Unit, modifier: Modifier) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
@@ -528,7 +610,11 @@ private fun EpisodeTile(number: Int, watched: Boolean, progress: Float, next: Bo
                 else -> Ink.body
             })
         )
-        if (watched) {
+        if (downloaded) DownloadedBadge(Modifier.align(Alignment.TopEnd).padding(Space.xs))
+        if (downloadProgress != null) {
+            Box(Modifier.align(Alignment.BottomStart).fillMaxWidth(downloadProgress.coerceIn(0.02f, 1f)).height(2.dp).background(Accent.live))
+        }
+        if (watched && !downloaded) {
             Icon(
                 Icons.Rounded.Check,
                 contentDescription = "Watched",
@@ -544,6 +630,12 @@ private fun EpisodeTile(number: Int, watched: Boolean, progress: Float, next: Bo
 
 @Composable
 private fun BoxScope.ActionBar(
+    downloadLabel: String,
+    downloadCaption: String?,
+    downloadTrailing: String?,
+    downloadProgress: Float?,
+    downloadEnabled: Boolean,
+    onDownload: () -> Unit,
     label: String,
     enabled: Boolean,
     isFavorite: Boolean,
@@ -552,9 +644,8 @@ private fun BoxScope.ActionBar(
 ) {
     val scope = rememberCoroutineScope()
     val heartScale = remember { Animatable(1f) }
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Space.md),
+    Column(
+        verticalArrangement = Arrangement.spacedBy(Space.sm),
         modifier = Modifier
             .align(Alignment.BottomCenter)
             .fillMaxWidth()
@@ -567,8 +658,17 @@ private fun BoxScope.ActionBar(
             onClick = onPlay,
             enabled = enabled,
             icon = Icons.Rounded.PlayArrow,
-            modifier = Modifier.weight(1f).height(52.dp)
+            modifier = Modifier.fillMaxWidth().height(52.dp)
         )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+        if (downloadEnabled) DownloadStubButton(
+            label = downloadLabel,
+            caption = downloadCaption,
+            onClick = onDownload,
+            progress = downloadProgress,
+            trailing = downloadTrailing,
+            modifier = Modifier.weight(1f)
+        ) else Spacer(Modifier.weight(1f))
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
@@ -589,6 +689,7 @@ private fun BoxScope.ActionBar(
                 tint = if (isFavorite) Ink.high else Ink.body,
                 modifier = Modifier.scale(heartScale.value)
             )
+        }
         }
     }
 }

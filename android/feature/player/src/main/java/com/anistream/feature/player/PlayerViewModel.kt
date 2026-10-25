@@ -312,7 +312,7 @@ class PlayerViewModel @Inject constructor(
         val s = _uiState.value
         val stream = s.streamSource ?: return
         viewModelScope.launch {
-            val r = downloads.startDownload(stream, animeSlug, s.animeTitle, s.episodeNumber, s.posterUrl)
+            val r = downloads.startDownload(stream, animeSlug, s.animeTitle, s.episodeNumber, s.posterUrl ?: history.getBySlug(animeSlug).getOrNull()?.posterUrl)
             val msg = if (r is Result.Error) "Download failed: ${r.message}" else "Download started (${stream.qualityLabel})"
             _uiState.update { it.copy(message = msg, downloadStarted = r !is Result.Error) }
         }

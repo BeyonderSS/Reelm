@@ -71,11 +71,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.anistream.core.ui.components.ArtworkImage
+import com.anistream.core.ui.components.DownloadSheet
+import com.anistream.core.ui.components.DownloadStubButton
+import com.anistream.core.ui.components.DownloadedBadge
 import com.anistream.core.ui.components.ErrorContent
+import com.anistream.core.ui.components.formatBytes
 import com.anistream.core.ui.components.LoadingShimmer
 import com.anistream.core.ui.components.PillChip
 import com.anistream.core.ui.components.PosterImage
@@ -88,6 +93,7 @@ import com.anistream.core.ui.theme.Ink
 import com.anistream.core.ui.theme.Radius
 import com.anistream.core.ui.theme.Space
 import com.anistream.core.ui.theme.Motion
+import com.anistream.domain.model.DownloadState
 import com.anistream.domain.model.Eps
 import com.anistream.domain.model.MediaDetail
 import com.anistream.domain.model.MediaType
@@ -95,6 +101,7 @@ import kotlinx.coroutines.launch
 
 private const val TILES_PER_ROW = 5
 private val BarHeight = 56.dp
+private val ActionBarHeight = 56.dp + 52.dp + Space.md
 
 @Composable
 fun MovieDetailScreen(
@@ -145,7 +152,7 @@ fun MovieDetailScreen(
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = bottomInset + BarHeight + Space.xxxl)
+                        contentPadding = PaddingValues(bottom = bottomInset + ActionBarHeight + Space.xxxl)
                     ) {
                         item(key = "hero") { Hero(detail) }
                         val desc = detail.description
@@ -196,6 +203,8 @@ fun MovieDetailScreen(
                             val season = uiState.selectedSeason
                             val count = detail.seasons.firstOrNull { it.number == season }?.episodeCount ?: 0
                             val resume = uiState.resume
+                            val have = uiState.downloadedEps(season)
+                            val active = uiState.activeEp(season)
                             val rows = (1..count).chunked(TILES_PER_ROW)
                             items(rows, key = { "s$season-${it.first()}" }) { row ->
                                 Row(
@@ -208,6 +217,8 @@ fun MovieDetailScreen(
                                             progress = uiState.eps["s${season}e$ep"]?.p ?: 0f,
                                             next = resume != null && resume.season == season && resume.episode == ep,
                                             enabled = true,
+                                            downloaded = ep in have,
+                                            downloading = active?.takeIf { it.first == ep }?.second,
                                             // not streamable in-app: each episode opens the web player instead
                                             onClick = { if (detail.playable) viewModel.play(season, ep) else viewModel.openWebPlayer(Resume(season, ep)) },
                                             modifier = Modifier.weight(1f)
@@ -216,6 +227,7 @@ fun MovieDetailScreen(
                                     repeat(TILES_PER_ROW - row.size) { Spacer(Modifier.weight(1f)) }
                                 }
                             }
+                            if (detail.playable) item(key = "legend") { EpisodeLegend() }
                         }
                     }
                 }
@@ -250,12 +262,34 @@ fun MovieDetailScreen(
                 else -> "Play" to Resume(0, 0)
             }
             val webOnly = !detail.playable
+            val season = uiState.selectedSeason
+            val sRows = uiState.dlRows
+            val total = detail.seasons.firstOrNull { it.number == season }?.episodeCount ?: 0
+            val have = uiState.downloadedEps(season)
+            val active = if (isSeries) uiState.activeEp(season) else uiState.dlRows.firstOrNull { it.state == DownloadState.PENDING || it.state == DownloadState.DOWNLOADING }?.let { 0 to it.progress }
+            val movieDone = sRows.firstOrNull { it.subtitle == null && it.state == DownloadState.COMPLETED }
+            val dlLabel = when {
+                active != null -> if (isSeries) "Downloading E${active.first}" else "Downloading"
+                isSeries && have.isNotEmpty() -> "Download more"
+                movieDone != null -> "Downloaded"
+                else -> "Download"
+            }
+            val dlCaption = when {
+                isSeries && have.isNotEmpty() -> "${have.size} of $total on this phone"
+                movieDone != null -> listOfNotNull(movieDone.quality.takeIf { it.isNotBlank() }, movieDone.fileSizeBytes.takeIf { it > 0 }?.let { formatBytes(it) }).joinToString(" · ")
+                else -> "Choose quality"
+            }
             ActionBar(
                 label = label,
                 enabled = target != null,
                 loading = uiState.resolving,
                 secondary = webOnly,
                 isFavorite = uiState.isFavorite,
+                dlLabel = dlLabel,
+                dlCaption = dlCaption,
+                dlProgress = active?.second,
+                dlTrailing = active?.let { "${(it.second * 100).toInt()}% · ${uiState.queuedCount()} queued" } ?: if (movieDone != null || have.isNotEmpty()) null else "Change",
+                onDownload = viewModel::openDownloadSheet,
                 onPlay = {
                     if (target == null) Unit
                     else if (webOnly) viewModel.openWebPlayer(target)
@@ -265,9 +299,31 @@ fun MovieDetailScreen(
             )
         }
 
+        if (detail != null && uiState.sheetOpen) {
+            val season = uiState.selectedSeason
+            val isSeries = detail.type == MediaType.SERIES
+            val count = detail.seasons.firstOrNull { it.number == season }?.episodeCount ?: 0
+            val opts = uiState.dlOptions
+            val sel = opts?.firstOrNull { it.id == uiState.dlSelected }
+            val n = if (isSeries) uiState.dlPicked.size else 1
+            val perEp = sel?.sizeLabel?.removeSuffix(" / ep")
+            DownloadSheet(
+                title = detail.title,
+                subtitle = if (isSeries) "${detail.title} · S$season" else detail.title,
+                options = opts,
+                selectedId = uiState.dlSelected, onSelect = viewModel::selectDownloadOption,
+                episodes = if (isSeries) (1..count).toList() else null,
+                downloaded = uiState.downloadedEps(season), picked = uiState.dlPicked, onPickedChange = viewModel::setPicked,
+                nextEpisode = viewModel.nextEpisode(),
+                summary = if (isSeries) "$n episode${if (n == 1) "" else "s"}" + (viewModel.selectedBytes()?.let { " · ~" + formatBytes(it * n) } ?: "") else perEp,
+                confirmLabel = if (isSeries) "Download $n episode${if (n == 1) "" else "s"}" else "Download",
+                onConfirm = viewModel::confirmDownload, onDismiss = viewModel::closeDownloadSheet
+            )
+        }
+
         SnackbarHost(
             snackbar,
-            Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = BarHeight + Space.xl)
+            Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = ActionBarHeight + Space.xl)
         )
     }
 }
@@ -360,7 +416,7 @@ private fun Heading(text: String) {
 }
 
 @Composable
-private fun EpisodeTile(number: Int, progress: Float, next: Boolean, enabled: Boolean, onClick: () -> Unit, modifier: Modifier) {
+private fun EpisodeTile(number: Int, progress: Float, next: Boolean, enabled: Boolean, downloaded: Boolean, downloading: Float?, onClick: () -> Unit, modifier: Modifier) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
@@ -374,8 +430,28 @@ private fun EpisodeTile(number: Int, progress: Float, next: Boolean, enabled: Bo
         if (progress >= Eps.DONE) {
             Icon(Icons.Rounded.Check, contentDescription = "Watched", tint = Ink.faint, modifier = Modifier.align(Alignment.TopEnd).padding(Space.xs).size(12.dp))
         }
+        if (downloaded) DownloadedBadge(Modifier.align(Alignment.TopEnd).padding(3.dp))
+        if (downloading != null) Box(Modifier.align(Alignment.BottomStart).fillMaxWidth(downloading.coerceIn(0.02f, 1f)).height(3.dp).background(Accent.live))
         if (progress > 0.02f && progress < Eps.DONE) {
             Box(Modifier.align(Alignment.BottomStart).fillMaxWidth(progress).height(3.dp).background(Accent.main))
+        }
+    }
+}
+
+@Composable
+private fun EpisodeLegend() {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Space.lg),
+        modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.sm)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(8.dp).background(Accent.live, Radius.round))
+            Text("On this phone", style = AppType.caption.copy(fontSize = 11.sp), modifier = Modifier.padding(start = Space.xs))
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(8.dp).border(1.5.dp, Accent.main, Radius.sm))
+            Text("Up next", style = AppType.caption.copy(fontSize = 11.sp), modifier = Modifier.padding(start = Space.xs))
         }
     }
 }
@@ -387,45 +463,21 @@ private fun BoxScope.ActionBar(
     loading: Boolean,
     secondary: Boolean,
     isFavorite: Boolean,
+    dlLabel: String,
+    dlCaption: String?,
+    dlProgress: Float?,
+    dlTrailing: String?,
+    onDownload: () -> Unit,
     onPlay: () -> Unit,
     onFavorite: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val heartScale = remember { Animatable(1f) }
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Space.md),
-        modifier = Modifier
-            .align(Alignment.BottomCenter)
-            .fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Color.Transparent, Bg.base, Bg.base)))
-            .navigationBarsPadding()
-            .padding(start = Space.lg, end = Space.lg, top = Space.xl, bottom = Space.md)
-    ) {
-        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-            if (secondary) {
-                SecondaryButton(text = label, onClick = onPlay, icon = Icons.Rounded.Language, modifier = Modifier.fillMaxWidth().height(52.dp))
-            } else {
-                PrimaryButton(
-                    text = if (loading) "Finding sources…" else label,
-                    onClick = onPlay,
-                    enabled = enabled && !loading,
-                    icon = if (enabled && !loading) Icons.Rounded.PlayArrow else null,
-                    modifier = Modifier.fillMaxWidth().height(52.dp)
-                )
-            }
-            if (loading) {
-                CircularProgressIndicator(
-                    color = Accent.on,
-                    strokeWidth = 2.dp,
-                    modifier = Modifier.align(Alignment.CenterStart).padding(start = Space.lg).size(20.dp)
-                )
-            }
-        }
+    val heart: @Composable () -> Unit = {
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
-                .size(52.dp)
+                .size(56.dp)
                 .clip(Radius.round)
                 .background(if (isFavorite) Bg.overlay else Bg.raised)
                 .clickable {
@@ -442,6 +494,45 @@ private fun BoxScope.ActionBar(
                 tint = if (isFavorite) Ink.high else Ink.body,
                 modifier = Modifier.scale(heartScale.value)
             )
+        }
+    }
+    Column(
+        verticalArrangement = Arrangement.spacedBy(Space.md),
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .background(Brush.verticalGradient(listOf(Color.Transparent, Bg.base, Bg.base)))
+            .navigationBarsPadding()
+            .padding(start = Space.lg, end = Space.lg, top = Space.xl, bottom = Space.md)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                if (secondary) {
+                    SecondaryButton(text = label, onClick = onPlay, icon = Icons.Rounded.Language, modifier = Modifier.fillMaxWidth().height(52.dp))
+                } else {
+                    PrimaryButton(
+                        text = if (loading) "Finding sources…" else label,
+                        onClick = onPlay,
+                        enabled = enabled && !loading,
+                        icon = if (enabled && !loading) Icons.Rounded.PlayArrow else null,
+                        modifier = Modifier.fillMaxWidth().height(52.dp)
+                    )
+                }
+                if (loading) {
+                    CircularProgressIndicator(
+                        color = Accent.on,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.align(Alignment.CenterStart).padding(start = Space.lg).size(20.dp)
+                    )
+                }
+            }
+            if (secondary) heart()
+        }
+        if (!secondary) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                DownloadStubButton(dlLabel, dlCaption, onDownload, Modifier.weight(1f), progress = dlProgress, trailing = dlTrailing)
+                heart()
+            }
         }
     }
 }

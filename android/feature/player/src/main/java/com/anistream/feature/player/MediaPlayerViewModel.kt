@@ -333,7 +333,7 @@ class MediaPlayerViewModel @Inject constructor(
         viewModelScope.launch {
             // keyed per episode so S1E1 and S1E2 don't overwrite each other
             val downloadKey = if (r.episode > 0) "$key:s${r.season}e${r.episode}" else key
-            val res = downloads.startMediaDownload(stream, downloadKey, r.title, r.subtitle, r.posterUrl)
+            val res = downloads.startMediaDownload(stream, downloadKey, r.title, r.subtitle, r.posterUrl ?: r.historyKey?.let { history.getBySlug(it).getOrNull()?.posterUrl })
             val msg = if (res is Result.Error) "Download failed: ${res.message}" else "Downloading ${stream.label()}"
             _uiState.update { it.copy(message = msg, downloadStarted = res !is Result.Error) }
         }

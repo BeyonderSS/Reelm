@@ -16,5 +16,8 @@ data class DownloadEntity(
     val createdAt: Long = System.currentTimeMillis(),
     /** movies & TV: "S1 · E2" (null for anime and movies) */
     val subtitle: String? = null,
-    val posterUrl: String? = null
+    val posterUrl: String? = null,
+    /** episode still and name (TMDB / Kitsu), for the Downloads row */
+    val stillUrl: String? = null,
+    val episodeTitle: String? = null
 )

@@ -4,18 +4,26 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.anistream.core.common.Result
+import com.anistream.core.ui.components.DownloadOption
+import com.anistream.core.ui.components.formatBytes
+import com.anistream.domain.model.DownloadItem
+import com.anistream.domain.model.DownloadState
 import com.anistream.domain.model.FavoriteAnime
 import com.anistream.domain.model.MediaDetail
+import com.anistream.domain.model.MediaStream
 import com.anistream.domain.model.MediaType
 import com.anistream.domain.model.PlaybackRequest
 import com.anistream.domain.model.WatchHistory
 import com.anistream.domain.model.mediaSlug
+import com.anistream.domain.repository.DownloadRepository
 import com.anistream.domain.repository.FavoriteRepository
 import com.anistream.domain.repository.MoviesRepository
 import com.anistream.domain.repository.NowPlaying
 import com.anistream.domain.repository.WatchHistoryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,8 +46,34 @@ data class MovieDetailUiState(
     /** set when no in-app stream exists: the screen offers "Watch in web player" for this target */
     val webFallback: Resume? = null,
     /** per-episode progress of this title ("s1e2" -> p/at) */
-    val eps: Map<String, com.anistream.domain.model.EpProgress> = emptyMap()
+    val eps: Map<String, com.anistream.domain.model.EpProgress> = emptyMap(),
+    /** this title's rows in the downloads table */
+    val dlRows: List<DownloadItem> = emptyList(),
+    val sheetOpen: Boolean = false,
+    /** null = still finding sources */
+    val dlOptions: List<DownloadOption>? = null,
+    val dlSelected: String? = null,
+    val dlPicked: Set<Int> = emptySet()
 )
+
+private val EpSubtitle = Regex("S(\\d+) · E(\\d+)")
+private fun DownloadItem.isActive() = state == DownloadState.PENDING || state == DownloadState.DOWNLOADING
+
+/** episodes of [season] by their download row */
+private fun MovieDetailUiState.seasonRows(season: Int) = dlRows.mapNotNull { r ->
+    EpSubtitle.matchEntire(r.subtitle.orEmpty())?.takeIf { it.groupValues[1].toInt() == season }?.let { it.groupValues[2].toInt() to r }
+}
+
+fun MovieDetailUiState.downloadedEps(season: Int): Set<Int> =
+    seasonRows(season).filter { it.second.state == DownloadState.COMPLETED }.map { it.first }.toSet()
+
+/** (episode, progress) of the one being fetched in [season] */
+fun MovieDetailUiState.activeEp(season: Int): Pair<Int, Float>? {
+    val a = seasonRows(season).filter { it.second.isActive() }
+    return (a.firstOrNull { it.second.state == DownloadState.DOWNLOADING } ?: a.firstOrNull())?.let { it.first to it.second.progress }
+}
+
+fun MovieDetailUiState.queuedCount() = (dlRows.count { it.isActive() } - 1).coerceAtLeast(0)
 
 sealed interface DetailEvent {
     data object OpenPlayer : DetailEvent
@@ -58,7 +92,9 @@ class MovieDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val movies: MoviesRepository,
     private val favorites: FavoriteRepository,
-    private val history: WatchHistoryRepository
+    private val history: WatchHistoryRepository,
+    private val downloads: DownloadRepository,
+    private val guide: com.anistream.core.media.EpisodeGuide
 ) : ViewModel() {
 
     private var id: String = savedStateHandle.get<String>("id").orEmpty()
@@ -87,6 +123,7 @@ class MovieDetailViewModel @Inject constructor(
                     }
                     _uiState.update { it.copy(isFavorite = favorites.isSaved(d.asFavorite()).getOrNull() ?: false) }
                     refreshHistory()
+                    pollDownloads()
                 }
                 is Result.Error -> _uiState.update { it.copy(isLoading = false, error = r.message ?: "Failed to load") }
                 Result.Loading -> Unit
@@ -203,4 +240,104 @@ class MovieDetailViewModel @Inject constructor(
             if (r is Result.Success) _uiState.update { it.copy(isFavorite = r.data) }
         }
     }
+
+    private val streamCache = mutableMapOf<String, List<MediaStream>>()
+    private var pollJob: Job? = null
+
+    private fun isSeries() = _uiState.value.detail?.type == MediaType.SERIES
+
+    private suspend fun directStreams(season: Int, ep: Int): List<MediaStream> {
+        val d = _uiState.value.detail ?: return emptyList()
+        return streamCache.getOrPut("${d.id}:$season:$ep") {
+            movies.streams(d.id, season, ep).getOrNull().orEmpty()
+                .filter { it.isDirectFile && !Dolby.containsMatchIn("${it.codec} ${it.qualityLabel}") }
+                .sortedByDescending { it.height }
+        }.also { if (it.isEmpty()) streamCache.remove("${d.id}:$season:$ep") }
+    }
+
+    /** size of one file at the selected option, for the sheet's total */
+    fun selectedBytes(): Long? = streamCache.values.flatten().firstOrNull { optionId(it) == _uiState.value.dlSelected }?.sizeBytes?.takeIf { it > 0 }
+
+    private fun optionId(s: MediaStream) = "${s.sourceName}|${s.height}|${s.qualityLabel}"
+
+    fun openDownloadSheet() {
+        val d = _uiState.value.detail ?: return
+        val st = _uiState.value
+        val season = st.selectedSeason
+        val series = isSeries()
+        val count = d.seasons.firstOrNull { it.number == season }?.episodeCount ?: 0
+        val have = st.downloadedEps(season)
+        val next = nextEpisode()
+        val start = (next..count.coerceAtLeast(next)).firstOrNull { it !in have } ?: next
+        _uiState.update { it.copy(sheetOpen = true, dlOptions = null, dlSelected = null, dlPicked = if (series) setOf(start) else emptySet()) }
+        viewModelScope.launch { loadOptions(season, if (series) start else 0) }
+    }
+
+    private suspend fun loadOptions(season: Int, ep: Int) {
+        val list = directStreams(if (ep == 0) 0 else season, ep)
+        val opts = list.mapIndexed { i, s ->
+            DownloadOption(
+                id = optionId(s),
+                quality = if (s.height > 0) "${s.height}p" else s.qualityLabel,
+                source = s.sourceName,
+                sizeLabel = s.sizeBytes?.takeIf { it > 0 }?.let { formatBytes(it) + if (ep > 0) " / ep" else "" },
+                best = i == 0
+            )
+        }.distinctBy { it.id }
+        _uiState.update { it.copy(dlOptions = opts, dlSelected = opts.firstOrNull()?.id) }
+    }
+
+    fun closeDownloadSheet() = _uiState.update { it.copy(sheetOpen = false) }
+    fun selectDownloadOption(id: String) = _uiState.update { it.copy(dlSelected = id) }
+    fun setPicked(p: Set<Int>) = _uiState.update { it.copy(dlPicked = p) }
+
+    /** next-up episode of the selected season: the resume point, else 1 */
+    fun nextEpisode(): Int = _uiState.value.let { st -> st.resume?.takeIf { it.season == st.selectedSeason }?.episode ?: 1 }
+
+    fun confirmDownload() {
+        val st = _uiState.value
+        val d = st.detail ?: return
+        val sel = st.dlOptions?.firstOrNull { it.id == st.dlSelected } ?: return
+        val series = d.type == MediaType.SERIES
+        val season = st.selectedSeason
+        val key = mediaSlug(series, d.title)
+        val poster = d.posterUrl ?: d.backdropUrl
+        val eps = if (series) st.dlPicked.sorted() else listOf(0)
+        _uiState.update { it.copy(sheetOpen = false) }
+        viewModelScope.launch {
+            val names = if (series) runCatching { guide.season(d.id, d.title, d.year, season) }.getOrDefault(emptyList()).associateBy { it.n } else emptyMap()
+            var ok = 0
+            for (ep in eps) {
+                val list = directStreams(if (series) season else 0, ep)
+                val selStream = list.firstOrNull { optionId(it) == sel.id }
+                val stream = (selStream?.let { s -> list.firstOrNull { it.sourceName == s.sourceName && it.height == s.height } }
+                    ?: list.firstOrNull { it.height <= (selStream?.height ?: Int.MAX_VALUE) } ?: list.firstOrNull()) ?: continue
+                val r = if (series) downloads.startMediaDownload(stream, "$key:s${season}e$ep", d.title, "S$season · E$ep", poster, names[ep]?.still, names[ep]?.title)
+                else downloads.startMediaDownload(stream, key, d.title, null, poster)
+                if (r !is Result.Error) ok++
+            }
+            _events.send(DetailEvent.Message(when {
+                ok == 0 -> "Download failed"
+                series -> "Downloading $ok episode${if (ok == 1) "" else "s"}"
+                else -> "Download started"
+            }))
+            pollDownloads()
+        }
+    }
+
+    /** refresh now, then every 1.5 s while any of this title's rows is pending/downloading */
+    fun pollDownloads() {
+        if (pollJob?.isActive == true) return
+        pollJob = viewModelScope.launch {
+            do {
+                val d = _uiState.value.detail ?: return@launch
+                val rows = downloads.getAll().getOrNull().orEmpty().filter { it.animeTitle == d.title }
+                _uiState.update { it.copy(dlRows = rows) }
+                val active = rows.any { it.isActive() }
+                if (active) delay(1500)
+            } while (active)
+        }
+    }
 }
+
+private val Dolby = Regex("dolby|\\bDV\\b|dovi", RegexOption.IGNORE_CASE)
