@@ -6,6 +6,7 @@ import com.anistream.core.database.dao.AddonDao
 import com.anistream.core.media.dramachi.DramachiSource
 import com.anistream.core.media.fourkhdhub.FourKHdHubSource
 import com.anistream.core.media.moviebox.MovieBoxSource
+import com.anistream.core.media.vega.VegaSources
 import com.anistream.domain.KidsBlockedException
 import com.anistream.domain.KidsPolicy
 import com.anistream.domain.MaturePolicy
@@ -43,11 +44,12 @@ class MoviesRepositoryImpl @Inject constructor(
     private val movieBox: MovieBoxSource,
     private val addonDao: AddonDao,
     fourKHdHub: FourKHdHubSource,
-    dramachi: DramachiSource
+    dramachi: DramachiSource,
+    vega: VegaSources
 ) : MoviesRepository {
 
     /** Title-searched sites, tried after MovieBox and before addons, in this order. */
-    private val titleSources = listOf(fourKHdHub, dramachi)
+    private val titleSources = listOf(fourKHdHub, dramachi, vega)
 
     // ponytail: in-memory caches, lost on process death; that only costs a re-fetch.
     private val typeOf = ConcurrentHashMap<String, MediaType>()        // tt → type, from anything we emitted
@@ -270,7 +272,7 @@ class MoviesRepositoryImpl @Inject constructor(
         }
         if (sources.isEmpty()) error("No streaming source carries this title")
 
-        // Each source on its own timeout; order kept: MovieBox, 4KHDHub, Dramachi, then addons (each already best-first).
+        // Each source on its own timeout; order kept: MovieBox, 4KHDHub, Dramachi, Vega, then addons (each already best-first).
         val results = coroutineScope {
             sources.map { fetch -> async { runCatching { withTimeout(SOURCE_TIMEOUT_MS) { fetch() } } } }.awaitAll()
         }

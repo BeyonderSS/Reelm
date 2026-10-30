@@ -34,11 +34,22 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    testOptions.unitTests.all { test ->
+        // Network proof of the Vega engine: ./gradlew :core:media:testDebugUnitTest -Pvega.live
+        if (project.hasProperty("vega.live")) test.systemProperty("vega.live", "true")
+    }
+}
+
+// Unit tests run QuickJS on the host JVM: swap the Android natives for the desktop ones.
+configurations.matching { it.name.endsWith("UnitTestRuntimeClasspath") }.configureEach {
+    exclude(group = "io.github.dokar3", module = "quickjs-kt-android")
 }
 
 dependencies {
     coreLibraryDesugaring(libs.desugar.jdk.libs)
     implementation(project(":core:common"))
+    implementation(project(":core:account"))
     implementation(project(":core:database"))
     implementation(project(":domain"))
 
@@ -46,9 +57,11 @@ dependencies {
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.quickjs)
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 
     testImplementation(libs.junit)
+    testRuntimeOnly(libs.quickjs.jvm)
 }
