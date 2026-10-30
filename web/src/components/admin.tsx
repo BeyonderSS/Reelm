@@ -861,21 +861,25 @@ function Providers() {
               </Panel>
             )}
             {d.manifest && (
-              <Panel title="Providers" hint={`${enabled.length} on. Apps ask the first 10 per episode (2 on low-end TVs). Greyed out: switched off by the Vega maintainers`} className="lg:col-span-2"
+              <Panel title="Providers" hint={`${enabled.length} on. Apps ask #1 to #10 per episode (#1 and #2 on low-end TVs), so move your best ones up. Greyed out: switched off by the Vega maintainers`} className="lg:col-span-2"
                 action={<div className="flex flex-wrap items-center gap-2 text-sm">
                   <button onClick={() => setHideOff(!hideOff)} className="beam h-9 rounded-full px-3 hover:bg-white/8">{hideOff ? "Show disabled" : "Hide disabled"}</button>
-                  <button onClick={() => setSel(d.manifest.filter((m: any) => !m.disabled).map((m: any) => m.value))} className="beam h-9 rounded-full px-3 hover:bg-white/8">Select all</button>
+                  <button onClick={() => setSel([...enabled, ...d.manifest.filter((m: any) => !m.disabled && !enabled.includes(m.value)).map((m: any) => m.value)])} className="beam h-9 rounded-full px-3 hover:bg-white/8">Select all</button>
                   <button onClick={() => setSel([])} className="beam h-9 rounded-full px-3 hover:bg-white/8">Clear</button>
                   {sel && <button onClick={() => setSel(null)} className="beam h-9 rounded-full px-3 hover:bg-white/8">Reset</button>}
                   {sel && <button onClick={() => run(reload, { enabled }, "Enabled list saved")} disabled={busy} className="beam h-9 rounded-full bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60">{busy ? "Saving" : "Save enabled"}</button>}
                 </div>}>
-                <ul className="divide-y divide-white/6">{d.manifest.filter((m: any) => !(hideOff && m.disabled)).map((m: any) => (
+                {/* enabled first, in the order apps ask them (only the first 10 are asked), then the rest in manifest order */}
+                <ul className="divide-y divide-white/6">{[...enabled.map((v) => d.manifest.find((m: any) => m.value === v)).filter(Boolean), ...d.manifest.filter((m: any) => !enabled.includes(m.value))]
+                  .filter((m: any) => !(hideOff && m.disabled)).map((m: any) => { const at = enabled.indexOf(m.value); return (
                   <li key={m.value} className={cn("flex items-center gap-3 py-2.5 text-sm", m.disabled && "opacity-40")}>
-                    <input type="checkbox" aria-label={`Enable ${m.name}`} checked={enabled.includes(m.value)} disabled={m.disabled} onChange={() => toggle(m.value)} className="size-4 accent-[#F2B45A]" />
+                    <input type="checkbox" aria-label={`Enable ${m.name}`} checked={at >= 0} disabled={m.disabled} onChange={() => toggle(m.value)} className="size-4 accent-[#F2B45A]" />
+                    <span className={cn("w-7 text-right text-xs tabular-nums", at >= 0 && at < 10 ? "font-semibold text-primary" : "text-foreground/40")} title={at >= 0 && at < 10 ? "Asked first" : at >= 0 ? "Enabled, but only the first 10 are asked" : undefined}>{at >= 0 ? `#${at + 1}` : ""}</span>
                     <span className="min-w-0 flex-1 truncate font-medium">{m.name}<span className="ml-2 font-mono text-xs font-normal text-foreground/48">{m.value}</span></span>
+                    {at > 0 && <button onClick={() => setSel([m.value, ...enabled.filter((x) => x !== m.value)])} className="beam h-7 rounded-full px-2.5 text-xs text-foreground/72 hover:bg-white/8">Move to top</button>}
                     <span className="rounded-full bg-white/6 px-2 py-0.5 text-xs text-foreground/64">{m.type}</span>
                     <span className="hidden w-12 text-right text-xs tabular-nums text-foreground/48 sm:block">v{m.version}</span>
-                  </li>))}</ul>
+                  </li>); })}</ul>
               </Panel>
             )}
           </div>

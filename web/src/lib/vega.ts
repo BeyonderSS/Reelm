@@ -144,6 +144,7 @@ export async function streams(title: string, year: number, type: "movie" | "seri
     return out.filter((x) => !!x);
   };
   // ponytail: first 10 enabled run in parallel; a queue with a deadline if admins enable more and want them all
-  const r = await Promise.all(reg.enabled.slice(0, 10).map((p) => tmo(one(p), 15000).catch(() => [] as any[])));
+  const t0 = Date.now(), r = await Promise.all(reg.enabled.slice(0, 10).map((p) => tmo(one(p), 15000)
+    .then((x) => (console.debug(`[vega] ${p}: ${x.length} in ${Date.now() - t0} ms`), x), (e) => (console.debug(`[vega] ${p}: ${e?.message} after ${Date.now() - t0} ms`), [] as any[]))));
   return r.flat().sort((a, b) => b.height - a.height);
 }
