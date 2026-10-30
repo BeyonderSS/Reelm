@@ -114,8 +114,9 @@ export async function streams(title: string, year: number, type: "movie" | "seri
     const found = ((await posts.getSearchPosts({ searchQuery: q, page: 1, ...base })) as { title: string; link: string }[])
       .map((x) => ({ x, s: score(q, x.title.replace(/\(.*?\)|\[.*?\]|\b(19|20)\d{2}\b.*$/g, " ")) + (year && x.title.includes(String(year)) ? 0.3 : 0) }))
       .filter((e) => e.s >= 0.6).sort((a, b) => b.s - a.s)[0]?.x;
-    if (!found) return [];
+    if (!found) { console.debug(`[vega] ${p}: no post matched "${q}"`); return []; }
     const m = await meta.getMeta({ link: found.link, provider: p, providerContext: ctx });
+    console.debug(`[vega] ${p}: "${found.title.slice(0, 60)}" has ${m?.linkList?.length ?? 0} links`);
     const ll: Link[] = type === "series" ? pickSeason(m.linkList ?? [], season) : m.linkList ?? [];
     const out = await Promise.all(pickQualities(ll).map(async (l) => {
       let link = "", t = "movie";
@@ -127,6 +128,7 @@ export async function streams(title: string, year: number, type: "movie" | "seri
       } else for (const d of l.directLinks ?? []) { link = d.link; t = d.type ?? "movie"; if (link) break; }
       if (!link) return null;
       const list = ((await stream.getStream({ link, type: t, signal: sig, providerContext: ctx, isDownload: false })) as any[]) ?? [];
+      console.debug(`[vega] ${p} ${l.title.slice(0, 30)}: ${list.length} files`, list.map((s) => `${s.server} ${String(s.link).slice(8, 50)}`));
       for (const s of list) { // m3u8: hls.js needs CORS from the host, which these never send
         if (!/^https:/.test(s.link ?? "") || s.type === "m3u8" || /\.m3u8(\?|$)/.test(s.link)) continue;
         const hd = s.headers ?? {};
@@ -134,7 +136,7 @@ export async function streams(title: string, year: number, type: "movie" | "seri
         if (Object.keys(hd).length) try { await setHeaders(s.link, hd); } catch { continue; }
         // ask the way a <video> does (open range): some hosts only serve bounded ranges and answer players with a 403 page
         const pr = await f(s.link, { probe: true, vega: true, headers: { ...hd, Range: "bytes=0-" } }).catch(() => null);
-        if (!pr || (pr.status !== 200 && pr.status !== 206) || /text\/html|json|xml/.test(pr.headers["content-type"] ?? "")) continue;
+        if (!pr || (pr.status !== 200 && pr.status !== 206) || /text\/html|json|xml/.test(pr.headers["content-type"] ?? "")) { console.debug(`[vega] ${p}: dropped ${String(s.link).slice(8, 50)} (${pr ? pr.status + " " + pr.headers["content-type"] : "probe failed"})`); continue; }
         const ht = h(l) || +(`${s.quality ?? ""}`.match(/\d{3,4}/)?.[0] ?? 0), ac = /ddp|dd\+|dd ?[257]\.1|e-?ac-?3|\bac-?3|dts|atmos|truehd/i.test(l.title) && !/aac|opus/i.test(l.title);
         return { url: s.link as string, height: ht, label: `${NAMES[p] ?? p} · ${s.server ?? "Direct"}${ht ? " " + ht + "p" : ""}${ac ? " · Dolby audio" : ""}`, dolby: ac,
           codec: /av1/i.test(l.title) ? "AV1" : /hevc|x265|h\.?265/i.test(l.title) ? "HEVC" : /avc|x264|h\.?264/i.test(l.title) ? "H.264" : undefined, subtitles: [] as any[] };
