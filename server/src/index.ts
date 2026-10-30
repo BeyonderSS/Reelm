@@ -738,7 +738,7 @@ async function adminSetProviders(c: Ctx) {
   const me = await admin(c), b = await body(c.req), cur = await getPin(c.env.DB);
   const commit = b.commit === undefined ? cur.commit : typeof b.commit === "string" && /^[0-9a-f]{40}$/.test(b.commit) ? b.commit : fail(400, "commit must be a 40-hex sha");
   const enabled = b.enabled === undefined ? cur.enabled
-    : Array.isArray(b.enabled) && b.enabled.length <= 20 && b.enabled.every((v: unknown) => typeof v === "string" && /^[a-zA-Z0-9_-]{1,40}$/.test(v)) ? b.enabled : fail(400, "enabled must be up to 20 provider slugs");
+    : Array.isArray(b.enabled) && b.enabled.length <= 80 && b.enabled.every((v: unknown) => typeof v === "string" && /^[a-zA-Z0-9_-]{1,40}$/.test(v)) ? b.enabled : fail(400, "enabled must be up to 80 provider slugs");
   const t = now();
   await c.env.DB.prepare("INSERT INTO source_pins (id, commit_sha, enabled, approved_by, approved_at) VALUES ('vega',?,?,?,?) ON CONFLICT(id) DO UPDATE SET commit_sha = excluded.commit_sha, enabled = excluded.enabled, approved_by = excluded.approved_by, approved_at = excluded.approved_at")
     .bind(commit, JSON.stringify(enabled), me.username, t).run();

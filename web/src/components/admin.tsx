@@ -814,7 +814,7 @@ function Ops() {
 const REPO = "https://github.com/Zenda-Cross/vega-providers";
 function Providers() {
   const { s } = useSession();
-  const [busy, setBusy] = useState(false), [sel, setSel] = useState<string[] | null>(null), [ask, setAsk] = useState(false);
+  const [busy, setBusy] = useState(false), [sel, setSel] = useState<string[] | null>(null), [ask, setAsk] = useState(false), [hideOff, setHideOff] = useState(true);
   const run = async (reload: () => void, json: { commit?: string; enabled?: string[] }, ok: string) => {
     setBusy(true);
     try { await adminPin(s.token, json); toast.success(ok); setSel(null); setAsk(false); reload(); } catch (e: any) { toast.error(e.message ?? "Couldn't save"); } finally { setBusy(false); }
@@ -861,9 +861,15 @@ function Providers() {
               </Panel>
             )}
             {d.manifest && (
-              <Panel title="Providers" hint="at the pinned commit" className="lg:col-span-2"
-                action={sel && <button onClick={() => run(reload, { enabled }, "Enabled list saved")} disabled={busy} className="beam h-9 rounded-full bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:opacity-60">{busy ? "Saving" : "Save enabled"}</button>}>
-                <ul className="divide-y divide-white/6">{d.manifest.map((m: any) => (
+              <Panel title="Providers" hint={`${enabled.length} on. Apps ask the first 10 per episode (2 on low-end TVs). Greyed out: switched off by the Vega maintainers`} className="lg:col-span-2"
+                action={<div className="flex flex-wrap items-center gap-2 text-sm">
+                  <button onClick={() => setHideOff(!hideOff)} className="beam h-9 rounded-full px-3 hover:bg-white/8">{hideOff ? "Show disabled" : "Hide disabled"}</button>
+                  <button onClick={() => setSel(d.manifest.filter((m: any) => !m.disabled).map((m: any) => m.value))} className="beam h-9 rounded-full px-3 hover:bg-white/8">Select all</button>
+                  <button onClick={() => setSel([])} className="beam h-9 rounded-full px-3 hover:bg-white/8">Clear</button>
+                  {sel && <button onClick={() => setSel(null)} className="beam h-9 rounded-full px-3 hover:bg-white/8">Reset</button>}
+                  {sel && <button onClick={() => run(reload, { enabled }, "Enabled list saved")} disabled={busy} className="beam h-9 rounded-full bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60">{busy ? "Saving" : "Save enabled"}</button>}
+                </div>}>
+                <ul className="divide-y divide-white/6">{d.manifest.filter((m: any) => !(hideOff && m.disabled)).map((m: any) => (
                   <li key={m.value} className={cn("flex items-center gap-3 py-2.5 text-sm", m.disabled && "opacity-40")}>
                     <input type="checkbox" aria-label={`Enable ${m.name}`} checked={enabled.includes(m.value)} disabled={m.disabled} onChange={() => toggle(m.value)} className="size-4 accent-[#F2B45A]" />
                     <span className="min-w-0 flex-1 truncate font-medium">{m.name}<span className="ml-2 font-mono text-xs font-normal text-foreground/48">{m.value}</span></span>

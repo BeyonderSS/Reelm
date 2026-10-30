@@ -140,6 +140,7 @@ export async function streams(title: string, year: number, type: "movie" | "seri
     }).map((x) => x.catch(() => null)));
     return out.filter((x) => !!x);
   };
-  const r = await Promise.all(reg.enabled.map((p) => tmo(one(p), 15000).catch(() => [] as any[])));
+  // ponytail: first 10 enabled run in parallel; a queue with a deadline if admins enable more and want them all
+  const r = await Promise.all(reg.enabled.slice(0, 10).map((p) => tmo(one(p), 15000).catch(() => [] as any[])));
   return r.flat().sort((a, b) => b.height - a.height);
 }
