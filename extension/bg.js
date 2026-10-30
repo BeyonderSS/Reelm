@@ -17,7 +17,7 @@ async function run({ url, headers = {}, probe, method = "GET", body, vega }) {
   if (!allowed(url, vega)) throw new Error("host not allowed");
   const ac = new AbortController(), t = setTimeout(() => ac.abort(), 15000);
   try {
-    const r = await fetch(url, { method, body, headers: probe ? { ...headers, Range: "bytes=0-1023" } : headers, signal: ac.signal });
+    const r = await fetch(url, { method, body, headers: probe ? { Range: "bytes=0-1023", ...headers } : headers, signal: ac.signal }); // a caller may probe with its own range (bytes=0-, what players send)
     const text = probe ? "" : await r.text();
     if (probe) ac.abort();
     const h = {};

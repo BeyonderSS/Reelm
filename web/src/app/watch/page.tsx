@@ -171,6 +171,9 @@ function Player() {
     return () => clearTimeout(t);
   }, [src]); // eslint-disable-line react-hooks/exhaustive-deps
   const onPlaying = () => {
+    // a codec the browser can't decode (Dramachi's HEVC) still plays the sound over a black picture: treat that as a failure
+    const v = video.current;
+    if (v && p?.kind !== "live") setTimeout(() => { if (video.current === v && !v.paused && !v.videoWidth) fail("This source plays sound but no picture in this browser."); }, 3000);
     if (!startedAt.current) return;
     track("play", info());
     track("source_used", { ...info(), ttff: Date.now() - startedAt.current });
@@ -351,8 +354,8 @@ function Player() {
       onKeyDown={(e) => { if (e.key === "Escape" && panel) { e.stopPropagation(); setPanel(null); } }}>
       <VideoPlayer>
         <VideoSkin className="reelm-skin size-full" style={{ "--media-accent-color": "#F2B45A", "--media-accent-text-color": "#15171F", "--media-border-radius": "0", "--media-border-color": "transparent", "--media-object-fit": FIT[pref.fit], "--media-font-family": "var(--font-figtree), sans-serif" } as React.CSSProperties}>
-          {src && <Media key={si + pkey + nonce} src={src.src} crossOrigin={src.hls ? "anonymous" : undefined} {...(common as object)} />}
-          {src && !src.dolby && p?.kind !== "live" && <SeekPreview key={si + pkey + nonce} src={src.src} hls={src.hls} duration={() => video.current?.duration ?? 0} />}
+          {src && <Media key={`v${si}${pkey}${nonce}`} src={src.src} crossOrigin={src.hls ? "anonymous" : undefined} {...(common as object)} />}
+          {src && !src.dolby && p?.kind !== "live" && <SeekPreview key={`p${si}${pkey}${nonce}`} src={src.src} hls={src.hls} duration={() => video.current?.duration ?? 0} />}
           {!src && !err && <div className="pointer-events-none absolute inset-0 grid place-items-center"><div className="flex flex-col items-center gap-4"><ReelMark className="size-14 animate-spin [animation-duration:1.6s]" /><p className="text-sm text-foreground/72">{p ? "Finding a stream" : "Joining the room"}</p></div></div>}
 
           {/* pause marquee */}

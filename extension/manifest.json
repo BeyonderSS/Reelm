@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Reelm Helper",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Lets the Reelm website play movies: fetches the video sites from your connection and sends the headers they expect.",
   "icons": {
     "128": "icon.png"
