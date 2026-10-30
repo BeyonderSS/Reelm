@@ -25,3 +25,5 @@ new_sqlite_classes = ["UserHub", "Room"]
 [vars]
 # JSON string served at /.well-known/assetlinks.json (Android App Links). Empty array if unset.
 ASSET_LINKS = ""
+# Cloudflare account for the admin Ops page (not a secret). Pair with `wrangler secret put CF_ANALYTICS_TOKEN`.
+CF_ACCOUNT_ID = "9a6eaa08a8e3639bdda2ac99eb374ab5"
