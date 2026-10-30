@@ -8,6 +8,8 @@ import { bridge, helperOld, helperVega, helperVersion } from "@/lib/bridge";
 // MovieBox refuses datacenter IPs (Cloudflare, Vercel: HTTP 440) but allows CORS, so the browser runs these
 // from the viewer's own connection (see get() in core.ts). The API route keeps them for local dev.
 const num = (v: string | null, d = 0) => Number(v) || d;
+// an error reply ({error}, 502) must reject, not come back as if it were the data
+const json = (u: string) => fetch(u).then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error ?? `HTTP ${r.status}`); return d; });
 
 async function findMb(q: URLSearchParams) {
   const type = q.get("type") === "series" ? "series" : "movie", year = num(q.get("year"));
@@ -22,7 +24,7 @@ export const movieRoutes: Record<string, (q: URLSearchParams) => Promise<unknown
   "movies/search": async (q) => {
     const t = q.get("q") ?? "", mature = q.get("mature") === "1";
     const opt = <T,>(p: Promise<T[]>) => Promise.race([p.catch(() => [] as T[]), new Promise<T[]>((r) => setTimeout(() => r([]), 6000))]);
-    const tmdb = (x: string) => opt<any>(typeof window === "undefined" ? tm.search(x) : fetch(`/api/movies/tmdb?q=${encodeURIComponent(x)}`).then((r) => r.json()));
+    const tmdb = (x: string) => opt<any>(typeof window === "undefined" ? tm.search(x) : json(`/api/movies/tmdb?q=${encodeURIComponent(x)}`));
     const [mbs, cm, tms0] = await Promise.all([opt<any>(mb.search(t)), opt<any>(misc.cinemetaSearch(t)), tmdb(t)]);
     // TMDB doesn't forgive typos: ask again with the best title the others found ("gang of wasepur" -> "Gangs of Wasseypur")
     const best = tms0.length ? "" : bestTitle(t, [...mbs.filter((i: any) => visible(i, mature)), ...cm]);
@@ -32,7 +34,7 @@ export const movieRoutes: Record<string, (q: URLSearchParams) => Promise<unknown
   "movies/tmdb": (q) => (q.get("id") ? tm.detail(q.get("id")!) : tm.search(q.get("q") ?? "")),
   "movies/detail": (q) => {
     const id = q.get("id")!;
-    if (id.startsWith("tmdb:")) return typeof window === "undefined" ? tm.detail(id) : fetch(`/api/movies/tmdb?id=${encodeURIComponent(id)}`).then((r) => r.json());
+    if (id.startsWith("tmdb:")) return typeof window === "undefined" ? tm.detail(id) : json(`/api/movies/tmdb?id=${encodeURIComponent(id)}`);
     return id.startsWith("mb:") ? mb.detail(id.slice(3)) : misc.cinemetaDetail(id, q.get("type") === "series" ? "series" : "movie");
   },
   // Dramachi has no CORS, so the browser asks our server for it (below); a source that fails drops out alone.
@@ -46,7 +48,7 @@ export const movieRoutes: Record<string, (q: URLSearchParams) => Promise<unknown
     };
     const drPart = async () => {
       if (!q.get("title")) return []; // an "mb:" id arrives without a title
-      return typeof window === "undefined" ? movieRoutes["movies/dramachi"](q) : (await fetch(`/api/movies/dramachi?${q}`)).json();
+      return typeof window === "undefined" ? movieRoutes["movies/dramachi"](q) : json(`/api/movies/dramachi?${q}`);
     };
     // 4KHDHub blocks datacenter IPs and has no CORS: only the Reelm Helper (1.1+) can reach it, from the viewer's browser.
     const fkPart = async () => {
