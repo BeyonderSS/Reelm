@@ -78,3 +78,27 @@ it("admin can create users and admins; non-admins can't", async () => {
   const me = await (await SELF.fetch("https://x/v1/me", { headers: { Authorization: `Bearer ${((await login.json()) as any).token}` } })).json() as any;
   expect(me.user.is_admin).toBeTruthy();
 });
+
+describe("provider sources", () => {
+  const SHA = "a".repeat(40);
+  it("serves the seed, gates and validates approvals, and reflects an approval", async () => {
+    const seed = (await j(await call("/v1/sources"))).vega;
+    expect(seed.commit).toBe("4ecbc98e12da870ffc06b41bd7affe4b1fe316f0");
+    expect(seed.enabled).toEqual(["hdhub4u", "drive", "vega", "mod", "topmovies"]);
+    expect(seed.base).toBe(`https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@${seed.commit}/dist`);
+    expect((await call("/v1/sources")).headers.get("cache-control")).toBe("public, max-age=300");
+
+    const u = await signup(), boss = await signup();
+    expect((await call("/v1/admin/providers", { method: "POST", token: u.token, json: { commit: SHA } })).status).toBe(403);
+    await (env as any).DB.prepare("UPDATE users SET is_admin = 1 WHERE id = ?").bind(boss.id).run();
+    const post = (json: unknown) => call("/v1/admin/providers", { method: "POST", token: boss.token, json });
+    expect((await post({ commit: "nothex" })).status).toBe(400);
+    expect((await post({ enabled: ["bad slug!"] })).status).toBe(400);
+    const r = await j(await post({ commit: SHA, enabled: ["vega"] }));
+    expect(r).toMatchObject({ commit: SHA, enabled: ["vega"], approvedBy: boss.username });
+    const now = (await j(await call("/v1/sources"))).vega;
+    expect(now).toMatchObject({ commit: SHA, enabled: ["vega"] });
+    expect((await post({ enabled: ["hdhub4u"] })).status).toBe(200); // commit kept
+    expect((await j(await call("/v1/sources"))).vega.commit).toBe(SHA);
+  });
+});

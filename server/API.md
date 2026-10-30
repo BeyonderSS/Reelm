@@ -85,6 +85,12 @@ Hello on connect: `{type:"hello", deviceId, deviceName, kind:"phone"|"tv"}` → 
   disable/reset also sign out every session). Disable, delete and admin changes refuse your own account (`400`).
 - `DELETE /v1/admin/users/:id` → `204` (profiles, history, sessions go too). `DELETE /v1/admin/sessions/:id` → `204` (sign out one session).
 
+## Provider sources (Vega providers; apps run code only from the pinned commit)
+- `GET /v1/sources` (public, `Cache-Control: public, max-age=300`) → `{vega:{commit, enabled:[slug], base:"https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@<commit>/dist"}}`. Files load from `<base>/<provider>/<file>.js`.
+- `GET /v1/admin/providers` (admin; `/v1/admin/sources` is already the playback-stats route) → `{pinned:{commit, enabled, approvedBy, approvedAt}, upstream:{commit, date, message}, behind, changed:[{provider, files, status}], compareUrl, manifest:[{value, name, type, version, disabled}]}`.
+  `upstream` is GitHub main (cached 5 min), `changed` = dist/ providers differing from the pin, `manifest` is read at the pinned commit. If GitHub fails: `{pinned, error}` (still `200`).
+- `POST /v1/admin/providers` `{commit?, enabled?}` (admin) → the new `pinned`. `commit` must be a 40-hex sha, `enabled` up to 20 slugs `[a-zA-Z0-9_-]{1,40}` (else `400`). Logs `admin_sources`.
+
 ## App updates
 No server needed: the app reads `https://api.github.com/repos/BeyonderSS/Reelm/releases/latest`, compares the tag
 `v1.0.N` (versionCode `100+N`) to its own, and downloads `Reelm-v*.apk` (phone) or `Reelm-TV-v*.apk` (tv).

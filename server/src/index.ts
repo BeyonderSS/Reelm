@@ -13,7 +13,7 @@ class HttpError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 const fail = (status: number, msg: string): never => { throw new HttpError(status, msg); };
-const json = (body: unknown, status = 200) => Response.json(body, { status });
+const json = (body: unknown, status = 200, headers?: HeadersInit) => Response.json(body, { status, headers });
 const none = () => new Response(null, { status: 204 });
 
 // ---- crypto -------------------------------------------------------------
@@ -690,6 +690,62 @@ async function adminOps(c: Ctx) {
   return json({ connected, cloudflare, deploys, limits: { rowsReadPerDay: 5_000_000, rowsWrittenPerDay: 100_000, storageBytes: 5e9 } });
 }
 
+// ---- provider-source registry: apps run Vega provider code only from the admin-approved commit ----
+const VEGA = "Zenda-Cross/vega-providers";
+const pinOut = (r: any) => ({ commit: r.commit_sha as string, enabled: JSON.parse(r.enabled) as string[], approvedBy: r.approved_by as string | null, approvedAt: r.approved_at as number });
+const getPin = async (db: D1Database) => pinOut(await db.prepare("SELECT * FROM source_pins WHERE id = 'vega'").first());
+async function publicSources(c: Ctx) {
+  const p = await getPin(c.env.DB);
+  return json({ vega: { commit: p.commit, enabled: p.enabled, base: `https://cdn.jsdelivr.net/gh/${VEGA}@${p.commit}/dist` } }, 200, { "Cache-Control": "public, max-age=300" });
+}
+let upstreamCache: { at: number; v: any } | null = null; // ponytail: per-isolate cache, fine for admin traffic
+const gh = async (url: string) => {
+  const r = await fetch(url, { headers: { "User-Agent": "reelm-api", Accept: "application/vnd.github+json" } });
+  if (!r.ok) throw new Error(`GitHub ${r.status}`);
+  return r.json() as Promise<any>;
+};
+async function adminProviders(c: Ctx) {
+  await admin(c);
+  const pinned = await getPin(c.env.DB);
+  try {
+    if (!upstreamCache || now() - upstreamCache.at > 5 * 60_000) {
+      const m = await gh(`https://api.github.com/repos/${VEGA}/commits/main`);
+      upstreamCache = { at: now(), v: { commit: m.sha, date: m.commit?.committer?.date ?? null, message: String(m.commit?.message ?? "").split("\n")[0] } };
+    }
+    const upstream = upstreamCache.v;
+    let behind = 0, changed: { provider: string; files: string[]; status: string }[] = [];
+    if (upstream.commit !== pinned.commit) {
+      const cmp = await gh(`https://api.github.com/repos/${VEGA}/compare/${pinned.commit}...${upstream.commit}`);
+      behind = cmp.ahead_by ?? 0;
+      const by = new Map<string, { files: string[]; st: Set<string> }>();
+      for (const f of cmp.files ?? []) {
+        const m = /^dist\/([^/]+)\//.exec(f.filename); if (!m) continue;
+        const e = by.get(m[1]) ?? by.set(m[1], { files: [], st: new Set() }).get(m[1])!;
+        e.files.push(f.filename); e.st.add(f.status);
+      }
+      changed = [...by].map(([provider, e]) => ({ provider, files: e.files, status: e.st.size === 1 ? [...e.st][0] : "modified" }));
+    }
+    const mr = await fetch(`https://raw.githubusercontent.com/${VEGA}/${pinned.commit}/manifest.json`, { headers: { "User-Agent": "reelm-api" } });
+    if (!mr.ok) throw new Error(`manifest ${mr.status}`);
+    const manifest = ((await mr.json()) as any[]).map((p) => ({ value: p.value, name: p.display_name ?? p.name, type: p.type, version: p.version, disabled: !!p.disabled }));
+    return json({ pinned, upstream, behind, changed, compareUrl: `https://github.com/${VEGA}/compare/${pinned.commit}...${upstream.commit}`, manifest });
+  } catch (e: any) {
+    return json({ pinned, error: String(e?.message ?? e) });
+  }
+}
+/** POST /v1/admin/providers {commit?, enabled?}: approve a pinned commit and/or the enabled provider list. */
+async function adminSetProviders(c: Ctx) {
+  const me = await admin(c), b = await body(c.req), cur = await getPin(c.env.DB);
+  const commit = b.commit === undefined ? cur.commit : typeof b.commit === "string" && /^[0-9a-f]{40}$/.test(b.commit) ? b.commit : fail(400, "commit must be a 40-hex sha");
+  const enabled = b.enabled === undefined ? cur.enabled
+    : Array.isArray(b.enabled) && b.enabled.length <= 20 && b.enabled.every((v: unknown) => typeof v === "string" && /^[a-zA-Z0-9_-]{1,40}$/.test(v)) ? b.enabled : fail(400, "enabled must be up to 20 provider slugs");
+  const t = now();
+  await c.env.DB.prepare("INSERT INTO source_pins (id, commit_sha, enabled, approved_by, approved_at) VALUES ('vega',?,?,?,?) ON CONFLICT(id) DO UPDATE SET commit_sha = excluded.commit_sha, enabled = excluded.enabled, approved_by = excluded.approved_by, approved_at = excluded.approved_at")
+    .bind(commit, JSON.stringify(enabled), me.username, t).run();
+  await logEvent(c.env, c.req, "admin_sources", me.id, { commit, enabled, was: cur.commit });
+  return json({ commit, enabled, approvedBy: me.username, approvedAt: t });
+}
+
 // ---- router -------------------------------------------------------------
 const routes: [string, RegExp, (c: Ctx) => Response | Promise<Response>][] = [
   ["POST", /^\/v1\/auth\/register$/, register],
@@ -712,6 +768,9 @@ const routes: [string, RegExp, (c: Ctx) => Response | Promise<Response>][] = [
   ["GET", /^\/v1\/admin\/app$/, adminApp],
   ["GET", /^\/v1\/admin\/security$/, adminSecurity],
   ["GET", /^\/v1\/admin\/ops$/, adminOps],
+  ["GET", /^\/v1\/sources$/, publicSources],
+  ["GET", /^\/v1\/admin\/providers$/, adminProviders],
+  ["POST", /^\/v1\/admin\/providers$/, adminSetProviders],
   ["DELETE", /^\/v1\/admin\/sessions\/([0-9a-f]{64})$/, adminRevokeSession],
   ["GET", /^\/v1\/profiles$/, listProfiles],
   ["POST", /^\/v1\/profiles$/, createProfile],

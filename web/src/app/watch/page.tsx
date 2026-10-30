@@ -13,7 +13,7 @@ import { SeekPreview } from "@/components/seek-preview";
 import { frac } from "@/lib/eps";
 import { deviceId, get, getHistory, epKey, playKey, proxied, reelm, saveProgress, syncHistory, toPlay, WS, type Play as P } from "@/lib/core";
 import { track } from "@/lib/telemetry";
-import { helperOld } from "@/lib/bridge";
+import { helperVega, helperVersion } from "@/lib/bridge";
 import { bitrate, getBandwidth, getPin, pickStream, saveBandwidth, setPin } from "@/lib/pick-stream";
 import { useApi, useSession } from "@/lib/session";
 import { useLibavAudio } from "@/lib/use-libav-audio";
@@ -425,7 +425,7 @@ function Player() {
                     <div className="space-y-2">{sources.map((x, i) => <SourceStub key={i} x={x} on={si === i && !embed} tag={tag.i === i ? (tag.pin ? `Pinned ${tag.pin}p` : "Auto") : undefined} onPick={() => { setEmbed(false); setSi(i); if (p?.kind === "movie" && x.height) { setPin(playKey(p), x.height); setTag({ i, pin: x.height }); } }} />)}</div>
                     {embedUrl && <button onClick={() => { setEmbed(true); setErr(""); setPanel(null); }} aria-pressed={embed} className={cn("beam w-full rounded-xl border-l-2 border-dashed border-white/25 bg-white/5 px-4 py-3 text-left", embed && "shadow-[inset_0_0_0_2px_#f2b45a]")}>
                       <b className="font-display text-lg">Web player</b><span className="block text-xs text-[#a3a1ae]">Plays in an embedded page when no source works here</span></button>}
-                    {helperOld() && <a href={HELPER_URL()} target="_blank" rel="noreferrer" className="block text-xs text-foreground/52 underline">Update Reelm Helper for more sources</a>}
+                    {!!helperVersion() && !helperVega() && <a href={HELPER_URL()} target="_blank" rel="noreferrer" className="block text-xs text-foreground/52 underline">Update Reelm Helper for more sources</a>}
                     {p.kind === "anime" && <Opts label="Audio" items={["sub", "dub"] as const} value={(p.lang ?? "sub") as "sub" | "dub"} onPick={(l) => go({ ...p, lang: l })} name={(l) => (l === "sub" ? "Japanese, subtitled" : "English dub")} />}
                     {p.kind === "anime" && eps.length > 1 && <Opts label="Episode" items={eps.map((e) => e.number as number)} value={p.ep ?? 0} onPick={(n) => { const e = eps.find((x) => x.number === n); if (e && n !== p.ep) go({ ...p, ep: n, epId: e.id }); }} />}
                     {series?.seasons?.length > 0 && <>

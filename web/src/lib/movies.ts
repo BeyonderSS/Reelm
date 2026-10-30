@@ -3,7 +3,7 @@ import * as misc from "@/lib/server/misc";
 import * as dr from "@/lib/server/dramachi";
 import * as tm from "@/lib/server/tmdb";
 import { bestTitle, rank, visible } from "@/lib/search-rank";
-import { bridge, helperOld, helperVersion } from "@/lib/bridge";
+import { bridge, helperOld, helperVega, helperVersion } from "@/lib/bridge";
 
 // MovieBox refuses datacenter IPs (Cloudflare, Vercel: HTTP 440) but allows CORS, so the browser runs these
 // from the viewer's own connection (see get() in core.ts). The API route keeps them for local dev.
@@ -53,7 +53,12 @@ export const movieRoutes: Record<string, (q: URLSearchParams) => Promise<unknown
       if (typeof document === "undefined" || !q.get("title") || helperOld() || !helperVersion()) return [];
       return (await import("./fourkhdhub")).streams(bridge, q.get("title")!, num(q.get("year")), q.get("type") === "series" ? "series" : "movie", num(q.get("s")), num(q.get("e")));
     };
-    const r = await Promise.allSettled([mbPart(), drPart(), fkPart()]);
+    // Vega providers (open-source scrapers, see vega.ts): same gate, needs Helper 1.2+ (any host, Referer rules).
+    const vegaPart = async () => {
+      if (typeof document === "undefined" || !q.get("title") || !helperVega()) return [];
+      return (await import("./vega")).streams(q.get("title")!, num(q.get("year")), q.get("type") === "series" ? "series" : "movie", num(q.get("s")), num(q.get("e")));
+    };
+    const r = await Promise.allSettled([mbPart(), drPart(), fkPart(), vegaPart()]);
     const list = r.flatMap((x) => (x.status === "fulfilled" ? (x.value as any[]) : []));
     if (!list.length) throw new Error((r.find((x) => x.status === "rejected") as PromiseRejectedResult | undefined)?.reason?.message ?? "No streams found");
     return list.sort((a, b) => +!!a.dolby - +!!b.dolby); // stable: Dolby releases (decoded in JS, see use-libav-audio) last, else Android order: MovieBox first, then the title sources (Dramachi, 4KHDHub), each best-first

@@ -43,3 +43,7 @@ export function adminAct<T = any>(token: string | undefined, path: string, metho
   if (process.env.NODE_ENV !== "production" && fixtureMode()) return Promise.resolve({ ok: true, password: "k7mq2xp9rh4t" } as T);
   return reelm<T>(`/v1/admin/${path}`, { method, token, json: method === "POST" ? {} : undefined });
 }
+
+/** POST /v1/admin/providers {commit?, enabled?}: approve the pinned provider commit and/or the enabled list. */
+export const adminPin = (token: string | undefined, json: { commit?: string; enabled?: string[] }) =>
+  reelm<{ commit: string; enabled: string[]; approvedBy: string; approvedAt: number }>("/v1/admin/providers", { method: "POST", token, json });
