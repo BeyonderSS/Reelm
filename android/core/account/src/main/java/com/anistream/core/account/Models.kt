@@ -7,7 +7,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 data class User(val id: String, val username: String)
-data class Profile(val id: String, val name: String, val avatar: String, val kids: Boolean = false)
+data class Profile(val id: String, val name: String, val avatar: String, val kids: Boolean = false, val mature: Boolean = false)
 /** [activeProfile] is null until a profile is picked. */
 data class Session(val token: String, val user: User, val activeProfile: Profile?)
 data class Device(val id: String, val name: String, val kind: String)
@@ -15,7 +15,7 @@ data class Device(val id: String, val name: String, val kind: String)
 internal fun str(o: JsonObject, k: String) = o[k]?.jsonPrimitive?.contentOrNull.orEmpty()
 
 internal fun JsonObject.toUser() = User(str(this, "id"), str(this, "username"))
-internal fun JsonObject.toProfile() = Profile(str(this, "id"), str(this, "name"), str(this, "avatar"), this["kids"]?.jsonPrimitive?.booleanOrNull ?: false)
+internal fun JsonObject.toProfile() = Profile(str(this, "id"), str(this, "name"), str(this, "avatar"), this["kids"]?.jsonPrimitive?.booleanOrNull ?: false, this["mature"]?.jsonPrimitive?.booleanOrNull ?: false)
 internal fun JsonObject.userObj() = this["user"]!!.jsonObject.toUser()
 
 /**

@@ -55,8 +55,8 @@ class AccountViewModel @Inject constructor(val repo: AccountRepository, private 
     fun select(p: Profile) = repo.selectProfile(p.id)
     fun refresh() = viewModelScope.launch { runCatching { repo.refreshProfiles() } }
     fun claim(code: String) = run("Your TV is signed in") { repo.claimPair(code) }
-    fun save(id: String?, name: String, avatar: String, kids: Boolean, then: () -> Unit) =
-        run(then = then) { if (id == null) repo.createProfile(name, avatar, kids) else repo.updateProfile(id, name, avatar, kids) }
+    fun save(id: String?, name: String, avatar: String, kids: Boolean, mature: Boolean = false, then: () -> Unit) =
+        run(then = then) { if (id == null) repo.createProfile(name, avatar, kids).also { if (mature && !kids) repo.updateProfile(it.id, name, avatar, kids, true) } else repo.updateProfile(id, name, avatar, kids, mature) }
     fun delete(id: String, then: () -> Unit) = run(then = then) { repo.deleteProfile(id) }
     fun clearStatus() { _ui.value = AccountUi() }
 }

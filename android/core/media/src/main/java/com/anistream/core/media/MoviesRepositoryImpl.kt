@@ -8,12 +8,22 @@ import com.anistream.core.media.fourkhdhub.FourKHdHubSource
 import com.anistream.core.media.moviebox.MovieBoxSource
 import com.anistream.domain.KidsBlockedException
 import com.anistream.domain.KidsPolicy
+import com.anistream.domain.MaturePolicy
 import com.anistream.domain.model.MediaDetail
 import com.anistream.domain.model.MediaItem
 import com.anistream.domain.model.MediaRow
+import com.anistream.domain.model.MediaSeason
 import com.anistream.domain.model.MediaStream
 import com.anistream.domain.model.MediaType
 import com.anistream.domain.repository.MoviesRepository
+import com.anistream.domain.usecase.bestTitle
+import com.anistream.domain.usecase.rankSearch
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -24,7 +34,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Ids: "mb:<subjectId>" → MovieBox; "tt…" → Cinemeta (IMDb).
+ * Ids: "mb:<subjectId>" → MovieBox; "tt…" → Cinemeta (IMDb); "tmdb:<movie|tv>:<id>" → TMDB-only titles.
  * catalogKey: "<type>/<catalogId>" or "<type>/<catalogId>/genre=<Genre>", e.g. "movie/top/genre=Sci-Fi".
  */
 @Singleton
@@ -76,10 +86,64 @@ class MoviesRepositoryImpl @Inject constructor(
     private suspend fun cinemetaList(url: String): List<MediaItem> =
         Stremio.parseMetas(http.getJson(url)).onEach { typeOf[it.id] = it.type }
 
+    /** MovieBox + Cinemeta + TMDB in parallel (each optional, 6 s), merged and ranked by [rankSearch]. Later pages: MovieBox only. */
     override suspend fun search(query: String, page: Int): Result<List<MediaItem>> = safeApiCall {
-        val fromMovieBox = runCatching { movieBox.search(query, page) }.getOrNull().orEmpty()
-        if (fromMovieBox.isNotEmpty() || page > 1) fromMovieBox else cinemetaSearch(query)
+        if (page > 1) return@safeApiCall movieBox.search(query, page).filter { !MaturePolicy.active || !MaturePolicy.hides(it.genres, it.title) }
+        suspend fun src(block: suspend () -> List<MediaItem>) = runCatching { withTimeout(SEARCH_TIMEOUT_MS) { block() } }
+        val (mb, cine, tm) = coroutineScope {
+            val a = async { src { movieBox.search(query, 1) } }
+            val b = async { src { cinemetaSearch(query) } }
+            val c = async { src { tmdbSearch(query) } }
+            Triple(a.await(), b.await(), c.await())
+        }
+        if (mb.isFailure && cine.isFailure && tm.isFailure) throw mb.exceptionOrNull()!!
+        var tmdb = tm.getOrNull().orEmpty()
+        val others = mb.getOrNull().orEmpty() + cine.getOrNull().orEmpty()
+        if (tmdb.isEmpty()) bestTitle(query, others)?.takeIf { !it.equals(query, true) }?.let { t -> tmdb = src { tmdbSearch(t) }.getOrNull().orEmpty() }
+        rankSearch(query, listOf(mb.getOrNull().orEmpty(), tmdb, cine.getOrNull().orEmpty()))
     }
+
+    private suspend fun tmdb(pathAndQuery: String): JsonObject =
+        http.getJson("https://api.themoviedb.org/3$pathAndQuery${if ("?" in pathAndQuery) "&" else "?"}api_key=${BuildConfig.TMDB_API_KEY}")
+
+    private suspend fun tmdbSearch(q: String): List<MediaItem> {
+        if (BuildConfig.TMDB_API_KEY.isBlank()) return emptyList()
+        return (tmdb("/search/multi?include_adult=false&query=${enc(q)}")["results"] as? JsonArray).orEmpty().mapNotNull { e ->
+            val o = e as? JsonObject ?: return@mapNotNull null
+            val kind = o.str("media_type")?.takeIf { it == "movie" || it == "tv" } ?: return@mapNotNull null
+            MediaItem(
+                id = "tmdb:$kind:${o.int("id") ?: return@mapNotNull null}", type = if (kind == "tv") MediaType.SERIES else MediaType.MOVIE,
+                title = o.str("title") ?: o.str("name") ?: return@mapNotNull null,
+                posterUrl = o.str("poster_path")?.let { "https://image.tmdb.org/t/p/w500$it" },
+                year = (o.str("release_date") ?: o.str("first_air_date"))?.take(4)?.toIntOrNull(),
+                rating = (o["vote_average"] as? JsonPrimitive)?.doubleOrNull?.takeIf { it > 0 }
+            )
+        }
+    }
+
+    private val tmdbTt = ConcurrentHashMap<String, String>()  // "tmdb:…" → tt ("" = TMDB has none)
+
+    private suspend fun tmdbDetail(id: String): MediaDetail {
+        val (_, kind, n) = id.split(":").also { require(it.size == 3) { "Bad TMDB id: $id" } }
+        val o = tmdb("/$kind/$n?append_to_response=external_ids")
+        val tt = (o.str("imdb_id") ?: (o["external_ids"] as? JsonObject)?.str("imdb_id"))?.takeIf { it.startsWith("tt") }
+        tmdbTt[id] = tt.orEmpty()
+        return MediaDetail(
+            id = id, type = if (kind == "tv") MediaType.SERIES else MediaType.MOVIE, title = o.str("title") ?: o.str("name") ?: error("Title $id not found"),
+            description = o.str("overview"), posterUrl = o.str("poster_path")?.let { "https://image.tmdb.org/t/p/w500$it" },
+            backdropUrl = o.str("backdrop_path")?.let { "https://image.tmdb.org/t/p/w500$it" },
+            year = (o.str("release_date") ?: o.str("first_air_date"))?.take(4)?.toIntOrNull(),
+            rating = (o["vote_average"] as? JsonPrimitive)?.doubleOrNull?.takeIf { it > 0 },
+            runtime = (o.int("runtime") ?: ((o["episode_run_time"] as? JsonArray)?.firstOrNull() as? JsonPrimitive)?.intOrNull)?.let { "$it min" },
+            genres = (o["genres"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.str("name") },
+            seasons = (o["seasons"] as? JsonArray).orEmpty().mapNotNull { e ->
+                (e as? JsonObject)?.let { s -> s.int("season_number")?.takeIf { it > 0 }?.let { MediaSeason(it, s.int("episode_count") ?: 0) } }
+            }
+        )
+    }
+
+    private fun JsonObject.str(k: String) = (this[k] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+    private fun JsonObject.int(k: String) = (this[k] as? JsonPrimitive)?.intOrNull
 
     private suspend fun cinemetaSearch(query: String): List<MediaItem> = coroutineScope {
         val q = enc(query)
@@ -97,6 +161,7 @@ class MoviesRepositoryImpl @Inject constructor(
 
     private suspend fun rawDetail(id: String): Result<MediaDetail> = safeApiCall {
         if (id.startsWith("mb:")) return@safeApiCall movieBox.detail(id.removePrefix("mb:"))
+        if (id.startsWith("tmdb:")) return@safeApiCall tmdbDetail(id)
         val meta = cinemetaMeta(id)
         val cine = meta.detail
         val sid = matchMovieBox(id, meta)
@@ -156,6 +221,7 @@ class MoviesRepositoryImpl @Inject constructor(
 
     override suspend fun imdbId(mediaId: String): String? = when {
         mediaId.startsWith("tt") -> mediaId
+        mediaId.startsWith("tmdb:") -> runCatching { if (!tmdbTt.containsKey(mediaId)) tmdbDetail(mediaId); tmdbTt[mediaId]?.ifEmpty { null } }.getOrNull()
         mediaId.startsWith("mb:") -> runCatching {
             val sid = mediaId.removePrefix("mb:")
             mbToTt[sid]?.let { return@runCatching it.ifEmpty { null } }
@@ -173,6 +239,11 @@ class MoviesRepositoryImpl @Inject constructor(
             sid = id.removePrefix("mb:")
             detail = runCatching { movieBox.detail(sid) }.getOrNull()
             tt = detail?.let { runCatching { imdbIdFor(sid, it) }.getOrNull() }
+            years = detail?.year?.let { it..it }
+        } else if (id.startsWith("tmdb:")) {
+            sid = null
+            detail = runCatching { tmdbDetail(id) }.getOrNull()
+            tt = tmdbTt[id]?.ifEmpty { null }
             years = detail?.year?.let { it..it }
         } else {
             tt = id
@@ -213,5 +284,6 @@ class MoviesRepositoryImpl @Inject constructor(
 
     private companion object {
         const val SOURCE_TIMEOUT_MS = 15_000L
+        const val SEARCH_TIMEOUT_MS = 6_000L
     }
 }

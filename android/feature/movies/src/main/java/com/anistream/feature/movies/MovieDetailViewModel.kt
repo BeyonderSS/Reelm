@@ -221,7 +221,7 @@ class MovieDetailViewModel @Inject constructor(
     fun openWebPlayer(target: Resume) {
         val d = _uiState.value.detail ?: return
         viewModelScope.launch {
-            val tt = movies.imdbId(d.id)
+            val tt = movies.imdbId(d.id) ?: d.id.takeIf { it.startsWith("tmdb:") }
             _events.send(
                 if (tt == null) DetailEvent.Message("The web player can't find this title")
                 else DetailEvent.OpenWebPlayer(tt, target.season, target.episode)

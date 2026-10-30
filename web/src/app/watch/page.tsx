@@ -95,8 +95,9 @@ function Player() {
   const [subs, setSubs] = useState<Sub[]>([]), [subIdx, setSubIdx] = useState(-1);
   const [err, setErr] = useState(""), [nonce, setNonce] = useState(0), [embed, setEmbed] = useState(false);
   // same VidSrc fallback as the apps' WebEmbedPlayer; needs an IMDb id (Cinemeta titles have one, MovieBox ids don't)
-  const imdb = p && p.kind === "movie" && /^tt\d+$/.test(p.id) ? p.id : "";
-  const embedUrl = imdb && (p!.type === "series" ? `https://vsembed.ru/embed/tv?imdb=${imdb}&season=${p!.season ?? 1}&episode=${p!.episode ?? 1}` : `https://vsembed.ru/embed/movie?imdb=${imdb}`);
+  // TMDB-only titles ("tmdb:movie:<n>") use ?tmdb=
+  const ext = p && p.kind === "movie" ? (/^tt\d+$/.test(p.id) ? `imdb=${p.id}` : /^tmdb:(movie|tv):\d+$/.test(p.id) ? `tmdb=${p.id.split(":")[2]}` : "") : "";
+  const embedUrl = ext && (p!.type === "series" ? `https://vsembed.ru/embed/tv?${ext}&season=${p!.season ?? 1}&episode=${p!.episode ?? 1}` : `https://vsembed.ru/embed/movie?${ext}`);
   const [members, setMembers] = useState<Member[]>([]), [devices, setDevices] = useState<Device[]>([]);
   const [eps, setEps] = useState<any[]>([]), [skips, setSkips] = useState<{ s: number; e: number; type: string }[]>([]);
   const [cur, setCur] = useState(0), [dur, setDur] = useState(0), [paused, setPaused] = useState(true), [panel, setPanel] = useState<Tab | null>(null);

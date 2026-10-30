@@ -32,7 +32,7 @@ internal fun MediaItem.asCard() = AnimeSearchResult(
 )
 
 /** True for watch-history / favourite keys that belong to Movies & TV rather than anime. */
-fun isMediaKey(key: String) = key.startsWith("mb:") || (key.length > 2 && key.startsWith("tt") && key[2].isDigit()) || isCanonicalKey(key)
+fun isMediaKey(key: String) = key.startsWith("mb:") || key.startsWith("tmdb:") || (key.length > 2 && key.startsWith("tt") && key[2].isDigit()) || isCanonicalKey(key)
 
 data class MoviesHomeUiState(
     val isLoading: Boolean = true,

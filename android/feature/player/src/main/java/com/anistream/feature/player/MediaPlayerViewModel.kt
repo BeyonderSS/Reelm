@@ -365,7 +365,7 @@ class MediaPlayerViewModel @Inject constructor(
         val mediaId = _uiState.value.request?.mediaId ?: return
         player.pause()
         viewModelScope.launch {
-            val tt = movies.imdbId(mediaId)
+            val tt = movies.imdbId(mediaId) ?: mediaId.takeIf { it.startsWith("tmdb:") }
             _uiState.update {
                 if (tt == null) it.copy(message = "The web player can't find this title") else it.copy(webImdbId = tt)
             }

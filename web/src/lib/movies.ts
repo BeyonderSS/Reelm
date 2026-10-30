@@ -1,6 +1,8 @@
 import * as mb from "@/lib/server/moviebox";
 import * as misc from "@/lib/server/misc";
 import * as dr from "@/lib/server/dramachi";
+import * as tm from "@/lib/server/tmdb";
+import { bestTitle, rank, visible } from "@/lib/search-rank";
 import { bridge, helperOld, helperVersion } from "@/lib/bridge";
 
 // MovieBox refuses datacenter IPs (Cloudflare, Vercel: HTTP 440) but allows CORS, so the browser runs these
@@ -16,13 +18,21 @@ async function findMb(q: URLSearchParams) {
 }
 
 export const movieRoutes: Record<string, (q: URLSearchParams) => Promise<unknown>> = {
+  // MovieBox (browser only), Cinemeta and TMDB in parallel; each is optional and gives up after 6 s. Ranked and filtered in search-rank.ts.
   "movies/search": async (q) => {
-    const t = q.get("q") ?? "";
-    const m = await mb.search(t).catch(() => []);
-    return m.length ? m : misc.cinemetaSearch(t);
+    const t = q.get("q") ?? "", mature = q.get("mature") === "1";
+    const opt = <T,>(p: Promise<T[]>) => Promise.race([p.catch(() => [] as T[]), new Promise<T[]>((r) => setTimeout(() => r([]), 6000))]);
+    const tmdb = (x: string) => opt<any>(typeof window === "undefined" ? tm.search(x) : fetch(`/api/movies/tmdb?q=${encodeURIComponent(x)}`).then((r) => r.json()));
+    const [mbs, cm, tms0] = await Promise.all([opt<any>(mb.search(t)), opt<any>(misc.cinemetaSearch(t)), tmdb(t)]);
+    // TMDB doesn't forgive typos: ask again with the best title the others found ("gang of wasepur" -> "Gangs of Wasseypur")
+    const best = tms0.length ? "" : bestTitle(t, [...mbs.filter((i: any) => visible(i, mature)), ...cm]);
+    const tms = best && best.toLowerCase() !== t.trim().toLowerCase() ? await tmdb(best) : tms0;
+    return rank(t, { mb: mbs, tm: tms, cm }, mature);
   },
+  "movies/tmdb": (q) => (q.get("id") ? tm.detail(q.get("id")!) : tm.search(q.get("q") ?? "")),
   "movies/detail": (q) => {
     const id = q.get("id")!;
+    if (id.startsWith("tmdb:")) return typeof window === "undefined" ? tm.detail(id) : fetch(`/api/movies/tmdb?id=${encodeURIComponent(id)}`).then((r) => r.json());
     return id.startsWith("mb:") ? mb.detail(id.slice(3)) : misc.cinemetaDetail(id, q.get("type") === "series" ? "series" : "movie");
   },
   // Dramachi has no CORS, so the browser asks our server for it (below); a source that fails drops out alone.

@@ -1,12 +1,12 @@
 // Episode stills, air dates and overviews from TMDB. Server side so TMDB_API_KEY stays off the browser.
-const tmdb = async (path: string) => {
+export const tmdb = async (path: string) => {
   const key = process.env.TMDB_API_KEY;
   if (!key) throw new Error("TMDB not configured");
   const r = await fetch(`https://api.themoviedb.org/3${path}${path.includes("?") ? "&" : "?"}api_key=${key}`);
   if (!r.ok) throw new Error(`TMDB HTTP ${r.status}`);
   return r.json() as Promise<any>;
 };
-const img = (p: string | null, w: string) => (p ? `https://image.tmdb.org/t/p/${w}${p}` : undefined);
+export const img = (p: string | null, w: string) => (p ? `https://image.tmdb.org/t/p/${w}${p}` : undefined);
 
 /** IMDb ids resolve through /find; MovieBox (mb:) ids by title and year. Returns null when TMDB has no match. */
 export async function episodes(id: string, season: number, title: string, year: number) {

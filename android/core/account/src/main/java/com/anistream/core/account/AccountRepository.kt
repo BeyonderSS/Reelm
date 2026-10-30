@@ -3,6 +3,7 @@ package com.anistream.core.account
 import android.content.Context
 import com.anistream.core.database.ActiveProfile
 import com.anistream.domain.KidsPolicy
+import com.anistream.domain.MaturePolicy
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -82,6 +83,7 @@ class AccountRepository @Inject constructor(
         _session.value = Session(token, user, active)
         ActiveProfile.id = active?.id ?: ""
         KidsPolicy.active = active?.kids == true
+        MaturePolicy.active = active?.mature != true
     }
 
     suspend fun login(username: String, password: String) = auth("login", username, password)
@@ -114,6 +116,7 @@ class AccountRepository @Inject constructor(
         _adminMode.value = false
         ActiveProfile.id = ""
         KidsPolicy.active = false
+        MaturePolicy.active = true
         _gate.value = true
     }
 
@@ -139,7 +142,7 @@ class AccountRepository @Inject constructor(
 
     private fun setProfiles(list: List<Profile>) {
         _profiles.value = list
-        prefs.edit().putString("profiles", JsonArray(list.map { buildJsonObject { put("id", it.id); put("name", it.name); put("avatar", it.avatar); put("kids", it.kids) } }).toString()).apply()
+        prefs.edit().putString("profiles", JsonArray(list.map { buildJsonObject { put("id", it.id); put("name", it.name); put("avatar", it.avatar); put("kids", it.kids); put("mature", it.mature) } }).toString()).apply()
         val s = _session.value ?: return
         publish(s.token, s.user, s.activeProfile?.id)
     }
@@ -157,8 +160,8 @@ class AccountRepository @Inject constructor(
         return p
     }
 
-    suspend fun updateProfile(id: String, name: String, avatar: String, kids: Boolean) {
-        val p = api.call("PATCH", "/v1/profiles/$id", buildJsonObject { put("name", name.trim()); put("avatar", avatar); put("kids", kids) }, token)!!.toProfile()
+    suspend fun updateProfile(id: String, name: String, avatar: String, kids: Boolean, mature: Boolean = false) {
+        val p = api.call("PATCH", "/v1/profiles/$id", buildJsonObject { put("name", name.trim()); put("avatar", avatar); put("kids", kids); put("mature", mature && !kids) }, token)!!.toProfile()
         setProfiles(_profiles.value.map { if (it.id == id) p else it })
     }
 

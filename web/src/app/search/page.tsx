@@ -26,7 +26,7 @@ function Search() {
     const id = setTimeout(() => go(tab, text), 450);
     return () => clearTimeout(id);
   }, [text]); // eslint-disable-line react-hooks/exhaustive-deps
-  const { data, loading, error } = useApi(term ? `${tab}/search?q=${encodeURIComponent(term)}` : null);
+  const { data, loading, error } = useApi(term ? `${tab}/search?q=${encodeURIComponent(term)}${tab === "movies" && s.profile?.mature && !s.profile.kids ? "&mature=1" : ""}` : null);
   const all = ((data ?? []) as any[]).map(tab === "anime" ? animeCard : mediaCard).filter((c) => kidsOk(c, s.profile?.kids));
   const kinds = [...new Set(all.map((c) => kindOf(c.sub)).filter(Boolean))];
   const items = kind && kinds.includes(kind) ? all.filter((c) => kindOf(c.sub) === kind) : all;

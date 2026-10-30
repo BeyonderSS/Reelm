@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 export default function Profiles() {
   const { s, set, ready } = useSession(), router = useRouter();
   const [list, setList] = useState<Profile[] | null>(null), [manage, setManage] = useState(false), [edit, setEdit] = useState<Partial<Profile> | null>(null);
-  const [err, setErr] = useState(""), [busy, setBusy] = useState<string | null>(null);
+  const [ask, setAsk] = useState(false), [err, setErr] = useState(""), [busy, setBusy] = useState<string | null>(null);
   const load = () => s.token && reelm("/v1/profiles", { token: s.token }).then((d) => setList(d.profiles)).catch((e) => { setErr(e.message); setList([]); });
   useEffect(() => { if (ready) s.token ? void load() : setList([GUEST]); }, [ready, s.token]); // eslint-disable-line react-hooks/exhaustive-deps
   async function pick(p: Profile) {
@@ -23,7 +23,7 @@ export default function Profiles() {
   }
   async function save() {
     if (!edit?.name?.trim() || !s.token) return;
-    const body = { name: edit.name.trim(), avatar: edit.avatar ?? "cat_face", kids: !!edit.kids };
+    const body = { name: edit.name.trim(), avatar: edit.avatar ?? "cat_face", kids: !!edit.kids, mature: !edit.kids && !!edit.mature };
     try {
       await (edit.id ? reelm(`/v1/profiles/${edit.id}`, { method: "PATCH", token: s.token, json: body }) : reelm("/v1/profiles", { token: s.token, json: body }));
       if (edit.id && s.profile?.id === edit.id) set({ ...s, profile: { ...s.profile, ...body } });
@@ -74,10 +74,19 @@ export default function Profiles() {
               <input aria-label="Name" placeholder="Name" autoFocus value={edit.name ?? ""} maxLength={24} onChange={(e) => setEdit({ ...edit, name: e.target.value })} className="beam h-12 flex-1 rounded-2xl bg-slate px-4 outline-none ring-1 ring-white/8" /></div>
             <div className="min-h-0 flex-1 overflow-y-auto pr-1"><AvatarPicker value={edit.avatar ?? "cat_face"} onChange={(avatar) => setEdit({ ...edit, avatar })} /></div>
             <label className="flex items-center gap-3 rounded-2xl bg-slate px-4 py-3 text-sm"><input type="checkbox" className="size-4 accent-[#f2b45a]" checked={!!edit.kids} onChange={(e) => setEdit({ ...edit, kids: e.target.checked })} /><span><span className="font-medium">Kids profile</span><span className="block text-xs text-foreground/52">Filters anime, movies and live TV</span></span></label>
+            <label className={cn("flex items-center gap-3 rounded-2xl bg-slate px-4 py-3 text-sm", edit.kids && "opacity-50")}><input type="checkbox" className="size-4 accent-[#f2b45a]" disabled={!!edit.kids} checked={!edit.kids && !!edit.mature} onChange={(e) => (e.target.checked ? setAsk(true) : setEdit({ ...edit, mature: false }))} /><span><span className="font-medium">Show mature & non-film content</span><span className="block text-xs text-foreground/52">{edit.kids ? "Not available on kids profiles" : "Adult titles, music videos and sports clips in search"}</span></span></label>
             <div className="flex justify-between gap-2">
               {edit.id && (list?.length ?? 0) > 1 ? <button className={`${pill.ghost} text-destructive`} onClick={del}>Delete profile</button> : <span />}
               <button className={pill.primary} onClick={save} disabled={!edit.name?.trim()}>Save</button>
             </div>
+          </div>
+        </div>
+      )}
+      {ask && (
+        <div role="alertdialog" aria-modal aria-label="Show mature content" className="fixed inset-0 z-[60] flex items-center justify-center bg-dusk/70 p-4 backdrop-blur-sm">
+          <div className="page-in w-full max-w-sm space-y-4 rounded-[24px] bg-haze p-5 text-left">
+            <p>This shows adult titles, music videos and sports clips in search for this profile. Turn it on?</p>
+            <div className="flex justify-end gap-2"><button className={pill.ghost} onClick={() => setAsk(false)}>Cancel</button><button className={pill.primary} onClick={() => { setEdit({ ...edit!, mature: true }); setAsk(false); }}>Turn on</button></div>
           </div>
         </div>
       )}

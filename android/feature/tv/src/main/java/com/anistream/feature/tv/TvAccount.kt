@@ -442,7 +442,7 @@ private fun TvProfileEditor(vm: AccountViewModel, initial: Profile?, canDelete: 
             )
             Spacer(Modifier.height(20.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                TvPill(if (ui.busy) "Saving" else "Save", { vm.save(initial?.id, name.trim(), avatar, initial?.kids ?: false, onDone) }, enabled = name.isNotBlank() && !ui.busy)
+                TvPill(if (ui.busy) "Saving" else "Save", { vm.save(initial?.id, name.trim(), avatar, initial?.kids ?: false, initial?.mature ?: false, onDone) }, enabled = name.isNotBlank() && !ui.busy)
                 if (initial != null && canDelete) TvPill("Delete", { vm.delete(initial.id, onDone) }, enabled = !ui.busy)
             }
             ui.error?.let { Spacer(Modifier.height(12.dp)); Text(it, style = TvType.body.copy(color = Accent.danger)) }

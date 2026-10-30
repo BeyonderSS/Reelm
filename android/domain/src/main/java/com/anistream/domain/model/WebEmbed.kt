@@ -10,10 +10,12 @@ object WebEmbed {
     const val HOST = "vsembed.ru"
     val MIRRORS = listOf(HOST, "vidsrc.sh")
 
-    /** Movie when season/episode are 0, else an episode page. */
-    fun url(host: String, imdbId: String, season: Int, episode: Int): String =
-        if (season > 0 && episode > 0) "https://$host/embed/tv?imdb=$imdbId&season=$season&episode=$episode"
-        else "https://$host/embed/movie?imdb=$imdbId"
+    /** Movie when season/episode are 0, else an episode page. [imdbId] may be "tmdb:<movie|tv>:<id>" for a TMDB-only title. */
+    fun url(host: String, imdbId: String, season: Int, episode: Int): String {
+        val key = if (imdbId.startsWith("tmdb:")) "tmdb=${imdbId.substringAfterLast(':')}" else "imdb=$imdbId"
+        return if (season > 0 && episode > 0) "https://$host/embed/tv?$key&season=$season&episode=$episode"
+        else "https://$host/embed/movie?$key"
+    }
 
     /**
      * Navigation filter. Top-level navigations may only stay on a mirror (ads hijack window.top / window.open).

@@ -255,7 +255,7 @@ export async function syncHistory(pid: string, token: string) {
   await push(pid, token, out);
 }
 
-export type Profile = { id: string; name: string; avatar: string; kids: boolean };
+export type Profile = { id: string; name: string; avatar: string; kids: boolean; mature?: boolean };
 export type Session = { token?: string; user?: { id: string; username: string; is_admin?: boolean }; profile?: Profile; guest?: boolean };
 export const loadSession = () => ls.get<Session>("reelm.session", {});
 export const storeSession = (s: Session) => ls.set("reelm.session", s);

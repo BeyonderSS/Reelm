@@ -189,7 +189,7 @@ private fun Gate(vm: AccountViewModel, onAccount: () -> Unit) {
                 canDelete = profiles.size > 1,
                 ui = ui,
                 onBack = { go(null) },
-                onSave = { name, avatar, kids -> vm.save(editId.ifEmpty { null }, name, avatar, kids) { go(null) } },
+                onSave = { name, avatar, kids, mature -> vm.save(editId.ifEmpty { null }, name, avatar, kids, mature) { go(null) } },
                 onDelete = { vm.delete(editId) { go(null) } }
             )
         }
@@ -638,12 +638,14 @@ private fun ProfileEditorPage(
     canDelete: Boolean,
     ui: AccountUi,
     onBack: () -> Unit,
-    onSave: (String, String, Boolean) -> Unit,
+    onSave: (String, String, Boolean, Boolean) -> Unit,
     onDelete: () -> Unit
 ) {
     var name by rememberSaveable { mutableStateOf(initial?.name.orEmpty()) }
     var avatar by rememberSaveable { mutableStateOf(initial?.avatar ?: FluentEmojis.all.random().id) }
     var kids by rememberSaveable { mutableStateOf(initial?.kids ?: false) }
+    var mature by rememberSaveable { mutableStateOf(initial?.mature ?: false) }
+    var confirmMature by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
     Column(Modifier.fillMaxSize().imePadding()) {
@@ -668,6 +670,14 @@ private fun ProfileEditorPage(
                             modifier = Modifier.semantics { contentDescription = "Kids profile" }
                         )
                     }
+                    if (!kids) Row(Modifier.fillMaxWidth().padding(top = Space.sm), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Show mature & non-film content", style = AppType.bodyStrong, modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = mature, onCheckedChange = { if (it) confirmMature = true else mature = false },
+                            colors = SwitchDefaults.colors(checkedThumbColor = Accent.on, checkedTrackColor = Accent.main, uncheckedThumbColor = Ink.muted, uncheckedTrackColor = Bg.raised, uncheckedBorderColor = Ink.ghost),
+                            modifier = Modifier.semantics { contentDescription = "Show mature and non-film content" }
+                        )
+                    }
                 }
             }
             avatarItems(avatar, { avatar = it })
@@ -676,12 +686,21 @@ private fun ProfileEditorPage(
         Column(Modifier.fillMaxWidth().background(Bg.base).padding(horizontal = Space.xl, vertical = Space.md), horizontalAlignment = Alignment.CenterHorizontally) {
             ui.error?.let { ErrorNote(it); Spacer(Modifier.height(Space.md)) }
             PrimaryButton(
-                if (initial == null) "Add profile" else "Save", onClick = { onSave(name.trim(), avatar, kids) },
+                if (initial == null) "Add profile" else "Save", onClick = { onSave(name.trim(), avatar, kids, mature && !kids) },
                 enabled = name.isNotBlank(), loading = ui.busy, modifier = Modifier.fillMaxWidth()
             )
             if (initial != null && canDelete) TextAction("Delete profile", onClick = { confirm = true }, color = Accent.danger)
         }
     }
+    if (confirmMature) AlertDialog(
+        onDismissRequest = { confirmMature = false },
+        containerColor = Bg.overlay,
+        shape = Radius.xl,
+        title = { Text("Show mature content?", style = AppType.heading) },
+        text = { Text("This shows adult titles, music videos and sports clips in search for this profile. Turn it on?", style = AppType.body) },
+        confirmButton = { TextAction("Turn on", onClick = { confirmMature = false; mature = true }) },
+        dismissButton = { TextAction("Cancel", onClick = { confirmMature = false }) }
+    )
     if (confirm && initial != null) AlertDialog(
         onDismissRequest = { confirm = false },
         containerColor = Bg.overlay,

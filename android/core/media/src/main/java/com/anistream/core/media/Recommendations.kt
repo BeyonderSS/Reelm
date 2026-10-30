@@ -279,7 +279,7 @@ class RecommendationsRepositoryImpl @Inject constructor(
             return (fromHistory + fromFavs).sortedByDescending { it.weight }.distinctBy { it.kind to it.id }
         }
 
-        private fun isMediaId(id: String) = id.startsWith("mb:") || (id.length > 2 && id.startsWith("tt") && id[2].isDigit())
+        private fun isMediaId(id: String) = id.startsWith("mb:") || id.startsWith("tmdb:") || (id.length > 2 && id.startsWith("tt") && id[2].isDigit())
 
         fun parseTmdbList(el: kotlinx.serialization.json.JsonElement?, type: String): List<TmdbItem> =
             (el as? JsonArray).orEmpty().mapNotNull { e ->
