@@ -13,8 +13,22 @@ function allowed(u, vega) {
   } catch { return false; }
 }
 
+// fetch() here silently drops Referer/Origin (forbidden headers), yet some provider APIs 403 without them (HDHub4u's search).
+// A session rule sets them on this worker's own requests to that host. ponytail: last writer wins per host.
+const ownRule = async (url, headers) => {
+  const set = Object.entries(headers).filter(([k]) => k.toLowerCase() === "referer" || k.toLowerCase() === "origin");
+  if (!set.length) return;
+  const host = new URL(url).hostname, id = [...host].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 11) % 1e6 + 2_000_000;
+  await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [id], addRules: [{
+    id, priority: 3,
+    action: { type: "modifyHeaders", requestHeaders: set.map(([header, value]) => ({ header, operation: "set", value: String(value) })) },
+    condition: { requestDomains: [host], initiatorDomains: [chrome.runtime.id], resourceTypes: ["xmlhttprequest", "other"] },
+  }] });
+};
+
 async function run({ url, headers = {}, probe, method = "GET", body, vega }) {
   if (!allowed(url, vega)) throw new Error("host not allowed");
+  if (vega) await ownRule(url, headers);
   const ac = new AbortController(), t = setTimeout(() => ac.abort(), 15000);
   try {
     const r = await fetch(url, { method, body, headers: probe ? { Range: "bytes=0-1023", ...headers } : headers, signal: ac.signal }); // a caller may probe with its own range (bytes=0-, what players send)
