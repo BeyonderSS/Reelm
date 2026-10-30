@@ -109,7 +109,7 @@ async function logEvent(...a: Parameters<typeof eventStmt>) {
   try { await eventStmt(...a).run(); } catch (e) { console.error("event log", e); } // logging never breaks a request
 }
 
-const profileOut = (r: any) => ({ id: r.id, name: r.name, avatar: r.avatar, kids: !!r.kids, createdAt: r.created_at });
+const profileOut = (r: any) => ({ id: r.id, name: r.name, avatar: r.avatar, kids: !!r.kids, mature: !!r.mature && !r.kids, createdAt: r.created_at });
 async function ownProfile(c: Ctx, user: User, id: string) {
   return (await c.env.DB.prepare("SELECT * FROM profiles WHERE id = ? AND user_id = ?").bind(id, user.id).first())
     ?? fail(404, "profile not found");
@@ -188,8 +188,10 @@ async function patchProfile(c: Ctx) {
     name: b.name === undefined ? cur.name : str(b.name, 32, "name"),
     avatar: b.avatar === undefined ? cur.avatar : str(b.avatar, 64, "avatar"),
     kids: b.kids === undefined ? cur.kids : b.kids ? 1 : 0,
+    mature: b.mature === undefined ? cur.mature ?? 0 : b.mature ? 1 : 0,
   };
-  await c.env.DB.prepare("UPDATE profiles SET name=?, avatar=?, kids=? WHERE id=?").bind(next.name, next.avatar, next.kids, cur.id).run();
+  if (next.kids) next.mature = 0; // a kids profile never sees mature results
+  await c.env.DB.prepare("UPDATE profiles SET name=?, avatar=?, kids=?, mature=? WHERE id=?").bind(next.name, next.avatar, next.kids, next.mature, cur.id).run();
   await logEvent(c.env, c.req, "profile_update", u.id, next, cur.id);
   return json(profileOut({ ...cur, ...next }));
 }

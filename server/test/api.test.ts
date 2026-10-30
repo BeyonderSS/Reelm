@@ -48,6 +48,9 @@ describe("profiles", () => {
     expect(ps).toHaveLength(5);
     const p = await j(await call(`/v1/profiles/${ps[1].id}`, { method: "PATCH", token: u.token, json: { name: "Kid", kids: true } }));
     expect(p).toMatchObject({ name: "Kid", kids: true, avatar: "fox_face" });
+    // mature results are opt-in, and a kids profile can't opt in
+    expect(await j(await call(`/v1/profiles/${ps[0].id}`, { method: "PATCH", token: u.token, json: { mature: true } }))).toMatchObject({ mature: true });
+    expect(await j(await call(`/v1/profiles/${ps[1].id}`, { method: "PATCH", token: u.token, json: { mature: true } }))).toMatchObject({ mature: false });
     expect((await call(`/v1/profiles/${ps[1].id}`, { method: "PATCH", token: other.token, json: { name: "x" } })).status).toBe(404);
     expect((await call(`/v1/profiles/${ps[1].id}`, { method: "DELETE", token: other.token })).status).toBe(404);
     for (const x of ps.slice(1)) expect((await call(`/v1/profiles/${x.id}`, { method: "DELETE", token: u.token })).status).toBe(204);
