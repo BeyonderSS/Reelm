@@ -16,9 +16,9 @@ One open-source streaming hub with a soft dusk UI. It hosts nothing: it finds wh
 
 <br>
 
-<img src="docs/reelm-tour.gif" width="900" alt="A tour of the Reelm web app: home, an anime page, a movie page, live TV and the airing schedule">
+<img src="docs/launch/Reelm16x9.gif" width="900" alt="Reelm launch video: one app for anime, movies and live TV on phone, TV and web; start an episode on the TV and finish it on your phone">
 
-<sub>The web app, recorded live from reelm-tv.vercel.app</sub>
+<sub>Real playback, recorded from the v1.0.42 apps · Watch in HD: <a href="docs/launch/Reelm16x9.mp4">16:9 MP4</a> · <a href="docs/launch/Reelm9x16.mp4">9:16 MP4</a></sub>
 
 </div>
 
