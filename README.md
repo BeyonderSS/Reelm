@@ -12,7 +12,7 @@ One open-source streaming hub with a soft dusk UI. It hosts nothing: it finds wh
 ![Android TV / Fire TV](https://img.shields.io/badge/TV-Android%205.1%2B%20%C2%B7%20Fire%20TV-3ddc84?logo=androidtv&logoColor=white)
 ![Web](https://img.shields.io/badge/web-Next.js-000?logo=nextdotjs&logoColor=white)
 
-[**Download the APK**](../../releases/latest) · [**Open the web app**](https://reelm-tv.vercel.app) · [How it works](#how-it-works) · [Build it](#build-from-source) · [Contribute](#contributing)
+[**Download the APK**](../../releases/latest) · [**Open the web app**](https://reelm-tv.vercel.app) · [Screenshots](#screenshots) · [How it works](#how-it-works) · [Build it](#build-from-source) · [Contribute](#contributing)
 
 <br>
 
@@ -81,16 +81,46 @@ Store listings are planned. The source is in [`extension/`](extension/).
 - **TV pairing**: the TV shows a code, and you approve it from your phone or the web.
 - **Admin pages** in the app and on the web: users, live sessions, source health, crash and version telemetry, and provider approval.
 
-## On your phone
+## Screenshots
+
+### Phone
 
 <div align="center">
-<img src="docs/screenshots/home.png" width="180" alt="Home">&nbsp;
-<img src="docs/screenshots/detail.png" width="180" alt="Detail page">&nbsp;
-<img src="docs/screenshots/player.png" width="180" alt="Player">
-<br>
-<img src="docs/screenshots/search.png" width="180" alt="Search">&nbsp;
-<img src="docs/screenshots/schedule.png" width="180" alt="Airing schedule">&nbsp;
-<img src="docs/screenshots/downloads.png" width="180" alt="Downloads">
+<img src="docs/screenshots/phone/home.png" width="200" alt="Anime home">&nbsp;
+<img src="docs/screenshots/phone/movies.png" width="200" alt="Movies and TV home">&nbsp;
+<img src="docs/screenshots/phone/detail.png" width="200" alt="One Piece detail page with episodes and download">&nbsp;
+<img src="docs/screenshots/phone/player.png" width="200" alt="Player with sub/dub, quality and up next">
+<br><br>
+<img src="docs/screenshots/phone/search-typo.png" width="200" alt="Search finding Interstellar from the typo intersteller">&nbsp;
+<img src="docs/screenshots/phone/search.png" width="200" alt="Search landing with popular titles">&nbsp;
+<img src="docs/screenshots/phone/live.png" width="200" alt="Live TV channels">&nbsp;
+<img src="docs/screenshots/phone/schedule.png" width="200" alt="7-day airing schedule">
+<br><br>
+<img src="docs/screenshots/phone/player-landscape.png" width="824" alt="Fullscreen player with skip intro and subtitles">
+</div>
+
+### Android TV / Fire TV
+
+<div align="center">
+<img src="docs/screenshots/tv/home.png" width="410" alt="TV home">&nbsp;
+<img src="docs/screenshots/tv/detail.png" width="410" alt="TV detail page with episode film strip and resume">
+<br><br>
+<img src="docs/screenshots/tv/player.png" width="410" alt="TV player paused with episode info and up next">&nbsp;
+<img src="docs/screenshots/tv/pair.png" width="410" alt="Sign in on TV by scanning a QR code with your phone">
+<br><br>
+<img src="docs/screenshots/tv/live.png" width="410" alt="TV live channels by category">
+</div>
+
+### Web
+
+<div align="center">
+<img src="docs/screenshots/web/home.png" width="410" alt="Web home">&nbsp;
+<img src="docs/screenshots/web/anime.png" width="410" alt="Web anime page with sub and dub">
+<br><br>
+<img src="docs/screenshots/web/movie.png" width="410" alt="Web movie page">&nbsp;
+<img src="docs/screenshots/web/live.png" width="410" alt="Web live TV">
+<br><br>
+<img src="docs/screenshots/web/schedule.png" width="410" alt="Web airing schedule">
 </div>
 
 ## How it works
