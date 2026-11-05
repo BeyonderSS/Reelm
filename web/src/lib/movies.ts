@@ -32,10 +32,16 @@ export const movieRoutes: Record<string, (q: URLSearchParams) => Promise<unknown
     return rank(t, { mb: mbs, tm: tms, cm }, mature);
   },
   "movies/tmdb": (q) => (q.get("id") ? tm.detail(q.get("id")!) : tm.search(q.get("q") ?? "")),
-  "movies/detail": (q) => {
+  "movies/detail": async (q) => {
     const id = q.get("id")!;
-    if (id.startsWith("tmdb:")) return typeof window === "undefined" ? tm.detail(id) : json(`/api/movies/tmdb?id=${encodeURIComponent(id)}`);
-    return id.startsWith("mb:") ? mb.detail(id.slice(3)) : misc.cinemetaDetail(id, q.get("type") === "series" ? "series" : "movie");
+    const d: any = id.startsWith("tmdb:") ? await (typeof window === "undefined" ? tm.detail(id) : json(`/api/movies/tmdb?id=${encodeURIComponent(id)}`))
+      : id.startsWith("mb:") ? await mb.detail(id.slice(3)) : await misc.cinemetaDetail(id, q.get("type") === "series" ? "series" : "movie");
+    return { ...d, cast: [...new Set(d.cast ?? [])] }; // sources list a person once per role ("Tom Holland, Tom Holland")
+  },
+  // Audio languages live on MovieBox subjects: a Cinemeta/TMDB title borrows them from the subject Play would stream.
+  "movies/audio": async (q) => {
+    const id = q.get("id")!, sid = id.startsWith("mb:") ? id.slice(3) : await findMb(q);
+    return sid ? (await mb.detail(sid)).audio : [];
   },
   // Dramachi has no CORS, so the browser asks our server for it (below); a source that fails drops out alone.
   "movies/dramachi": (q) => dr.streams(q.get("title") ?? "", num(q.get("year")), q.get("type") === "series" ? "series" : "movie", num(q.get("s")), num(q.get("e"))),

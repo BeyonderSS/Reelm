@@ -110,6 +110,15 @@ export async function search(q: string, page = 1) {
   return ((data.results ?? []) as any[]).flatMap((r) => r.subjects ?? []).map(item).filter((i): i is Item => !!i && !seen.has(i.id) && !!seen.add(i.id));
 }
 
+/** "esla dub" -> Spanish (Latin America), "Original Audio" -> Original, "hi" -> Hindi (same rules as the TV app's audioLabel). */
+const REGIONS: Record<string, string> = { esla: "es-419", eses: "es-ES", ptbr: "pt-BR", ptpt: "pt-PT", zhcn: "zh-Hans", zhtw: "zh-Hant", frca: "fr-CA", enus: "en-US", engb: "en-GB" };
+export function audioLabel(label: string, code = "") {
+  const clean = label.trim().replace(/\s+(dub|sub|audio)$/i, "").trim(), k = clean.toLowerCase().replace("-", "");
+  if (!k || k === "original") return "Original";
+  const name = (c: string) => { try { const n = new Intl.DisplayNames(["en"], { type: "language" }).of(c); return n && n.toLowerCase() !== c.toLowerCase() ? n : undefined; } catch { return undefined; } };
+  return (REGIONS[k] && name(REGIONS[k])) || (k.length <= 3 && name(k)) || (k.length <= 4 && code && name(code.slice(0, 2))) || clean[0].toUpperCase() + clean.slice(1);
+}
+
 export async function detail(subjectId: string) {
   const [d, si] = await Promise.all([
     call("GET", `/wefeed-mobile-bff/subject-api/get?subjectId=${subjectId}`),
@@ -122,6 +131,8 @@ export async function detail(subjectId: string) {
     backdrop: s(d.stills?.url) ?? base.poster, runtime: s(d.duration), country: s(d.countryName),
     cast: ((d.staffList ?? []) as any[]).map((x) => s(x.name)).filter(Boolean).slice(0, 12),
     seasons: ((si?.seasons ?? []) as any[]).map((x) => ({ season: Number(x.se), episodes: Number(x.maxEp) })).filter((x) => x.season > 0 && x.episodes > 0),
+    // each dub is its own MovieBox subject; the current one is this subject
+    audio: ((d.dubs ?? []) as any[]).filter((x) => s(x.subjectId)).map((x) => ({ id: `mb:${s(x.subjectId)}`, label: audioLabel(s(x.lanName) ?? "", s(x.lanCode)), current: s(x.subjectId) === subjectId })),
     playable: s(d.hasResource) !== "false",
   };
 }

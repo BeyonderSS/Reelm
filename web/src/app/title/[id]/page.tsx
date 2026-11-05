@@ -32,6 +32,8 @@ function Episodes({ m, id, cur, seasons, play, prog, last }: { m: any; id: strin
 function Title({ id }: { id: string }) {
   const type = useSearchParams().get("type") ?? "movie", { s } = useSession();
   const { data: m, error } = useApi(`movies/detail?id=${encodeURIComponent(id)}&type=${type}`);
+  const audio: { id: string; label: string; current: boolean }[] =
+    useApi(m ? `movies/audio?id=${encodeURIComponent(id)}&type=${m.type}&title=${encodeURIComponent(m.title)}&year=${m.year ?? ""}` : null).data ?? [];
   const [season, setSeason] = useState<number | null>(null);
   const [last, setLast] = useState<Entry | null>(null), [prog, setProg] = useState<Record<string, number>>({});
   useEffect(() => {
@@ -68,6 +70,11 @@ function Title({ id }: { id: string }) {
             </Link>
           )}
           <FavButton c={mediaCard(m)} />
+          {audio.length > 1 && (
+            <nav aria-label="Audio language" className="seg">
+              {audio.map((v) => <Link key={v.id} href={`/title/${encodeURIComponent(v.id)}?type=${m.type}`} aria-current={v.current ? "page" : undefined} className="beam">{v.label}</Link>)}
+            </nav>
+          )}
         </div>
       </DetailHero>
       {series && cur && (
