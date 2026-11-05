@@ -7,6 +7,7 @@ export interface Env {
   ASSET_LINKS?: string;
   CF_ANALYTICS_TOKEN?: string; // secret; enables the admin Ops page
   CF_ACCOUNT_ID?: string;
+  GITHUB_TOKEN?: string; // secret, optional; unauthenticated GitHub API calls share Cloudflare's egress IPs and get 403 rate-limited
 }
 
 class HttpError extends Error {
@@ -699,23 +700,30 @@ async function publicSources(c: Ctx) {
   return json({ vega: { commit: p.commit, enabled: p.enabled, base: `https://cdn.jsdelivr.net/gh/${VEGA}@${p.commit}/dist` } }, 200, { "Cache-Control": "public, max-age=300" });
 }
 let upstreamCache: { at: number; v: any } | null = null; // ponytail: per-isolate cache, fine for admin traffic
-const gh = async (url: string) => {
-  const r = await fetch(url, { headers: { "User-Agent": "reelm-api", Accept: "application/vnd.github+json" } });
-  if (!r.ok) throw new Error(`GitHub ${r.status}`);
+const gh = async (url: string, token?: string) => {
+  const r = await fetch(url, { headers: { "User-Agent": "reelm-api", Accept: "application/vnd.github+json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
+  if (!r.ok) throw new Error(r.status === 403 || r.status === 429 ? `GitHub rate limit (${r.status}); set the GITHUB_TOKEN secret on the worker` : `GitHub ${r.status}`);
   return r.json() as Promise<any>;
 };
+// the provider list comes from raw.githubusercontent.com (not rate-limited), so it loads even when the GitHub API is down
+async function manifestAt(commit: string) {
+  const mr = await fetch(`https://raw.githubusercontent.com/${VEGA}/${commit}/manifest.json`, { headers: { "User-Agent": "reelm-api" } });
+  if (!mr.ok) throw new Error(`manifest ${mr.status}`);
+  return ((await mr.json()) as any[]).map((p) => ({ value: p.value, name: p.display_name ?? p.name, type: p.type, version: p.version, disabled: !!p.disabled }));
+}
 async function adminProviders(c: Ctx) {
   await admin(c);
-  const pinned = await getPin(c.env.DB);
+  const pinned = await getPin(c.env.DB), tok = c.env.GITHUB_TOKEN;
+  const manifest = await manifestAt(pinned.commit).catch(() => undefined);
   try {
     if (!upstreamCache || now() - upstreamCache.at > 5 * 60_000) {
-      const m = await gh(`https://api.github.com/repos/${VEGA}/commits/main`);
+      const m = await gh(`https://api.github.com/repos/${VEGA}/commits/main`, tok);
       upstreamCache = { at: now(), v: { commit: m.sha, date: m.commit?.committer?.date ?? null, message: String(m.commit?.message ?? "").split("\n")[0] } };
     }
     const upstream = upstreamCache.v;
     let behind = 0, changed: { provider: string; files: string[]; status: string }[] = [];
     if (upstream.commit !== pinned.commit) {
-      const cmp = await gh(`https://api.github.com/repos/${VEGA}/compare/${pinned.commit}...${upstream.commit}`);
+      const cmp = await gh(`https://api.github.com/repos/${VEGA}/compare/${pinned.commit}...${upstream.commit}`, tok);
       behind = cmp.ahead_by ?? 0;
       const by = new Map<string, { files: string[]; st: Set<string> }>();
       for (const f of cmp.files ?? []) {
@@ -725,12 +733,10 @@ async function adminProviders(c: Ctx) {
       }
       changed = [...by].map(([provider, e]) => ({ provider, files: e.files, status: e.st.size === 1 ? [...e.st][0] : "modified" }));
     }
-    const mr = await fetch(`https://raw.githubusercontent.com/${VEGA}/${pinned.commit}/manifest.json`, { headers: { "User-Agent": "reelm-api" } });
-    if (!mr.ok) throw new Error(`manifest ${mr.status}`);
-    const manifest = ((await mr.json()) as any[]).map((p) => ({ value: p.value, name: p.display_name ?? p.name, type: p.type, version: p.version, disabled: !!p.disabled }));
+    if (!manifest) throw new Error("Provider list (manifest.json) didn't load");
     return json({ pinned, upstream, behind, changed, compareUrl: `https://github.com/${VEGA}/compare/${pinned.commit}...${upstream.commit}`, manifest });
   } catch (e: any) {
-    return json({ pinned, error: String(e?.message ?? e) });
+    return json({ pinned, manifest, error: String(e?.message ?? e) });
   }
 }
 /** POST /v1/admin/providers {commit?, enabled?}: approve a pinned commit and/or the enabled provider list. */
