@@ -37,6 +37,7 @@ import com.anistream.core.ui.theme.Accent
 import com.anistream.core.ui.theme.Bg
 import com.anistream.core.ui.theme.Ink
 import com.anistream.core.ui.theme.Radius
+import com.anistream.domain.ContentPrefs
 import com.anistream.feature.party.PartyDestination
 import com.anistream.feature.party.PartyViewModel
 import com.anistream.feature.party.UpdateViewModel
@@ -47,7 +48,8 @@ private val codeKeys = ('A'..'Z').map { it.toString() } + ('2'..'9').map { it.to
 
 /** "More": join a watch party with the on-screen code pad, and check for updates. */
 @Composable
-fun TvMoreScreen(onOpen: (PartyDestination) -> Unit, party: PartyViewModel = hiltViewModel(), updates: UpdateViewModel = hiltViewModel()) {
+fun TvMoreScreen(onOpen: (PartyDestination) -> Unit, party: PartyViewModel = hiltViewModel(), updates: UpdateViewModel = hiltViewModel(), acct: TvAccountViewModel = hiltViewModel()) {
+    val hidden by ContentPrefs.hidden.collectAsStateWithLifecycle()
     val ui by updates.updates.ui.collectAsStateWithLifecycle()
     var code by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -94,6 +96,20 @@ fun TvMoreScreen(onOpen: (PartyDestination) -> Unit, party: PartyViewModel = hil
             Spacer(Modifier.height(14.dp))
             TvPill(if (ui.checking) "Checking…" else "Check for updates", updates.updates::checkNow, enabled = !ui.checking)
             ui.status?.let { Text(it, style = TvType.body, modifier = Modifier.padding(top = 12.dp)) }
+            Spacer(Modifier.height(28.dp))
+            Text("What you watch", style = TvType.headline)
+            Text("Hide what you never watch. Turn a kind off and it leaves the menu, Home and search.", style = TvType.body.copy(color = Ink.muted))
+            Spacer(Modifier.height(14.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { ContentPrefs.ALL.chunked(2).forEach { pair -> Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                pair.forEach { k ->
+                    val on = k !in hidden
+                    // the last kind shown can't be turned off
+                    TvPill("${ContentPrefs.LABELS[k]}  ${if (on) "On" else "Off"}", {
+                        val next = if (on) hidden + k else hidden - k
+                        if (next.size < ContentPrefs.ALL.size) scope.launch { runCatching { acct.repo.setHidden(next) } }
+                    }, selected = on)
+                }
+            } } }
         }
     }
 }

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.anistream.core.account.HistorySync
 import com.anistream.core.common.Result
+import com.anistream.domain.ContentPrefs
 import com.anistream.domain.model.AnimeSearchResult
 import com.anistream.domain.model.Channel
 import com.anistream.domain.model.FavoriteAnime
@@ -24,7 +25,9 @@ import com.anistream.domain.usecase.GetHomeContentUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -49,6 +52,19 @@ data class HomeUiState(
     val myList: Set<String> = emptySet()
 ) {
     val isLoading: Boolean get() = animeLoading || mediaLoading
+
+    fun hiding(hidden: Set<String>): HomeUiState {
+        fun media(t: MediaType?) = (if (t == MediaType.SERIES) ContentPrefs.SERIES else ContentPrefs.MOVIES) !in hidden
+        val noAnime = ContentPrefs.ANIME in hidden
+        return copy(
+            continueWatching = continueWatching.filter { if (it.kind == "anime") !noAnime else ContentPrefs.MOVIES !in hidden || ContentPrefs.SERIES !in hidden },
+            content = if (noAnime) HomeContent() else content,
+            picks = if (noAnime) emptyList() else picks,
+            mediaRows = mediaRows.map { r -> r.copy(items = r.items.filter { media(it.type) }) }.filter { it.items.isNotEmpty() },
+            mediaPicks = mediaPicks.filter { media(it.mediaType) },
+            channels = if (ContentPrefs.LIVE in hidden) emptyList() else channels
+        )
+    }
 }
 
 /** Movies and series ride the anime poster card: it only needs id/title/poster/type/score/year. */
@@ -74,7 +90,9 @@ class HomeViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
-    val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
+    /** [_uiState] with the profile's "What you watch" choice applied, so toggling it updates the screen at once. */
+    val uiState: StateFlow<HomeUiState> = combine(_uiState, ContentPrefs.hidden) { s, hidden -> if (hidden.isEmpty()) s else s.hiding(hidden) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, _uiState.value)
 
     init {
         loadContent()

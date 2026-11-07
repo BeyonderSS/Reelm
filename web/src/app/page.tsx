@@ -5,7 +5,7 @@ import { Info, Play } from "lucide-react";
 import { animeCard, Chips, ContinueStrip, Marquee, RecommendedRow, kidsOk, mediaCard, pill, Row, useContinue } from "@/components/app";
 import { ShimmerButton } from "@/components/ui/shimmer-button";
 import { useApi, useSession } from "@/lib/session";
-import { entryHref, entrySub, syncFavs, watchHref, type Entry } from "@/lib/core";
+import { entryHref, entrySub, shows, syncFavs, watchHref, type Entry } from "@/lib/core";
 import { cn } from "@/lib/utils";
 import { useRouter } from "next/navigation";
 
@@ -81,7 +81,9 @@ function Hero({ slides }: { slides: Slide[] }) {
 export default function HomePage() {
   const { s } = useSession();
   useEffect(() => { if (s.token && s.profile) syncFavs(s.profile.id, s.token).catch(() => {}); }, [s.token, s.profile?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  const anime = useApi("anime/home"), movies = useApi("movies/catalog?key=movie/top");
+  const sh = (k: Parameters<typeof shows>[1]) => shows(s.profile, k);
+  // hidden kinds aren't even fetched
+  const anime = useApi(sh("anime") ? "anime/home" : null), movies = useApi(sh("movies") ? "movies/catalog?key=movie/top" : null);
   const [cw, removeCw] = useContinue();
   const k = s.profile?.kids;
   const slides: Slide[] = cw[0] ? [resumeSlide(cw[0])] : [];
@@ -91,18 +93,18 @@ export default function HomePage() {
     if (m[n]) slides.push({ key: m[n].id, title: m[n].title, poster: m[n].poster, desc: m[n].description, chips: ["Movie", m[n].year, m[n].rating && `IMDb ${m[n].rating}`], href: mediaCard(m[n]).href, play: watchHref({ kind: "movie", id: m[n].id, title: m[n].title, poster: m[n].poster, season: 0, episode: 0, type: "movie", year: m[n].year }) });
     if (a[n]) slides.push({ key: a[n].slug, title: a[n].title, poster: a[n].poster, chips: ["Anime", a[n].rating], href: `/anime/${a[n].slug}`, anime: a[n].slug });
   }
-  const loading = anime.loading || movies.loading;
+  const loading = anime.loading || movies.loading || !s.profile;
   return (
     <main className="pb-16">
       {loading && !slides.length ? <div className="skel -mt-16 h-[600px] md:-mt-20" /> : slides.length ? <Hero slides={slides} /> : <div className="h-8" />}
       <div className="relative z-10 -mt-10 md:-mt-14"><ContinueStrip items={cw} onRemove={removeCw} /></div>
       <RecommendedRow />
-      <Row title="Trending anime" path="anime/home" map={(d) => d.trending.map(animeCard)} />
-      <Row title="Popular movies" path="movies/catalog?key=movie/top" map={(d) => d.map(mediaCard)} />
-      <Row title="Popular series" path="movies/catalog?key=series/top" map={(d) => d.map(mediaCard)} />
-      <Row title="Top airing" path="anime/home" map={(d) => d.topAiring.map(animeCard)} />
-      <Row title="Most popular anime" path="anime/home" map={(d) => d.popular.map(animeCard)} />
-      <Row title="Latest episodes" path="anime/home" map={(d) => d.recent.map(animeCard)} />
+      {sh("anime") && <Row title="Trending anime" path="anime/home" map={(d) => d.trending.map(animeCard)} />}
+      {sh("movies") && <Row title="Popular movies" path="movies/catalog?key=movie/top" map={(d) => d.map(mediaCard)} />}
+      {sh("series") && <Row title="Popular series" path="movies/catalog?key=series/top" map={(d) => d.map(mediaCard)} />}
+      {sh("anime") && <Row title="Top airing" path="anime/home" map={(d) => d.topAiring.map(animeCard)} />}
+      {sh("anime") && <Row title="Most popular anime" path="anime/home" map={(d) => d.popular.map(animeCard)} />}
+      {sh("anime") && <Row title="Latest episodes" path="anime/home" map={(d) => d.recent.map(animeCard)} />}
     </main>
   );
 }

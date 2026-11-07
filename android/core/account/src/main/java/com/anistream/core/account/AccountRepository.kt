@@ -2,6 +2,7 @@ package com.anistream.core.account
 
 import android.content.Context
 import com.anistream.core.database.ActiveProfile
+import com.anistream.domain.ContentPrefs
 import com.anistream.domain.KidsPolicy
 import com.anistream.domain.MaturePolicy
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -76,6 +77,7 @@ class AccountRepository @Inject constructor(
             publish(token, user, prefs.getString("activeProfile", null))
         }
         _gate.value = enabled && !hasChoice
+        if (_session.value == null) ContentPrefs.set(guestHide()) // guests keep their "What you watch" choice on this device
     }
 
     private fun publish(token: String, user: User, activeId: String?) {
@@ -84,6 +86,20 @@ class AccountRepository @Inject constructor(
         ActiveProfile.id = active?.id ?: ""
         KidsPolicy.active = active?.kids == true
         MaturePolicy.active = active?.mature != true
+        ContentPrefs.set(active?.hide ?: guestHide())
+    }
+
+    private fun guestHide() = prefs.getStringSet("guestHide", null).orEmpty()
+
+    /**
+     * "What you watch": hides content kinds for the active profile (saved on the server, so every device follows), or
+     * for this device when browsing as a guest. Applies at once through [ContentPrefs].
+     */
+    suspend fun setHidden(hide: Set<String>) {
+        val clean = ContentPrefs.clean(hide)
+        val p = _session.value?.activeProfile
+        if (p == null) { prefs.edit().putStringSet("guestHide", clean).apply(); ContentPrefs.set(clean); return }
+        updateProfile(p.id, p.name, p.avatar, p.kids, p.mature, clean)
     }
 
     suspend fun login(username: String, password: String) = auth("login", username, password)
@@ -142,7 +158,7 @@ class AccountRepository @Inject constructor(
 
     private fun setProfiles(list: List<Profile>) {
         _profiles.value = list
-        prefs.edit().putString("profiles", JsonArray(list.map { buildJsonObject { put("id", it.id); put("name", it.name); put("avatar", it.avatar); put("kids", it.kids); put("mature", it.mature) } }).toString()).apply()
+        prefs.edit().putString("profiles", JsonArray(list.map { buildJsonObject { put("id", it.id); put("name", it.name); put("avatar", it.avatar); put("kids", it.kids); put("mature", it.mature); put("hide", hideJson(it.hide)) } }).toString()).apply()
         val s = _session.value ?: return
         publish(s.token, s.user, s.activeProfile?.id)
     }
@@ -154,14 +170,17 @@ class AccountRepository @Inject constructor(
         _gate.value = false
     }
 
-    suspend fun createProfile(name: String, avatar: String, kids: Boolean): Profile {
-        val p = api.call("POST", "/v1/profiles", buildJsonObject { put("name", name.trim()); put("avatar", avatar); put("kids", kids) }, token)!!.toProfile()
+    suspend fun createProfile(name: String, avatar: String, kids: Boolean, hide: Set<String> = emptySet()): Profile {
+        val p = api.call("POST", "/v1/profiles", buildJsonObject { put("name", name.trim()); put("avatar", avatar); put("kids", kids); put("hide", hideJson(ContentPrefs.clean(hide))) }, token)!!.toProfile()
         setProfiles(_profiles.value + p)
         return p
     }
 
-    suspend fun updateProfile(id: String, name: String, avatar: String, kids: Boolean, mature: Boolean = false) {
-        val p = api.call("PATCH", "/v1/profiles/$id", buildJsonObject { put("name", name.trim()); put("avatar", avatar); put("kids", kids); put("mature", mature && !kids) }, token)!!.toProfile()
+    suspend fun updateProfile(id: String, name: String, avatar: String, kids: Boolean, mature: Boolean = false, hide: Set<String>? = null) {
+        val p = api.call("PATCH", "/v1/profiles/$id", buildJsonObject {
+            put("name", name.trim()); put("avatar", avatar); put("kids", kids); put("mature", mature && !kids)
+            if (hide != null) put("hide", hideJson(ContentPrefs.clean(hide)))
+        }, token)!!.toProfile()
         setProfiles(_profiles.value.map { if (it.id == id) p else it })
     }
 

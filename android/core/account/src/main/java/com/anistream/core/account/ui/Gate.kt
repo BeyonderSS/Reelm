@@ -170,7 +170,7 @@ private fun Gate(vm: AccountViewModel, onAccount: () -> Unit) {
         modifier = Modifier.fillMaxSize().lamp().statusBarsPadding().navigationBarsPadding()
     ) { k ->
         when (k) {
-            "welcome" -> Welcome(onSignIn = { go(Page.SignIn) }, onSignUp = { go(Page.SignUp) }, onGuest = vm::guest)
+            "welcome" -> Welcome(onSignIn = { go(Page.SignIn) }, onSignUp = { go(Page.SignUp) }, onGuest = vm::guest, onSettings = if (vm.repo.hasChoice) ({ vm.repo.closeGate(); onAccount() }) else null)
             "who" -> WhosWatching(
                 profiles = profiles,
                 activeId = session?.activeProfile?.id,
@@ -189,7 +189,7 @@ private fun Gate(vm: AccountViewModel, onAccount: () -> Unit) {
                 canDelete = profiles.size > 1,
                 ui = ui,
                 onBack = { go(null) },
-                onSave = { name, avatar, kids, mature -> vm.save(editId.ifEmpty { null }, name, avatar, kids, mature) { go(null) } },
+                onSave = { name, avatar, kids, mature, hide -> vm.save(editId.ifEmpty { null }, name, avatar, kids, mature, hide) { go(null) } },
                 onDelete = { vm.delete(editId) { go(null) } }
             )
         }
@@ -199,7 +199,7 @@ private fun Gate(vm: AccountViewModel, onAccount: () -> Unit) {
 // ---------------------------------------------------------------- welcome (signed out)
 
 @Composable
-private fun Welcome(onSignIn: () -> Unit, onSignUp: () -> Unit, onGuest: () -> Unit) {
+private fun Welcome(onSignIn: () -> Unit, onSignUp: () -> Unit, onGuest: () -> Unit, onSettings: (() -> Unit)? = null) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Space.xl), horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(Modifier.weight(1f))
         AvatarCluster()
@@ -218,6 +218,8 @@ private fun Welcome(onSignIn: () -> Unit, onSignUp: () -> Unit, onGuest: () -> U
         Spacer(Modifier.height(Space.sm))
         TextAction("Continue as guest", onClick = onGuest, color = Ink.high)
         Text("As a guest, your history stays on this phone.", style = AppType.caption, textAlign = TextAlign.Center)
+        // a guest has no profile to open "Who's watching?" from; this is their way to the "What you watch" settings
+        if (onSettings != null) TextAction("Settings", onClick = onSettings, color = Ink.body)
         Spacer(Modifier.height(Space.xl))
     }
 }
@@ -638,13 +640,14 @@ private fun ProfileEditorPage(
     canDelete: Boolean,
     ui: AccountUi,
     onBack: () -> Unit,
-    onSave: (String, String, Boolean, Boolean) -> Unit,
+    onSave: (String, String, Boolean, Boolean, Set<String>) -> Unit,
     onDelete: () -> Unit
 ) {
     var name by rememberSaveable { mutableStateOf(initial?.name.orEmpty()) }
     var avatar by rememberSaveable { mutableStateOf(initial?.avatar ?: FluentEmojis.all.random().id) }
     var kids by rememberSaveable { mutableStateOf(initial?.kids ?: false) }
     var mature by rememberSaveable { mutableStateOf(initial?.mature ?: false) }
+    var hide by rememberSaveable { mutableStateOf(initial?.hide.orEmpty()) }
     var confirmMature by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -678,6 +681,7 @@ private fun ProfileEditorPage(
                             modifier = Modifier.semantics { contentDescription = "Show mature and non-film content" }
                         )
                     }
+                    WhatYouWatch(hide, { hide = it })
                 }
             }
             avatarItems(avatar, { avatar = it })
@@ -686,7 +690,7 @@ private fun ProfileEditorPage(
         Column(Modifier.fillMaxWidth().background(Bg.base).padding(horizontal = Space.xl, vertical = Space.md), horizontalAlignment = Alignment.CenterHorizontally) {
             ui.error?.let { ErrorNote(it); Spacer(Modifier.height(Space.md)) }
             PrimaryButton(
-                if (initial == null) "Add profile" else "Save", onClick = { onSave(name.trim(), avatar, kids, mature && !kids) },
+                if (initial == null) "Add profile" else "Save", onClick = { onSave(name.trim(), avatar, kids, mature && !kids, hide) },
                 enabled = name.isNotBlank(), loading = ui.busy, modifier = Modifier.fillMaxWidth()
             )
             if (initial != null && canDelete) TextAction("Delete profile", onClick = { confirm = true }, color = Accent.danger)

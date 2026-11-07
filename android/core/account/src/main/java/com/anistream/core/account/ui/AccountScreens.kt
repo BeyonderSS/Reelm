@@ -25,6 +25,7 @@ import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -36,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
@@ -47,6 +49,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.anistream.core.account.FluentEmojis
+import com.anistream.domain.ContentPrefs
 import com.anistream.core.ui.components.PrimaryButton
 import com.anistream.core.ui.components.SecondaryButton
 import com.anistream.core.ui.components.TextAction
@@ -75,6 +78,27 @@ fun AvatarImage(avatarId: String, size: Dp, modifier: Modifier = Modifier, ring:
     }
 }
 
+/** "What you watch": one switch per content kind (on = shown). The last one left on can't be turned off. */
+@Composable
+internal fun WhatYouWatch(hide: Set<String>, onChange: (Set<String>) -> Unit) {
+    Column(Modifier.padding(top = Space.lg)) {
+        Text("What you watch", style = AppType.bodyStrong, modifier = Modifier.semantics { heading() })
+        Text("Hide what you don't use. Tabs and rows follow.", style = AppType.caption)
+        ContentPrefs.ALL.forEach { kind ->
+            val shown = kind !in hide
+            Row(Modifier.fillMaxWidth().padding(top = Space.sm), verticalAlignment = Alignment.CenterVertically) {
+                Text(ContentPrefs.LABELS.getValue(kind), style = AppType.bodyStrong, modifier = Modifier.weight(1f))
+                Switch(
+                    checked = shown, onCheckedChange = { onChange(if (it) hide - kind else hide + kind) },
+                    enabled = !shown || hide.size < ContentPrefs.ALL.size - 1,
+                    colors = SwitchDefaults.colors(checkedThumbColor = Accent.on, checkedTrackColor = Accent.main, uncheckedThumbColor = Ink.muted, uncheckedTrackColor = Bg.raised, uncheckedBorderColor = Ink.ghost),
+                    modifier = Modifier.semantics { contentDescription = "Show ${ContentPrefs.LABELS.getValue(kind)}" }
+                )
+            }
+        }
+    }
+}
+
 /**
  * Account settings: who is watching (with a switch back to "Who's watching?"), approving a TV and sign out.
  * Guests get a way into sign in / sign up. [pairCode] comes from a deep link (reelm://pair/<code>) and is ready to approve.
@@ -85,6 +109,7 @@ fun AccountScreen(onBack: () -> Unit, pairCode: String? = null, onAdmin: () -> U
     val ui by vm.ui.collectAsStateWithLifecycle()
     val isAdmin by vm.repo.isAdmin.collectAsStateWithLifecycle()
     val adminMode by vm.repo.adminMode.collectAsStateWithLifecycle()
+    val hidden by ContentPrefs.hidden.collectAsStateWithLifecycle()
     var code by rememberSaveable { mutableStateOf(pairCode.orEmpty()) }
     LaunchedEffect(session?.token) { if (session != null) vm.refresh() }
 
@@ -100,6 +125,7 @@ fun AccountScreen(onBack: () -> Unit, pairCode: String? = null, onAdmin: () -> U
             Text("You're watching as a guest", style = AppType.heading)
             Spacer(Modifier.height(Space.sm))
             Text("Your history stays on this phone. Sign in to sync it with your TV and keep separate profiles.", style = AppType.body)
+            WhatYouWatch(hidden, vm::setHidden)
             Spacer(Modifier.height(Space.xl))
             PrimaryButton("Sign in or create account", onClick = vm.repo::openGate, modifier = Modifier.fillMaxWidth())
             return@Column
@@ -117,6 +143,8 @@ fun AccountScreen(onBack: () -> Unit, pairCode: String? = null, onAdmin: () -> U
             }
             SecondaryButton("Switch", onClick = vm.repo::openGate, icon = Icons.Rounded.SwapHoriz)
         }
+
+        WhatYouWatch(hidden, vm::setHidden)
 
         Spacer(Modifier.height(Space.xxl))
         Text("Sign in a TV", style = AppType.heading, modifier = Modifier.semantics { heading() })

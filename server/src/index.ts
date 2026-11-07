@@ -110,11 +110,18 @@ async function logEvent(...a: Parameters<typeof eventStmt>) {
   try { await eventStmt(...a).run(); } catch (e) { console.error("event log", e); } // logging never breaks a request
 }
 
-const profileOut = (r: any) => ({ id: r.id, name: r.name, avatar: r.avatar, kids: !!r.kids, mature: !!r.mature && !r.kids, createdAt: r.created_at });
+const profileOut = (r: any) => ({ id: r.id, name: r.name, avatar: r.avatar, kids: !!r.kids, mature: !!r.mature && !r.kids, hide: JSON.parse(r.hide || "[]"), createdAt: r.created_at });
 async function ownProfile(c: Ctx, user: User, id: string) {
   return (await c.env.DB.prepare("SELECT * FROM profiles WHERE id = ? AND user_id = ?").bind(id, user.id).first())
     ?? fail(404, "profile not found");
 }
+const KINDS = ["anime", "movies", "series", "live"];
+// hide: kinds of content this profile doesn't want to see; at least one kind must stay on
+const hideList = (v: unknown): string[] => {
+  if (!Array.isArray(v) || v.some((k) => !KINDS.includes(k))) fail(400, "invalid hide");
+  const out = KINDS.filter((k) => v.includes(k));
+  return out.length < KINDS.length ? out : fail(400, "Keep at least one kind of content");
+};
 const str = (v: unknown, max: number, what: string) =>
   typeof v === "string" && v.trim() && v.length <= max ? v.trim() : fail(400, `invalid ${what}`);
 
@@ -171,11 +178,12 @@ async function createProfile(c: Ctx) {
   const u = await auth(c);
   const b = await body(c.req);
   const name = str(b.name, 32, "name"), avatar = str(b.avatar, 64, "avatar");
-  const row = { id: uuid(), name, avatar, kids: b.kids ? 1 : 0, created_at: now() };
+  const hide = b.hide === undefined ? [] : hideList(b.hide);
+  const row = { id: uuid(), name, avatar, kids: b.kids ? 1 : 0, hide: JSON.stringify(hide), created_at: now() };
   // Insert only while under the limit, atomically.
   const r = await c.env.DB.prepare(
-    "INSERT INTO profiles (id, user_id, name, avatar, kids, created_at) SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM profiles WHERE user_id = ?) < 5")
-    .bind(row.id, u.id, name, avatar, row.kids, row.created_at, u.id).run();
+    "INSERT INTO profiles (id, user_id, name, avatar, kids, hide, created_at) SELECT ?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM profiles WHERE user_id = ?) < 5")
+    .bind(row.id, u.id, name, avatar, row.kids, row.hide, row.created_at, u.id).run();
   if (!r.meta.changes) fail(409, "profile limit reached (5)");
   await logEvent(c.env, c.req, "profile_create", u.id, { name }, row.id);
   return json(profileOut(row), 201);
@@ -190,9 +198,10 @@ async function patchProfile(c: Ctx) {
     avatar: b.avatar === undefined ? cur.avatar : str(b.avatar, 64, "avatar"),
     kids: b.kids === undefined ? cur.kids : b.kids ? 1 : 0,
     mature: b.mature === undefined ? cur.mature ?? 0 : b.mature ? 1 : 0,
+    hide: b.hide === undefined ? cur.hide ?? "[]" : JSON.stringify(hideList(b.hide)),
   };
   if (next.kids) next.mature = 0; // a kids profile never sees mature results
-  await c.env.DB.prepare("UPDATE profiles SET name=?, avatar=?, kids=?, mature=? WHERE id=?").bind(next.name, next.avatar, next.kids, next.mature, cur.id).run();
+  await c.env.DB.prepare("UPDATE profiles SET name=?, avatar=?, kids=?, mature=?, hide=? WHERE id=?").bind(next.name, next.avatar, next.kids, next.mature, next.hide, cur.id).run();
   await logEvent(c.env, c.req, "profile_update", u.id, next, cur.id);
   return json(profileOut({ ...cur, ...next }));
 }

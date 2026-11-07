@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Grid, Marquee, Notice, pill, Stub } from "@/components/app";
-import { getFavs, getHistory, removeHistory, syncFavs, syncHistory, type CardData, type Entry } from "@/lib/core";
+import { cardShown, getFavs, getHistory, kindOf, shows, removeHistory, syncFavs, syncHistory, type CardData, type Entry } from "@/lib/core";
 import { useSession } from "@/lib/session";
 
 export default function Library() {
@@ -11,8 +11,8 @@ export default function Library() {
   const [favs, setFavs] = useState<CardData[]>([]), [hist, setHist] = useState<Entry[]>([]);
   const pid = s.profile?.id ?? "guest";
   const load = () => {
-    setFavs(getFavs(pid));
-    setHist(Object.values(getHistory(pid)).filter((e) => !e.deleted && e.payload.kind !== "live").sort((a, b) => b.updatedAt - a.updatedAt));
+    setFavs(getFavs(pid).filter((c) => cardShown(s.profile, c)));
+    setHist(Object.values(getHistory(pid)).filter((e) => !e.deleted && e.payload.kind !== "live" && shows(s.profile, kindOf(e.payload))).sort((a, b) => b.updatedAt - a.updatedAt));
   };
   useEffect(() => { load(); if (s.token) Promise.all([syncFavs(pid, s.token), syncHistory(pid, s.token)]).then(load).catch(() => {}); }, [s.profile]); // eslint-disable-line react-hooks/exhaustive-deps
   const n = tab === "fav" ? favs.length : hist.length;

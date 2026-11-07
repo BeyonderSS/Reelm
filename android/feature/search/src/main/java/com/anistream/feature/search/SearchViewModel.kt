@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.anistream.core.common.Result
+import com.anistream.domain.ContentPrefs
 import com.anistream.domain.KidsPolicy
 import com.anistream.domain.model.AnimeSearchResult
 import com.anistream.domain.model.MediaItem
@@ -68,6 +69,13 @@ class SearchViewModel @Inject constructor(
     init {
         // the Anime | Movies & TV choice survives restarts
         onScopeChange(prefs.getInt(KEY_SCOPE, 0))
+        // "What you watch": land on a scope that is still shown, now and whenever the choice changes
+        viewModelScope.launch {
+            ContentPrefs.hidden.collect {
+                if (!ContentPrefs.shows(ContentPrefs.ANIME) && _uiState.value.scope == 0) onScopeChange(1)
+                else if (!ContentPrefs.showsMoviesTab() && _uiState.value.scope == 1) onScopeChange(0)
+            }
+        }
     }
 
     fun onScopeChange(scope: Int) {
@@ -77,7 +85,7 @@ class SearchViewModel @Inject constructor(
         if (scope == 1 && !mediaPopularRequested) {
             mediaPopularRequested = true
             viewModelScope.launch {
-                val first = movies.home().getOrNull()?.firstOrNull()?.items.orEmpty().map { it.asCard() }.distinctBy { it.slug }
+                val first = movies.home().getOrNull()?.firstOrNull()?.items.orEmpty().filter { ContentPrefs.shows(it.type) }.map { it.asCard() }.distinctBy { it.slug }
                 _uiState.update { it.copy(mediaPopular = first, isMediaPopularLoading = false) }
             }
         }
@@ -87,7 +95,7 @@ class SearchViewModel @Inject constructor(
     /** Both scopes land in the same poster grid; movie ids ride in [AnimeSearchResult.slug]. */
     /** Returns the page's items and the last page read (a kids profile may skip pages that filter to nothing). */
     private suspend fun search(query: String, page: Int): Pair<Result<List<AnimeSearchResult>>, Int> =
-        if (_uiState.value.scope == 1) KidsPolicy.loadKept(page, { m: MediaItem -> KidsPolicy.media(m.genres) }) { movies.search(query, it) }
+        if (_uiState.value.scope == 1) KidsPolicy.loadKept(page, { m: MediaItem -> KidsPolicy.media(m.genres) && ContentPrefs.shows(m.type) }) { movies.search(query, it) }
             .let { (r, p) -> r.map { list -> list.map { it.asCard() } } to p }
         else KidsPolicy.loadKept(page, KidsPolicy::animeCard) { repository.searchAnime(query, it) }
 

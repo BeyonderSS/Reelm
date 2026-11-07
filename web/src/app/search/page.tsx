@@ -3,10 +3,12 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { RotateCcw, X } from "lucide-react";
 import { animeCard, Grid, GridSkeleton, kidsOk, mediaCard, Notice } from "@/components/app";
+import { shows, showsMovies, type Profile } from "@/lib/core";
 import { useApi, useSession } from "@/lib/session";
 import { track } from "@/lib/telemetry";
 
 const TABS = [["anime", "Anime"], ["movies", "Movies & TV"]] as const;
+const TAB_ON = { anime: (p?: Profile) => shows(p, "anime"), movies: showsMovies };
 const RECENT = "reelm.recent";
 const readRecent = (): string[] => { try { return JSON.parse(localStorage.getItem(RECENT) ?? "[]"); } catch { return []; } };
 /** "Series, 2008" -> "Series"; anime subs are already the type ("TV", "OVA"). */
@@ -14,7 +16,10 @@ const kindOf = (sub?: string) => sub?.split(",")[0].trim() || "";
 
 function Search() {
   const q = useSearchParams(), router = useRouter(), { s } = useSession();
-  const term = q.get("q") ?? "", tab = q.get("t") === "movies" ? "movies" : "anime";
+  const term = q.get("q") ?? "", want = q.get("t") === "movies" ? "movies" : "anime";
+  // a hidden tab falls back to the other one (both can't be hidden)
+  const tab = TAB_ON[want](s.profile) ? want : want === "anime" ? "movies" : "anime";
+  const tabs = TABS.filter(([v]) => TAB_ON[v](s.profile));
   const [text, setText] = useState(term), [kind, setKind] = useState(""), [recent, setRecent] = useState<string[]>([]);
   const box = useRef<HTMLTextAreaElement>(null);
   useEffect(() => setText(term), [term]);
@@ -27,7 +32,7 @@ function Search() {
     return () => clearTimeout(id);
   }, [text]); // eslint-disable-line react-hooks/exhaustive-deps
   const { data, loading, error } = useApi(term ? `${tab}/search?q=${encodeURIComponent(term)}${tab === "movies" && s.profile?.mature && !s.profile.kids ? "&mature=1" : ""}` : null);
-  const all = ((data ?? []) as any[]).map(tab === "anime" ? animeCard : mediaCard).filter((c) => kidsOk(c, s.profile?.kids));
+  const all = ((data ?? []) as any[]).map(tab === "anime" ? animeCard : mediaCard).filter((c) => kidsOk(c, s.profile?.kids, s.profile));
   const kinds = [...new Set(all.map((c) => kindOf(c.sub)).filter(Boolean))];
   const items = kind && kinds.includes(kind) ? all.filter((c) => kindOf(c.sub) === kind) : all;
   const empty = !!term && !loading && !error && !all.length;
@@ -66,8 +71,8 @@ function Search() {
           {text && <button type="button" aria-label="Clear search" onClick={() => { setText(""); router.replace(`/search?t=${tab}`); box.current?.focus(); }} className="beam absolute -top-1 right-0 grid size-9 place-items-center rounded-full bg-white/8 hover:bg-white/14"><X className="size-4" /></button>}
         </form>
         {rest && <p className="text-sm text-foreground/52">Press Tab to complete “{hit && hit.title}”</p>}
-        <div role="tablist" aria-label="Catalog" className="seg">
-          {TABS.map(([v, label]) => <button key={v} role="tab" aria-selected={tab === v} onClick={() => { setKind(""); go(v, term); }} className="beam">{label}</button>)}
+        <div role="tablist" aria-label="Catalog" className={tabs.length > 1 ? "seg" : "hidden"}>
+          {tabs.length > 1 && tabs.map(([v, label]) => <button key={v} role="tab" aria-selected={tab === v} onClick={() => { setKind(""); go(v, term); }} className="beam">{label}</button>)}
         </div>
         {recent.length > 0 && (
           <div className="space-y-2">

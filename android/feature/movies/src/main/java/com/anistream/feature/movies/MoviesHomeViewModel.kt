@@ -7,6 +7,7 @@ import com.anistream.domain.KidsPolicy
 import com.anistream.domain.model.AnimeSearchResult
 import com.anistream.domain.model.MediaItem
 import com.anistream.domain.model.MediaRow
+import com.anistream.domain.ContentPrefs
 import com.anistream.domain.model.MediaType
 import com.anistream.domain.model.Recommendation
 import com.anistream.domain.model.WatchHistory
@@ -17,6 +18,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -56,7 +58,13 @@ class MoviesHomeViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MoviesHomeUiState())
-    val uiState: StateFlow<MoviesHomeUiState> = _uiState.asStateFlow()
+    /** with "What you watch" applied: hiding movies or series drops those titles from rows and picks at once */
+    val uiState: StateFlow<MoviesHomeUiState> = kotlinx.coroutines.flow.combine(_uiState, ContentPrefs.hidden) { s, hidden ->
+        if (hidden.isEmpty()) s else s.copy(
+            rows = s.rows.map { r -> r.copy(items = r.items.filter { ContentPrefs.shows(it.type) }) }.filter { it.items.isNotEmpty() },
+            picks = s.picks.filter { ContentPrefs.shows(it.mediaType ?: MediaType.MOVIE) }
+        )
+    }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, _uiState.value)
 
     init {
         load()
@@ -129,8 +137,8 @@ class MoviesCatalogViewModel @Inject constructor(
             var tries = 0
             while (r is Result.Success) {
                 rawSkip += r.data.size
-                if (!KidsPolicy.active) break
-                val kept = r.data.filter { KidsPolicy.media(it.genres) }
+                if (!KidsPolicy.active && ContentPrefs.hidden.value.isEmpty()) break
+                val kept = r.data.filter { (!KidsPolicy.active || KidsPolicy.media(it.genres)) && ContentPrefs.shows(it.type) }
                 // a page that filters to nothing must not look like the end; read on (up to 5 pages)
                 if (kept.isNotEmpty() || r.data.isEmpty() || ++tries >= 5) { r = Result.success(kept); break }
                 r = movies.catalog(key, rawSkip)

@@ -43,6 +43,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.Backspace
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -83,6 +84,7 @@ import com.anistream.core.ui.theme.DisplayHeavy
 import com.anistream.core.ui.theme.Ink
 import com.anistream.core.ui.theme.Radius
 import com.anistream.domain.model.AnimeSearchResult
+import com.anistream.domain.ContentPrefs
 import com.anistream.feature.search.SearchViewModel
 
 private val Violet = Color(0xFF5B3FA0)
@@ -174,7 +176,15 @@ fun TvSearchScreen(onOpen: (id: String) -> Unit, vm: SearchViewModel = hiltViewM
     val voice = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         r.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let(vm::onQueryChange)
     }
-    val list = if (s.query.isBlank()) (if (s.scope == 1) s.mediaPopular else s.popular) else s.visibleResults
+    val hidden by ContentPrefs.hidden.collectAsStateWithLifecycle()
+    val showAnime = ContentPrefs.ANIME !in hidden
+    val showMedia = ContentPrefs.MOVIES !in hidden || ContentPrefs.SERIES !in hidden
+    // the scope on screen is never a hidden one
+    LaunchedEffect(showAnime, showMedia, s.scope) { if (!showAnime && s.scope == 0) vm.onScopeChange(1) else if (!showMedia && s.scope == 1) vm.onScopeChange(0) }
+    val list = (if (s.query.isBlank()) (if (s.scope == 1) s.mediaPopular else s.popular) else s.visibleResults).let { l ->
+        // movie vs series is told apart by the search result's type
+        if (s.scope != 1) l else l.filter { r -> if (r.type.equals("Series", true)) ContentPrefs.SERIES !in hidden else ContentPrefs.MOVIES !in hidden }
+    }
     val suggestion = autofillTitle(s.query, s.visibleResults.map { it.title })
     val u = (LocalConfiguration.current.screenWidthDp / 100f).dp
     val strokePx = with(LocalDensity.current) { (u * 0.12f).toPx() }
@@ -212,6 +222,7 @@ fun TvSearchScreen(onOpen: (id: String) -> Unit, vm: SearchViewModel = hiltViewM
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(u * 1f), verticalArrangement = Arrangement.spacedBy(u * 0.6f)) {
                     Row(Modifier.background(Color.White.copy(alpha = 0.07f), Radius.pill).padding(u * 0.3f), horizontalArrangement = Arrangement.spacedBy(u * 0.3f)) {
                         listOf("Anime", "Movies & TV").forEachIndexed { i, t ->
+                            if ((i == 0 && !showAnime) || (i == 1 && !showMedia)) return@forEachIndexed
                             STouch({ vm.onScopeChange(i) }, selected = s.scope == i, base = Color.Transparent) {
                                 SText(t, 1.15f, Modifier.padding(horizontal = u * 1.3f, vertical = u * 0.5f), if (s.scope == i) FontWeight.SemiBold else FontWeight.Normal)
                             }
@@ -243,7 +254,7 @@ fun TvSearchScreen(onOpen: (id: String) -> Unit, vm: SearchViewModel = hiltViewM
             Spacer(Modifier.width(u * 5))
             // the giant query's line box sits high, so the left column starts 1 unit above the results
             Column(Modifier.weight(1f).padding(end = u * 4, top = u)) {
-                val types = if (s.scope == 1) mediaTypes else animeTypes
+                val types = if (s.scope == 1) mediaTypes.filter { !(it == "Movie" && ContentPrefs.MOVIES in hidden) && !(it == "Series" && ContentPrefs.SERIES in hidden) } else animeTypes
                 val label = TvType.title.copy(fontFamily = Display, fontWeight = FontWeight.SemiBold, fontSize = (u.value * 1.4f).sp, lineHeight = (u.value * 1.8f).sp)
                 Row(Modifier.fillMaxWidth().padding(bottom = u * 1.2f), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     Row(Modifier.weight(1f, fill = false), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(u)) {
@@ -304,7 +315,7 @@ fun TvSearchScreen(onOpen: (id: String) -> Unit, vm: SearchViewModel = hiltViewM
                     }
                     if (s.query.isNotBlank() && list.isEmpty() && !s.isLoading && s.error == null) item(span = { GridItemSpan(maxLineSpan) }) {
                         Column(verticalArrangement = Arrangement.spacedBy(u * 1.2f)) {
-                            SText(if (s.typeFilter != null) "Try All types, or fewer letters." else "Try fewer letters, or switch to ${if (s.scope == 1) "Anime" else "Movies & TV"}.", 1.15f, color = Color(0xFFA3A1AE))
+                            SText(if (s.typeFilter != null) "Try All types, or fewer letters." else if (showAnime && showMedia) "Try fewer letters, or switch to ${if (s.scope == 1) "Anime" else "Movies & TV"}." else "Try fewer letters.", 1.15f, color = Color(0xFFA3A1AE))
                             if (hasRecents) recents(true)
                         }
                     }

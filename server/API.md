@@ -14,12 +14,12 @@ Errors: `{ "error": "message" }` with a 4xx/5xx status.
 - Disabled accounts get `401` on every authed route and `403 account disabled` on login.
 
 ## Profiles (max 5 per account, Netflix-style)
-Profile: `{id, name, avatar, kids:boolean, mature:boolean, createdAt}`. `mature` (default false, always false on a kids profile) shows erotic titles, music videos and sports clips in search. `avatar` is a Fluent Emoji id like `"grinning_face"`,
+Profile: `{id, name, avatar, kids:boolean, mature:boolean, hide:string[], createdAt}`. `hide` (default `[]`) lists kinds of content the profile doesn't want: any of `"anime"`, `"movies"`, `"series"`, `"live"`, never all four (400 "Keep at least one kind of content"); unknown values are 400. `mature` (default false, always false on a kids profile) shows erotic titles, music videos and sports clips in search. `avatar` is a Fluent Emoji id like `"grinning_face"`,
 rendered from `https://cdn.jsdelivr.net/gh/microsoft/fluentui-emoji@main/assets/<Folder Name>/3D/<file>_3d.png`
 (the client keeps the id → path table; the server stores the id only).
 - `GET    /v1/profiles` → `{profiles:[…]}` (a new account starts with one profile named after the user)
-- `POST   /v1/profiles` `{name, avatar, kids?}` → profile
-- `PATCH  /v1/profiles/:id` `{name?, avatar?, kids?, mature?}` → profile
+- `POST   /v1/profiles` `{name, avatar, kids?, hide?}` → profile
+- `PATCH  /v1/profiles/:id` `{name?, avatar?, kids?, mature?, hide?}` → profile
 - `DELETE /v1/profiles/:id` → `204` (not the last one)
 
 ## Watch history sync (per profile, last-write-wins)

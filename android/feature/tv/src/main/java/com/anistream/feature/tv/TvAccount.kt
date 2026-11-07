@@ -92,6 +92,7 @@ import com.anistream.core.ui.theme.Bg
 import com.anistream.core.ui.theme.Display
 import com.anistream.core.ui.theme.Ink
 import com.anistream.core.ui.theme.Radius
+import com.anistream.domain.ContentPrefs
 import com.anistream.domain.model.WatchHistory
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -419,6 +420,8 @@ private fun TvProfileEditor(vm: AccountViewModel, initial: Profile?, canDelete: 
     var name by rememberSaveable { mutableStateOf(initial?.name.orEmpty()) }
     var avatar by rememberSaveable { mutableStateOf(initial?.avatar ?: FluentEmojis.all.random().id) }
     var typing by rememberSaveable { mutableStateOf(initial == null) }
+    var prefs by rememberSaveable { mutableStateOf(false) }
+    var hide by rememberSaveable { mutableStateOf(initial?.hide ?: emptySet<String>()) }
     val first = rememberFirstFocus(typing)
     // Title Case as it is typed: a capital after the start or a space
     fun type(k: String) { if (name.length < 20) name += if (name.isEmpty() || name.endsWith(" ")) k.uppercase() else k }
@@ -442,7 +445,7 @@ private fun TvProfileEditor(vm: AccountViewModel, initial: Profile?, canDelete: 
             )
             Spacer(Modifier.height(20.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                TvPill(if (ui.busy) "Saving" else "Save", { vm.save(initial?.id, name.trim(), avatar, initial?.kids ?: false, initial?.mature ?: false, onDone) }, enabled = name.isNotBlank() && !ui.busy)
+                TvPill(if (ui.busy) "Saving" else "Save", { vm.save(initial?.id, name.trim(), avatar, initial?.kids ?: false, initial?.mature ?: false, hide, onDone) }, enabled = name.isNotBlank() && !ui.busy)
                 if (initial != null && canDelete) TvPill("Delete", { vm.delete(initial.id, onDone) }, enabled = !ui.busy)
             }
             ui.error?.let { Spacer(Modifier.height(12.dp)); Text(it, style = TvType.body.copy(color = Accent.danger)) }
@@ -450,11 +453,29 @@ private fun TvProfileEditor(vm: AccountViewModel, initial: Profile?, canDelete: 
         Spacer(Modifier.width(48.dp))
         Column(Modifier.weight(1f)) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                TvPill("Name", { typing = true }, selected = typing)
-                TvPill("Avatar", { typing = false }, selected = !typing)
+                TvPill("Name", { typing = true; prefs = false }, selected = typing && !prefs)
+                TvPill("Avatar", { typing = false; prefs = false }, selected = !typing && !prefs)
+                TvPill("What you watch", { prefs = true }, selected = prefs)
             }
             Spacer(Modifier.height(20.dp))
-            if (typing) {
+            if (prefs) {
+                Text("Hide what this profile never watches.", style = TvType.body.copy(color = Ink.muted))
+                Spacer(Modifier.height(14.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ContentPrefs.ALL.chunked(2).forEach { pair ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            pair.forEach { k ->
+                                val on = k !in hide
+                                // the last kind shown can't be turned off
+                                TvPill("${ContentPrefs.LABELS[k]}  ${if (on) "On" else "Off"}", {
+                                    val next = if (on) hide + k else hide - k
+                                    if (next.size < ContentPrefs.ALL.size) hide = next
+                                }, selected = on)
+                            }
+                        }
+                    }
+                }
+            } else if (typing) {
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(9),
                     modifier = Modifier.focusRestorer(),

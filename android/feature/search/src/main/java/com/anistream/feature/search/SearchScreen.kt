@@ -64,6 +64,7 @@ import com.anistream.core.ui.components.EmptyState
 import com.anistream.core.ui.components.ErrorContent
 import com.anistream.core.ui.components.LoadingShimmer
 import com.anistream.core.ui.components.SegmentedControl
+import com.anistream.domain.ContentPrefs
 import com.anistream.core.ui.theme.Accent
 import com.anistream.core.ui.theme.AppType
 import com.anistream.core.ui.theme.Bg
@@ -97,7 +98,8 @@ fun SearchScreen(
             style = AppType.title,
             modifier = Modifier.padding(start = Space.lg, end = Space.lg, top = Space.sm, bottom = Space.md)
         )
-        SegmentedControl(
+        val hidden by ContentPrefs.hidden.collectAsStateWithLifecycle()
+        if (ContentPrefs.ANIME !in hidden && ContentPrefs.showsMoviesTab()) SegmentedControl(
             options = listOf("Anime", "Movies & TV"),
             selectedIndex = uiState.scope,
             onSelect = viewModel::onScopeChange,
@@ -116,7 +118,7 @@ fun SearchScreen(
                 contentPadding = PaddingValues(horizontal = Space.lg),
                 horizontalArrangement = Arrangement.spacedBy(Space.sm)
             ) {
-                items(if (movies) mediaTypeFilters else typeFilters) { type ->
+                items(if (movies) mediaTypeFilters.filter { it == "All" || ContentPrefs.shows(if (it == "Series") ContentPrefs.SERIES else ContentPrefs.MOVIES) } else typeFilters) { type ->
                     val value = if (type == "All") null else type
                     PillChip(label = type, selected = uiState.typeFilter == value, onClick = { viewModel.onTypeFilterChange(value) })
                 }

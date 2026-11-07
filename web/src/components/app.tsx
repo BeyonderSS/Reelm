@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { BlurFade } from "@/components/ui/blur-fade";
 import { ReelMark } from "@/components/reel";
 import { frac } from "@/lib/eps";
-import { avatarUrl, continueWatching, EMOJI_GROUPS, entryHref, entrySub, getFavs, kids, syncFavs, recSeeds, removeHistory, syncHistory, toggleFav, type CardData, type Entry } from "@/lib/core";
+import { avatarUrl, cardShown, continueWatching, KINDS, kindOf, shows, type Kind, type Profile, EMOJI_GROUPS, entryHref, entrySub, getFavs, kids, syncFavs, recSeeds, removeHistory, syncHistory, toggleFav, type CardData, type Entry } from "@/lib/core";
 import { useApi, useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
@@ -28,6 +28,24 @@ export const Avatar = ({ id, size = 36, ring }: { id: string; size?: number; rin
 );
 
 const LINKS = [["/", "Home", Home], ["/search", "Search", Search], ["/live", "Live TV", Tv], ["/schedule", "Schedule", CalendarDays], ["/library", "Library", Library]] as const;
+/** Nav entries a profile has hidden are gone (Schedule is anime-only). */
+const linksFor = (p?: Profile) => LINKS.filter(([h]) => (h !== "/live" || shows(p, "live")) && (h !== "/schedule" || shows(p, "anime")));
+/** "What you watch": one toggle per kind of content (on = shown); the last one left on can't be turned off. */
+export function WhatYouWatch({ hide, onChange, compact }: { hide: Kind[]; onChange: (h: Kind[]) => void; compact?: boolean }) {
+  return (
+    <fieldset className={cn("min-w-0", compact ? "px-3 py-2" : "rounded-2xl bg-slate px-4 py-3 text-sm")}>
+      <legend className={cn("font-medium", compact && "-mx-3 px-3 text-sm")}>What you watch</legend>
+      <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2">
+        {KINDS.map(([k, label]) => {
+          const on = !hide.includes(k), last = on && hide.length === KINDS.length - 1;
+          return <label key={k} className={cn("flex items-center gap-2", last ? "opacity-50" : "cursor-pointer")} title={last ? "Keep at least one kind of content" : undefined}>
+            <Switch aria-label={label} checked={on} disabled={last} onCheckedChange={(v) => onChange(v ? hide.filter((x) => x !== k) : [...hide, k])} />{label}</label>;
+        })}
+      </div>
+      {hide.length === KINDS.length - 1 && <p className="mt-2 text-xs text-foreground/52">Keep at least one kind of content.</p>}
+    </fieldset>
+  );
+}
 const BARE = ["/welcome", "/signin", "/signup", "/profiles", "/watch", "/pair", "/admin"];
 /** Admin mode: a per-browser switch, offered to admins only (the API enforces admin on every admin route). */
 export function useAdminMode() {
@@ -42,7 +60,7 @@ const active = (path: string, h: string) => (h === "/" ? path === "/" : path.sta
 
 export function Nav() {
   const { path, s, show } = useChrome();
-  const { set } = useSession(), router = useRouter();
+  const { set, setHide } = useSession(), router = useRouter();
   const [solid, setSolid] = useState(false), [q, setQ] = useState(""), [open, setOpen] = useState(false), [menu, setMenu] = useState(false), [code, setCode] = useState("");
   const input = useRef<HTMLInputElement>(null), menuRef = useRef<HTMLDivElement>(null);
   const [adminOn, setAdminOn, isAdmin] = useAdminMode();
@@ -65,7 +83,7 @@ export function Nav() {
         <Link href="/" className="beam flex shrink-0 items-center gap-2 rounded-full pr-2 font-display text-2xl font-extrabold tracking-tight text-primary"><ReelMark className="size-7" />Reelm</Link>
         {adminOn && <Link href="/admin" title="Admin mode is on" className="beam -ml-1 rounded-full bg-primary px-2 py-0.5 text-[10px] font-bold tracking-wide text-primary-foreground shadow-[0_0_18px_rgb(242_180_90/0.45)] md:-ml-6">ADMIN</Link>}
         <nav aria-label="Main" className="hidden flex-1 items-center gap-7 md:flex">
-          {LINKS.filter(([h]) => h !== "/search").map(([h, label]) => {
+          {linksFor(s.profile).filter(([h]) => h !== "/search").map(([h, label]) => {
             const on = active(path, h);
             return (
               <Link key={h} href={h} aria-current={on ? "page" : undefined} className={cn("beam relative rounded-md py-1 font-display text-[17px] font-semibold transition-colors", on ? "text-foreground" : "text-[#bdb9c9] hover:text-foreground")}>
@@ -92,6 +110,8 @@ export function Nav() {
             <div role="menu" className="page-in absolute top-12 right-0 w-72 rounded-[24px] bg-haze/95 p-2 shadow-[0_24px_60px_rgb(10_12_18/0.6)] ring-1 ring-white/8 backdrop-blur-2xl">
               <div className="flex items-center gap-3 px-3 py-3"><Avatar id={s.profile!.avatar} size={44} /><div className="min-w-0"><p className="truncate font-semibold">{s.profile!.name}</p><p className="truncate text-xs text-foreground/52">{s.user ? `@${s.user.username}` : "Guest, history stays in this browser"}</p></div></div>
               <div className="my-1 h-px bg-white/8" />
+              <WhatYouWatch compact hide={s.profile!.hide ?? []} onChange={(h) => setHide(h).catch(() => {})} />
+              <div className="my-1 h-px bg-white/8" />
               <Link role="menuitem" href="/profiles" className={item}><Users className="size-4 text-foreground/60" />Switch profile</Link>
               <form className="px-3 py-2" onSubmit={(e) => { e.preventDefault(); const c = code.trim().toUpperCase(); if (c) router.push(`/watch?room=${encodeURIComponent(c)}`); }}>
                 <label htmlFor="join-room" className="mb-1.5 flex items-center gap-3 text-sm"><Popcorn className="size-4 text-foreground/60" />Join watch together</label>
@@ -115,14 +135,14 @@ export function Nav() {
 
 /** Mobile bottom tab bar (and the spacer that keeps content above it). */
 export function TabBar() {
-  const { path, show } = useChrome();
+  const { path, s, show } = useChrome();
   if (!show) return null;
   return (
     <>
       <div className="h-24 md:hidden" />
       <nav aria-label="Tabs" className="fixed inset-x-0 bottom-0 z-40 border-t border-white/6 bg-dusk/85 pb-[max(env(safe-area-inset-bottom),6px)] backdrop-blur-2xl backdrop-saturate-150 md:hidden">
         <div className="mx-auto flex max-w-lg justify-around px-1">
-          {LINKS.map(([h, label, Icon]) => {
+          {linksFor(s.profile).map(([h, label, Icon]) => {
             const on = active(path, h);
             return (
               <Link key={h} href={h} aria-current={on ? "page" : undefined} className={cn("flex min-w-16 flex-1 flex-col items-center gap-1 pt-2 pb-1.5 text-[11px] font-medium transition-colors", on ? "text-primary" : "text-foreground/52")}>
@@ -223,14 +243,14 @@ export function Notice({ title, body, children }: { title: string; body?: string
   );
 }
 
-const allowed = (c: CardData, k?: boolean) => !k || (c.kind === "anime" ? kids.animeCard(c) : kids.media(c.genres));
+const allowed = (c: CardData, k?: boolean, p?: Profile) => cardShown(p, c) && (!k || (c.kind === "anime" ? kids.animeCard(c) : kids.media(c.genres)));
 /** A rail that loads itself; `map` turns the API payload into cards (kids filter applied here). */
 export function Row({ title, path, map }: { title: string; path: string; map: (d: any) => CardData[] }) {
   const { s } = useSession();
   const { data, loading, error } = useApi(path);
   if (loading) return <RailSkeleton />;
   if (error || !data) return null;
-  return <Rail title={title} items={map(data).filter((c) => allowed(c, s.profile?.kids))} />;
+  return <Rail title={title} items={map(data).filter((c) => allowed(c, s.profile?.kids, s.profile))} />;
 }
 export const kidsOk = allowed;
 
@@ -285,7 +305,7 @@ export function Stub({ e, onRemove }: { e: Entry; onRemove?: () => void }) {
 export function useContinue() {
   const { s } = useSession();
   const [items, setItems] = useState<Entry[]>([]);
-  const load = () => { if (s.profile) setItems(continueWatching(s.profile.id)); };
+  const load = () => { if (s.profile) setItems(continueWatching(s.profile.id).filter((e) => shows(s.profile, kindOf(e.payload)))); };
   // pull what the TV/phone watched: on open and whenever the tab comes back into view (Home never pulled, so it showed stale episodes)
   useEffect(() => {
     load();
@@ -320,7 +340,7 @@ export function RecommendedRow() {
     let live = true;
     fetch("/api/recs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, kids: !!s.profile.kids }) })
       .then((r) => (r.ok ? r.json() : []))
-      .then((d: CardData[]) => live && setItems(d.filter((c) => allowed(c, s.profile?.kids))))
+      .then((d: CardData[]) => live && setItems(d.filter((c) => allowed(c, s.profile?.kids, s.profile))))
       .catch(() => {});
     return () => { live = false; };
   }, [s.profile]);

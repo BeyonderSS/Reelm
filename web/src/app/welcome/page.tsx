@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { AvatarCluster } from "@/components/auth";
 import { pill } from "@/components/app";
 import { Marquee } from "@/components/ui/marquee";
-import { GUEST } from "@/lib/core";
+import { guestProfile } from "@/lib/core";
 import { useApi, useSession } from "@/lib/session";
 
 /** A slow wall of real posters behind the welcome, dimmed so it reads as atmosphere. */
@@ -41,7 +41,7 @@ export default function Welcome() {
         <div className="mt-10 flex w-full flex-col gap-3">
           <Link href="/signin" className={pill.primary}>Sign in</Link>
           <Link href="/signup" className={pill.secondary}>Create account</Link>
-          <button className={pill.ghost} onClick={() => { set({ guest: true, profile: GUEST }); router.replace("/"); }}>Continue as guest</button>
+          <button className={pill.ghost} onClick={() => { set({ guest: true, profile: guestProfile() }); router.replace("/"); }}>Continue as guest</button>
           <p className="text-xs text-foreground/52">As a guest, your history stays in this browser.</p>
         </div>
       </div>

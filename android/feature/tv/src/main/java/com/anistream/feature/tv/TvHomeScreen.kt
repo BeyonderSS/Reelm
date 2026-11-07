@@ -80,6 +80,7 @@ import com.anistream.feature.home.HomeViewModel
 import com.anistream.feature.movies.MoviesHomeViewModel
 import com.anistream.feature.movies.asMediaItem
 import com.anistream.domain.model.forYouRows
+import com.anistream.domain.ContentPrefs
 
 enum class HomeFilter { ALL, MEDIA, ANIME }
 
@@ -88,6 +89,7 @@ enum class HomeFilter { ALL, MEDIA, ANIME }
 fun TvHomeScreen(filter: HomeFilter, homeVm: HomeViewModel, moviesVm: MoviesHomeViewModel, nav: NavController) {
     val anime by homeVm.uiState.collectAsStateWithLifecycle()
     val media by moviesVm.uiState.collectAsStateWithLifecycle()
+    val hidden by ContentPrefs.hidden.collectAsStateWithLifecycle()
 
     // re-entering this destination (back from detail/player) picks up fresh progress
     LaunchedEffect(Unit) {
@@ -98,7 +100,7 @@ fun TvHomeScreen(filter: HomeFilter, homeVm: HomeViewModel, moviesVm: MoviesHome
     val lowEnd = LocalLowEnd.current
     // ponytail: rows rebuild only when the data changes, not on every D-pad move
     var removing by remember { mutableStateOf<WatchHistory?>(null) }
-    val rows = remember(anime, media, filter, lowEnd) { buildRows(filter, anime, media, lowEnd, nav) { removing = it } }
+    val rows = remember(anime, media, filter, lowEnd, hidden) { buildRows(filter, anime, media, lowEnd, nav) { removing = it } }
     removing?.let { h ->
         TvConfirm("Remove ${h.animeTitle} from history?", "Remove", {
             (if (h.kind == "media") moviesVm::removeHistory else homeVm::removeHistory)(h.animeSlug); removing = null
@@ -299,15 +301,21 @@ private fun buildRows(
         }
     )
 
+    // "What you watch": a hidden kind drops out of every row
+    fun keep(m: MediaItem) = ContentPrefs.shows(if (m.type == MediaType.SERIES) ContentPrefs.SERIES else ContentPrefs.MOVIES)
+    fun keep(h: WatchHistory) = ContentPrefs.shows(
+        if (h.kind != "media") ContentPrefs.ANIME else if (h.season > 0 || h.lastEpisodeWatched > 0) ContentPrefs.SERIES else ContentPrefs.MOVIES
+    )
+    val showAnime = ContentPrefs.shows(ContentPrefs.ANIME)
     val c = anime.content
     val continueRow = when (filter) {
         HomeFilter.ALL -> anime.continueWatching + media.continueWatching
         HomeFilter.MEDIA -> media.continueWatching
         HomeFilter.ANIME -> anime.continueWatching
-    }.sortedByDescending { it.lastWatchedTimestamp }.distinctBy { it.animeSlug }.map(::historyItem) // anime list already holds media rows too
+    }.filter(::keep).sortedByDescending { it.lastWatchedTimestamp }.distinctBy { it.animeSlug }.map(::historyItem) // anime list already holds media rows too
 
     fun animeRow(title: String, list: List<AnimeSearchResult>) = TvRow(title, list.distinctBy { it.slug }.map { animeItem(title, it) })
-    val mediaRows = media.rows.map { r -> TvRow(r.title, r.items.distinctBy { it.id }.map { mediaItem(r.title, it) }) }
+    val mediaRows = media.rows.map { r -> TvRow(r.title, r.items.filter(::keep).distinctBy { it.id }.map { mediaItem(r.title, it) }) }
     val animeRows = listOf(
         animeRow("Top airing anime", c.topAiring),
         animeRow("Most popular anime", c.popular),
@@ -317,18 +325,19 @@ private fun buildRows(
     )
     // "For you" rows exist only once there is history; TMDB rows carry the attribution TMDB's terms ask for
     val mediaPicks = media.picks.forYouRows().mapIndexed { i, (t, l) ->
-        TvRow(t, l.map { mediaItem(t, it.asMediaItem()) }, caption = "Data from TMDB".takeIf { i == 0 })
+        TvRow(t, l.map { it.asMediaItem() }.filter(::keep).map { mediaItem(t, it) }, caption = "Data from TMDB".takeIf { i == 0 })
     }
     val animePicks = anime.picks.forYouRows().map { (t, l) ->
         val title = if (filter == HomeFilter.ALL && t == "Top picks for you") "Top anime picks for you" else t
         animeRow(title, l.map { AnimeSearchResult(slug = it.id, title = it.title, posterUrl = it.posterUrl, score = it.rating, year = it.year) })
     }
+    val animeRowsAll = if (showAnime) animeRows else emptyList()
     return buildList {
         add(TvRow("Continue watching", continueRow, wide = true))
         when (filter) {
-            HomeFilter.ALL -> { addAll(mediaPicks); addAll(animePicks); add(animeRow("Trending anime", c.trending)); addAll(mediaRows); addAll(animeRows) }
+            HomeFilter.ALL -> { addAll(mediaPicks); addAll(if (showAnime) animePicks else emptyList()); if (showAnime) add(animeRow("Trending anime", c.trending)); addAll(mediaRows); addAll(animeRowsAll) }
             HomeFilter.MEDIA -> { addAll(mediaPicks); addAll(mediaRows) }
-            HomeFilter.ANIME -> { addAll(animePicks); add(animeRow("Trending anime", c.trending)); addAll(animeRows) }
+            HomeFilter.ANIME -> if (showAnime) { addAll(animePicks); add(animeRow("Trending anime", c.trending)); addAll(animeRows) }
         }
     }.filter { it.items.isNotEmpty() }.distinctBy { it.title }
         // low-end: fewer rows keeps composition and image memory down

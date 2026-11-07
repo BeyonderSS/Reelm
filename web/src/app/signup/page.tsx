@@ -3,8 +3,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { AuthShell, Field, StepBar } from "@/components/auth";
-import { Avatar, AvatarPicker, pill } from "@/components/app";
-import { reelm, type Profile, type Session } from "@/lib/core";
+import { Avatar, AvatarPicker, pill, WhatYouWatch } from "@/components/app";
+import { reelm, type Kind, type Profile, type Session } from "@/lib/core";
 import { useSession } from "@/lib/session";
 
 const userErr = (u: string) => !u ? "" : !/^[a-z0-9_]+$/.test(u) ? "Use only lowercase letters, numbers and _" : u.length < 3 ? "At least 3 characters" : u.length > 32 ? "At most 32 characters" : "";
@@ -15,7 +15,7 @@ const TITLES = [["Create your account", "You'll use these to sign in on your pho
 export default function SignUp() {
   const { set } = useSession(), router = useRouter();
   const [step, setStep] = useState(0), [acct, setAcct] = useState<{ s: Session; profile: Profile } | null>(null);
-  const [u, setU] = useState(""), [p, setP] = useState(""), [avatar, setAvatar] = useState("cat_face"), [name, setName] = useState("");
+  const [u, setU] = useState(""), [p, setP] = useState(""), [avatar, setAvatar] = useState("cat_face"), [name, setName] = useState(""), [hide, setHide] = useState<Kind[]>([]);
   const [err, setErr] = useState(""), [busy, setBusy] = useState(false);
   async function register() {
     setBusy(true); setErr("");
@@ -31,7 +31,7 @@ export default function SignUp() {
     if (!acct) return;
     setBusy(true); setErr("");
     try {
-      const body = { name: name.trim(), avatar, kids: false };
+      const body = { name: name.trim(), avatar, kids: false, hide };
       await reelm(`/v1/profiles/${acct.profile.id}`, { method: "PATCH", token: acct.s.token, json: body });
       set({ ...acct.s, profile: { ...acct.profile, ...body } }); router.replace("/");
     } catch (x) { setErr((x as Error).message); setBusy(false); }
@@ -56,6 +56,7 @@ export default function SignUp() {
           {step === 2 && <>
             <div className="mb-4 flex flex-col items-center gap-3 rounded-[18px] bg-slate/60 py-6"><Avatar id={avatar} size={104} ring /><span className="font-semibold">{name.trim() || "Your name"}</span></div>
             <Field label="Profile name" autoFocus maxLength={24} autoCapitalize="words" value={name} onChange={(e) => setName(e.target.value)} />
+            <WhatYouWatch hide={hide} onChange={setHide} />
           </>}
         </div>
         {err && <p role="alert" className="rounded-2xl bg-destructive/12 px-4 py-3 text-sm text-destructive">{err}</p>}

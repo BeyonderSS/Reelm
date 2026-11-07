@@ -1,13 +1,16 @@
 package com.anistream.core.account
 
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 data class User(val id: String, val username: String)
-data class Profile(val id: String, val name: String, val avatar: String, val kids: Boolean = false, val mature: Boolean = false)
+/** [hide]: content kinds this profile chose not to see (ContentPrefs: anime, movies, series, live). */
+data class Profile(val id: String, val name: String, val avatar: String, val kids: Boolean = false, val mature: Boolean = false, val hide: Set<String> = emptySet())
 /** [activeProfile] is null until a profile is picked. */
 data class Session(val token: String, val user: User, val activeProfile: Profile?)
 data class Device(val id: String, val name: String, val kind: String)
@@ -15,7 +18,9 @@ data class Device(val id: String, val name: String, val kind: String)
 internal fun str(o: JsonObject, k: String) = o[k]?.jsonPrimitive?.contentOrNull.orEmpty()
 
 internal fun JsonObject.toUser() = User(str(this, "id"), str(this, "username"))
-internal fun JsonObject.toProfile() = Profile(str(this, "id"), str(this, "name"), str(this, "avatar"), this["kids"]?.jsonPrimitive?.booleanOrNull ?: false, this["mature"]?.jsonPrimitive?.booleanOrNull ?: false)
+internal fun JsonObject.toProfile() = Profile(str(this, "id"), str(this, "name"), str(this, "avatar"), this["kids"]?.jsonPrimitive?.booleanOrNull ?: false, this["mature"]?.jsonPrimitive?.booleanOrNull ?: false,
+    (this["hide"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }?.toSet().orEmpty())
+internal fun hideJson(hide: Set<String>) = JsonArray(hide.sorted().map { JsonPrimitive(it) })
 internal fun JsonObject.userObj() = this["user"]!!.jsonObject.toUser()
 
 /**

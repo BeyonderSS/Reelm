@@ -67,6 +67,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
+import com.anistream.domain.ContentPrefs
 import com.anistream.feature.home.HomeViewModel
 import com.anistream.feature.movies.MoviesHomeViewModel
 import com.anistream.feature.movies.isMediaKey
@@ -127,7 +128,18 @@ private fun TvApp() {
     val current = entry?.destination?.route
     val acct: TvAccountViewModel = hiltViewModel()
     // accounts are hidden entirely when REELM_API_URL is blank
-    val entries = if (acct.repo.enabled) rail + accountEntry else rail
+    val hidden by ContentPrefs.hidden.collectAsStateWithLifecycle()
+    val visible = rail.filter {
+        when (it.route) {
+            TvRoutes.ANIME -> ContentPrefs.ANIME !in hidden
+            TvRoutes.MOVIES -> ContentPrefs.MOVIES !in hidden || ContentPrefs.SERIES !in hidden
+            TvRoutes.LIVE -> ContentPrefs.LIVE !in hidden
+            else -> true
+        }
+    }
+    val entries = if (acct.repo.enabled) visible + accountEntry else visible
+    // the screen we are on just got hidden: back to Home
+    LaunchedEffect(hidden, current) { if (current != null && current in rail.map { it.route } && visible.none { it.route == current }) nav.navigateTop(TvRoutes.HOME) }
     val showRail = entries.any { it.route == current }
     val session by acct.session.collectAsStateWithLifecycle()
     val profileId = session?.activeProfile?.id

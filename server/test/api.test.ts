@@ -42,7 +42,7 @@ describe("profiles", () => {
     expect(ps).toHaveLength(1);
     expect(ps[0].name).toBe(u.username);
     for (let i = 0; i < 4; i++)
-      expect((await call("/v1/profiles", { method: "POST", token: u.token, json: { name: `p${i}`, avatar: "fox_face" } })).status).toBe(201);
+      expect((await call("/v1/profiles", { method: "POST", token: u.token, json: { name: `p${i}`, avatar: "fox_face", ...(i === 0 && { hide: ["live", "anime"] }) } })).status).toBe(201);
     expect((await call("/v1/profiles", { method: "POST", token: u.token, json: { name: "six", avatar: "x" } })).status).toBe(409);
     ps = await list();
     expect(ps).toHaveLength(5);
@@ -51,6 +51,17 @@ describe("profiles", () => {
     // mature results are opt-in, and a kids profile can't opt in
     expect(await j(await call(`/v1/profiles/${ps[0].id}`, { method: "PATCH", token: u.token, json: { mature: true } }))).toMatchObject({ mature: true });
     expect(await j(await call(`/v1/profiles/${ps[1].id}`, { method: "PATCH", token: u.token, json: { mature: true } }))).toMatchObject({ mature: false });
+    // hide: kinds a profile doesn't want; create and patch accept it, all four or unknown values are refused
+    expect((await call("/v1/profiles", { method: "POST", token: u.token, json: { name: "h", avatar: "x", hide: ["x"] } })).status).toBe(400);
+    expect(ps.map((x) => x.hide)).toEqual([[], ["anime", "live"], [], [], []]);
+    expect(await j(await call(`/v1/profiles/${ps[0].id}`, { method: "PATCH", token: u.token, json: { hide: ["live", "anime"] } }))).toMatchObject({ hide: ["anime", "live"] });
+    expect(await j(await call(`/v1/profiles/${ps[0].id}`, { method: "PATCH", token: u.token, json: { name: "keep" } }))).toMatchObject({ hide: ["anime", "live"] });
+    for (const hide of [["anime", "movies", "series", "live"], ["bogus"], "anime"]) {
+      const r = await call(`/v1/profiles/${ps[0].id}`, { method: "PATCH", token: u.token, json: { hide } });
+      expect(r.status).toBe(400);
+    }
+    expect((await call(`/v1/profiles/${ps[0].id}`, { method: "PATCH", token: u.token, json: { hide: ["anime", "movies", "series", "live"] } }).then(j)).error).toMatch(/at least one/);
+    expect(await j(await call(`/v1/profiles/${ps[0].id}`, { method: "PATCH", token: u.token, json: { hide: [] } }))).toMatchObject({ hide: [] });
     expect((await call(`/v1/profiles/${ps[1].id}`, { method: "PATCH", token: other.token, json: { name: "x" } })).status).toBe(404);
     expect((await call(`/v1/profiles/${ps[1].id}`, { method: "DELETE", token: other.token })).status).toBe(404);
     for (const x of ps.slice(1)) expect((await call(`/v1/profiles/${x.id}`, { method: "DELETE", token: u.token })).status).toBe(204);

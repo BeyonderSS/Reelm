@@ -255,11 +255,23 @@ export async function syncHistory(pid: string, token: string) {
   await push(pid, token, out);
 }
 
-export type Profile = { id: string; name: string; avatar: string; kids: boolean; mature?: boolean };
+export type Profile = { id: string; name: string; avatar: string; kids: boolean; mature?: boolean; hide?: Kind[] };
+/** What you watch: a profile hides whole kinds of content (never all four; the server enforces it). */
+export const KINDS = [["anime", "Anime"], ["movies", "Movies"], ["series", "Series"], ["live", "Live TV"]] as const;
+export type Kind = (typeof KINDS)[number][0];
+export const shows = (p: Profile | undefined, k: Kind) => !p?.hide?.includes(k);
+/** The Movies & TV area stays while either movies or series is on. */
+export const showsMovies = (p?: Profile) => shows(p, "movies") || shows(p, "series");
+export const kindOf = (p: { kind: string; type?: string }): Kind => p.kind === "anime" ? "anime" : p.kind === "live" ? "live" : p.type === "series" ? "series" : "movies";
+/** Card kind: anime cards say so; media cards carry the type in their link. */
+export const cardShown = (p: Profile | undefined, c: { kind?: string; href: string }) => shows(p, c.kind === "anime" ? "anime" : c.href.includes("type=series") ? "series" : "movies");
 export type Session = { token?: string; user?: { id: string; username: string; is_admin?: boolean }; profile?: Profile; guest?: boolean };
 export const loadSession = () => ls.get<Session>("reelm.session", {});
 export const storeSession = (s: Session) => ls.set("reelm.session", s);
 export const GUEST: Profile = { id: "guest", name: "Guest", avatar: "grinning_face", kids: false };
+/** A guest has no account to save to, so their "What you watch" choice lives in its own key and survives leaving guest mode. */
+export const GUEST_HIDE = "reelm.guest.hide";
+export const guestProfile = (): Profile => ({ ...GUEST, hide: ls.get<Kind[]>(GUEST_HIDE, []) });
 export const deviceId = () => { let d = ls.get<string>("reelm.device", ""); if (!d) ls.set("reelm.device", (d = crypto.randomUUID())); return d; };
 
 /** Taste seeds from this profile's history for /api/recs: weight = (0.3 + 0.7 * completion) halved every 30 days (as Android's Ranking.seedWeight). */

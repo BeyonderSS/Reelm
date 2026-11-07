@@ -56,6 +56,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.anistream.domain.ContentPrefs
+import androidx.compose.runtime.remember
 import com.anistream.core.ui.components.BottomNavBar
 import com.anistream.core.ui.components.BottomNavItem
 import com.anistream.core.ui.theme.Bg
@@ -160,6 +162,15 @@ fun AniStreamNavGraph() {
         }
     }
 
+    // "What you watch": if the tab we're on gets hidden, move to the first one still shown
+    val hidden by ContentPrefs.hidden.collectAsStateWithLifecycle()
+    androidx.compose.runtime.LaunchedEffect(currentRoute, hidden) {
+        val tab = BottomNavItem.entries.firstOrNull { it.route == currentRoute }
+        if (tab != null && !tab.visible(hidden)) {
+            navController.navigate(BottomNavItem.entries.first { it.visible(hidden) }.route) { popUpTo(0) { inclusive = true } }
+        }
+    }
+
     // No system-bar insets here: the only padding the Scaffold contributes is the bottom bar
     // (which itself sits above the gesture bar). Screens decide about the status bar; see [Insetted].
     ProfilePickerGate(onAccount = { navController.navigate("account") }) {
@@ -177,7 +188,7 @@ fun AniStreamNavGraph() {
     ) { padding ->
         NavHost(
             navController = navController,
-            startDestination = Routes.HOME,
+            startDestination = remember { BottomNavItem.entries.first { it.visible(ContentPrefs.hidden.value) }.route },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
