@@ -1,5 +1,6 @@
 package com.anistream.core.media
 
+import android.util.Log
 import com.anistream.core.common.Result
 import com.anistream.core.common.safeApiCall
 import com.anistream.core.database.dao.AddonDao
@@ -27,6 +28,11 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
+import com.anistream.domain.repository.LateStreams
+import com.anistream.domain.repository.NowPlaying
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -278,12 +284,17 @@ class MoviesRepositoryImpl @Inject constructor(
         }
         if (sources.isEmpty()) error("No streaming source carries this title")
 
-        // Each source on its own timeout; order kept: MovieBox, 4KHDHub, Dramachi, Vega, then addons (each already best-first).
-        val results = coroutineScope {
-            sources.map { fetch -> async { runCatching { withTimeout(SOURCE_TIMEOUT_MS) { fetch() } } } }.awaitAll()
+        // Each source on its own (generous) timeout. Returns once the first sources are in plus a short grace, so a fast
+        // network still auto-picks across MovieBox/HDHub4u/etc.; on a slow one the rest keep resolving in [late] and
+        // reach the player through NowPlaying.late (a hard 15 s cut used to leave only Dramachi on a slow connection).
+        // Order kept within what's returned: MovieBox, 4KHDHub, Dramachi, Vega, then addons (each already best-first).
+        val key = NowPlaying.lateKey(id, season, episode)
+        val got = firstWithGrace(sources, late, SOURCE_TIMEOUT_MS, GRACE_MS) {
+            Log.d("Sources", "late: ${it.size} from ${it.first().sourceName}"); NowPlaying.late.emit(LateStreams(key, it))
         }
-        if (results.all { it.isFailure }) throw results.first().exceptionOrNull()!!
-        results.flatMap { it.getOrNull().orEmpty() }
+        Log.d("Sources", "${got.size}/${sources.size} in: " + got.joinToString { r -> r.fold({ l -> "${l.size}" }, { e -> "fail(${e.message?.take(60)})" }) })
+        if (got.isNotEmpty() && got.all { it.isFailure } && got.size == sources.size) throw got.first().exceptionOrNull()!!
+        got.flatMap { it.getOrNull().orEmpty() }
     }
 
     /**
@@ -316,8 +327,12 @@ class MoviesRepositoryImpl @Inject constructor(
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
+    /** outlives the caller: late sources keep resolving after streams() returned */
+    private val late = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private companion object {
-        const val SOURCE_TIMEOUT_MS = 15_000L
+        const val SOURCE_TIMEOUT_MS = 45_000L
+        const val GRACE_MS = 4_000L // after the first source with streams, how long the others get before playback starts
         const val SEARCH_TIMEOUT_MS = 6_000L
         const val MAX_DUBS = 6
     }

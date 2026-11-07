@@ -28,6 +28,7 @@ import com.anistream.domain.usecase.canPlayPhone
 import com.anistream.domain.usecase.pickStream
 import com.anistream.domain.repository.DownloadRepository
 import com.anistream.domain.repository.MoviesRepository
+import com.anistream.domain.repository.LateStreams
 import com.anistream.domain.repository.NowPlaying
 import com.anistream.domain.model.localStream
 import com.anistream.domain.repository.WatchHistoryRepository
@@ -213,6 +214,8 @@ class MediaPlayerViewModel @Inject constructor(
                 recordStart(request)
                 play(pick(request), null)
             }
+            // slow networks: sources that answered after playback started are appended (indices stay valid for fallback)
+            if (!request.isLive) viewModelScope.launch { NowPlaying.late.collect(::mergeLate) }
             viewModelScope.launch {
                 while (true) {
                     delay(10_000)
@@ -221,6 +224,20 @@ class MediaPlayerViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun mergeLate(ev: LateStreams) {
+        val s = _uiState.value
+        val r = s.request ?: return
+        val id = r.mediaId ?: return
+        if (ev.key != NowPlaying.lateKey(id, r.season, r.episode)) return
+        val fresh = ev.streams.filter { m -> r.streams.none { it.url == m.url } }
+        if (fresh.isEmpty()) return
+        val next = r.copy(streams = r.streams + if (lowEnd) lowEndOrder(fresh) else fresh)
+        NowPlaying.request = next
+        val ranOut = s.error?.startsWith("Playback failed") == true // every earlier source failed: try the newcomers
+        _uiState.update { it.copy(request = next, error = if (ranOut) null else it.error, isLoading = ranOut || it.isLoading) }
+        if (ranOut) play(r.streams.size, player.currentPosition.takeIf { it > 0 })
     }
 
     private fun play(index: Int, startMs: Long?) {

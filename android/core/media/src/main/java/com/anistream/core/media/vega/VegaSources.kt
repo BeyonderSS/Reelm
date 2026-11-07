@@ -114,7 +114,7 @@ class VegaSources @Inject constructor(
 
     companion object {
         private const val CDN = "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers"
-        private const val PROVIDER_TIMEOUT_MS = 14_000L // under MoviesRepositoryImpl's 15 s per-source budget
+        private const val PROVIDER_TIMEOUT_MS = 40_000L // under MoviesRepositoryImpl's 45 s per-source budget (slow networks)
         private const val REGISTRY_TIMEOUT_MS = 3_000L
         val DEFAULT = Registry("4ecbc98e12da870ffc06b41bd7affe4b1fe316f0", listOf("hdhub4u", "drive", "vega", "mod", "topmovies"))
         private val DISPLAY = mapOf(

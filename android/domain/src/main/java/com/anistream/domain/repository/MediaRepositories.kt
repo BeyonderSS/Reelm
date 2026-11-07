@@ -12,6 +12,7 @@ import com.anistream.domain.model.Playlist
 import com.anistream.domain.model.Recommendation
 import com.anistream.domain.model.SkipInterval
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 
 /** Movies & TV: Cinemeta for browse rows, MovieBox for search/detail/streams, enabled Stremio addons for extra streams. */
 interface MoviesRepository {
@@ -68,4 +69,13 @@ interface SkipTimesRepository {
 object NowPlaying {
     @Volatile
     var request: PlaybackRequest? = null
+
+    /**
+     * Sources that answered after [MoviesRepository.streams] returned (slow networks): the player appends them to the
+     * request whose `mediaId:season:episode` matches [LateStreams.key]. Replay covers the gap before the player subscribes.
+     */
+    val late = MutableSharedFlow<LateStreams>(replay = 16, extraBufferCapacity = 16)
+    fun lateKey(id: String, season: Int, episode: Int) = "$id:$season:$episode"
 }
+
+data class LateStreams(val key: String, val streams: List<MediaStream>)

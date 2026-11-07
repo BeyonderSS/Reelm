@@ -99,7 +99,7 @@ class FourKHdHubSource @Inject constructor(private val http: MediaHttp) : Stream
         const val PER_QUALITY = 2
         const val MAX_RELEASES = 4
         const val MAX_PROBES = 6
-        const val RELEASE_TIMEOUT_MS = 12_000L
+        const val RELEASE_TIMEOUT_MS = 30_000L // generous for slow networks; MoviesRepositoryImpl caps the source at 45 s
     }
 }
 
