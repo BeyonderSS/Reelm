@@ -17,6 +17,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.anistream.core.common.Result
+import com.anistream.domain.AudioLanguage
 import com.anistream.domain.KidsBlockedException
 import com.anistream.domain.KidsPolicy
 import com.anistream.domain.model.MediaStream
@@ -71,12 +72,12 @@ data class MediaPlayerUiState(
         get() = request?.let { it.mediaId != null && it.season > 0 && it.episode > 0 && it.seasonEpisodeCount > it.episode } == true
 }
 
-/** "1080p · HEVC · 2.1 GB" (no source name). */
-internal fun MediaStream.detailLabel(): String = listOfNotNull(
+/** "1080p · HEVC · 2.1 GB · Hindi · English" (no source name). */
+internal fun MediaStream.detailLabel(): String = (listOfNotNull(
     qualityLabel.takeIf { it.isNotBlank() },
     codec?.takeIf { it.isNotBlank() }?.uppercase(),
     sizeBytes?.takeIf { it > 0 }?.let { formatBytes(it) }
-).joinToString(" · ")
+) + languages.map(AudioLanguage::name)).joinToString(" · ")
 
 /** "MovieBox · 1080p · HEVC · 2.1 GB" */
 internal fun MediaStream.label(): String = listOf(sourceName, detailLabel()).filter { it.isNotBlank() }.joinToString(" · ")
@@ -122,12 +123,37 @@ class MediaPlayerViewModel @Inject constructor(
 
     private val appContext = context
     private fun pinKey(r: PlaybackRequest) = r.historyKey ?: r.mediaId ?: r.title
+    /** Auto-pick; among the streams in the preferred [AudioLanguage] when any are. */
     private fun pick(r: PlaybackRequest): Int {
         if (r.isLive || r.streams.size < 2) return 0
         val pin = QualityPick.pinned(appContext, pinKey(r))
-        val i = pickStream(r.streams, QualityPick.bandwidth(appContext), pin, if (lowEnd) ::canPlayLowEnd else ::canPlayPhone)
-        _uiState.update { it.copy(autoIndex = i, autoNote = if (pin != null) "Pinned ${pin}p" else "Auto") }
+        val lang = AudioLanguage.preferred.value?.takeIf { l -> r.streams.any { l in it.languages } }
+        val i = bestOf(r, r.streams.indices.filter { lang == null || lang in r.streams[it].languages }, pin)
+        val note = if (pin != null) "Pinned ${pin}p" else "Auto"
+        _uiState.update { it.copy(autoIndex = i, autoNote = lang?.let { l -> "$note · ${AudioLanguage.name(l)}" } ?: note) }
         return i
+    }
+
+    private fun bestOf(r: PlaybackRequest, indices: List<Int>, pin: Int?): Int =
+        indices[pickStream(indices.map { r.streams[it] }, QualityPick.bandwidth(appContext), pin, if (lowEnd) ::canPlayLowEnd else ::canPlayPhone)]
+
+    /**
+     * "Audio language" pick (null = Any), saved as the device preference. The playing file's own track is used when it
+     * has that language; otherwise the best source in it takes over at the same position.
+     */
+    fun selectAudioLanguage(code: String?) {
+        AudioLanguage.set(code)
+        val lang = AudioLanguage.preferred.value
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_AUDIO).setPreferredAudioLanguage(lang).build()
+        val s = _uiState.value
+        val r = s.request ?: return
+        if (lang == null || lang in trackLanguages(player.currentTracks) || lang in s.stream?.languages.orEmpty()) return
+        val indices = r.streams.indices.filter { lang in r.streams[it].languages }
+        if (indices.isEmpty()) return _uiState.update { it.copy(message = "No ${AudioLanguage.name(lang)} source for this title") }
+        val i = bestOf(r, indices, QualityPick.pinned(appContext, pinKey(r)))
+        play(i, if (s.isLive) null else player.currentPosition)
+        _uiState.update { it.copy(message = "Switched to ${r.streams[i].label()}") }
     }
 
     private val _uiState = MutableStateFlow(MediaPlayerUiState(request = NowPlaying.request?.let(::ordered)))

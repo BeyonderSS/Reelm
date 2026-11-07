@@ -4,6 +4,7 @@ import * as dr from "@/lib/server/dramachi";
 import * as tm from "@/lib/server/tmdb";
 import { bestTitle, rank, visible } from "@/lib/search-rank";
 import { bridge, helperOld, helperVega, helperVersion } from "@/lib/bridge";
+import { langs } from "@/lib/langs";
 
 // MovieBox refuses datacenter IPs (Cloudflare, Vercel: HTTP 440) but allows CORS, so the browser runs these
 // from the viewer's own connection (see get() in core.ts). The API route keeps them for local dev.
@@ -50,7 +51,14 @@ export const movieRoutes: Record<string, (q: URLSearchParams) => Promise<unknown
     const mbPart = async () => {
       const sid = id.startsWith("mb:") ? id.slice(3) : await findMb(q);
       if (!sid) throw new Error("No stream source found for this title");
-      return (await mb.streams(sid, num(q.get("s")), num(q.get("e")))).map((x) => ({ ...x, label: `MovieBox · ${x.label}` }));
+      // each dub is its own subject: play the dubs too, tagged with their language ("Original" stays untagged: we don't know it)
+      const one = async (id: string, label = "Original") => (await mb.streams(id, num(q.get("s")), num(q.get("e"))))
+        .map((x) => ({ ...x, label: `MovieBox · ${x.label}`, langs: label === "Original" ? [] : langs(label) }));
+      const audio = mb.detail(sid).then((d) => d.audio).catch(() => [] as Awaited<ReturnType<typeof mb.detail>>["audio"]);
+      const [main, dubs] = await Promise.all([audio.then((a) => one(sid, a.find((x) => x.current)?.label)),
+        // ponytail: first 6 dubs with a known language; a dub subject often serves only a notice video, which streams() drops
+        audio.then((a) => Promise.all(a.filter((x) => !x.current && langs(x.label).length).slice(0, 6).map((x) => one(x.id.slice(3), x.label).catch(() => []))))]);
+      return [...main, ...dubs.flat()];
     };
     const drPart = async () => {
       if (!q.get("title")) return []; // an "mb:" id arrives without a title

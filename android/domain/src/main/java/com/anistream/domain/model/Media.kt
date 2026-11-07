@@ -78,7 +78,9 @@ data class MediaStream(
     /** progressive file (mp4/mkv) vs adaptive manifest (m3u8/mpd) */
     val isDirectFile: Boolean = true,
     /** explicit MIME when the URL has no telling extension, e.g. "application/x-mpegURL" */
-    val mimeType: String? = null
+    val mimeType: String? = null,
+    /** audio languages in this file, ISO 639-1 ("hi", "en", "ta" …), best guess from the release name; empty = unknown */
+    val languages: List<String> = emptyList()
 )
 
 data class Addon(

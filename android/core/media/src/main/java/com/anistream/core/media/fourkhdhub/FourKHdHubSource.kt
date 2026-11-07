@@ -1,6 +1,7 @@
 package com.anistream.core.media.fourkhdhub
 
 import com.anistream.core.media.MediaHttp
+import com.anistream.core.media.ReleaseLanguages
 import com.anistream.core.media.StreamSource
 import com.anistream.core.media.Stremio
 import com.anistream.domain.model.MediaItem
@@ -60,7 +61,8 @@ class FourKHdHubSource @Inject constructor(private val http: MediaHttp) : Stream
             headers = HEADERS,
             sourceName = "4KHDHub",
             isDirectFile = !m3u8,
-            mimeType = if (m3u8) "application/x-mpegURL" else null
+            mimeType = if (m3u8) "application/x-mpegURL" else null,
+            languages = ReleaseLanguages.parse(release.title)
         ) to best.second
     }
 

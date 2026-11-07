@@ -2,6 +2,7 @@
 // so every request goes through the Reelm Helper bridge (1.2+). `f` is injectable so node can test the shims.
 import { score } from "./search-rank.ts";
 import { bridge, setHeaders } from "./bridge.ts";
+import { langs } from "./langs.ts";
 export type F = (url: string, o?: { headers?: Record<string, string>; probe?: boolean; method?: string; body?: string; vega?: boolean }) => Promise<{ status: number; url: string; headers: Record<string, string>; text: string }>;
 const vf: F = (u, o) => bridge(u, { ...o, vega: true }, 20000);
 const DEFAULT = { commit: "4ecbc98e12da870ffc06b41bd7affe4b1fe316f0", enabled: ["hdhub4u", "drive", "vega", "mod", "topmovies"], base: "" };
@@ -138,8 +139,9 @@ export async function streams(title: string, year: number, type: "movie" | "seri
         const pr = await f(s.link, { probe: true, vega: true, headers: { ...hd, Range: "bytes=0-" } }).catch(() => null);
         if (!pr || (pr.status !== 200 && pr.status !== 206) || /text\/html|json|xml/.test(pr.headers["content-type"] ?? "")) { console.debug(`[vega] ${p}: dropped ${String(s.link).slice(8, 50)} (${pr ? pr.status + " " + pr.headers["content-type"] : "probe failed"})`); continue; }
         const ht = h(l) || +(`${s.quality ?? ""}`.match(/\d{3,4}/)?.[0] ?? 0), ac = /ddp|dd\+|dd ?[257]\.1|e-?ac-?3|\bac-?3|dts|atmos|truehd/i.test(l.title) && !/aac|opus/i.test(l.title);
-        return { url: s.link as string, height: ht, label: `${NAMES[p] ?? p} · ${s.server ?? "Direct"}${ht ? " " + ht + "p" : ""}${ac ? " · Dolby audio" : ""}`, dolby: ac,
-          codec: /av1/i.test(l.title) ? "AV1" : /hevc|x265|h\.?265/i.test(l.title) ? "HEVC" : /avc|x264|h\.?264/i.test(l.title) ? "H.264" : undefined, subtitles: [] as any[] };
+        return { url: s.link as string, height: ht, label: `${NAMES[p] ?? p} · ${String(s.server ?? "").split(" · ").filter((x) => x && x !== "Unknown" && !/^\d{3,4}p$/.test(x)).join(" ") || "Direct"}${ht ? " " + ht + "p" : ""}${ac ? " · Dolby audio" : ""}`, dolby: ac,
+          codec: /av1/i.test(l.title) ? "AV1" : /hevc|x265|h\.?265/i.test(l.title) ? "HEVC" : /avc|x264|h\.?264/i.test(l.title) ? "H.264" : undefined, subtitles: [] as any[],
+          langs: langs(langs(l.title).length ? l.title : found.title) }; // the link names its own audio when it differs from the post (a Hindi-only 480p under a Dual Audio post)
       }
       return null;
     }).map((x) => x.catch(() => null)));

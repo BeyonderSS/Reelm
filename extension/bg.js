@@ -59,9 +59,29 @@ async function hdr({ url, headers = {} }) {
   return { ok: true };
 }
 
+// Lets the Reelm page read one host's files with fetch (the web player decodes audio tracks itself: multi-audio and
+// Dolby releases). Most file hosts send no CORS headers, so this adds them, only for fetches Reelm pages start.
+async function cors({ url }) {
+  if (!allowed(url, true)) throw new Error("host not allowed");
+  const host = new URL(url).hostname;
+  const id = [...host].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 11) % 1e6 + 2e6; // own id range, so hdr() rules survive
+  await chrome.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: [id],
+    addRules: [{
+      id, priority: 2,
+      action: { type: "modifyHeaders", responseHeaders: [
+        { header: "access-control-allow-origin", operation: "set", value: "*" },
+        { header: "access-control-expose-headers", operation: "set", value: "Content-Length, Content-Range, Accept-Ranges" },
+      ] },
+      condition: { requestDomains: [host], initiatorDomains: ["reelm-tv.vercel.app", "reelm-puneet-bhardwajs-projects-cfe0ba4b.vercel.app", "reelm-web.ssbeyonder.workers.dev", "localhost"], resourceTypes: ["xmlhttprequest", "other"] },
+    }],
+  });
+  return { ok: true };
+}
+
 chrome.runtime.onMessage.addListener((m, sender, reply) => {
   if (!REELM.test(sender?.url ?? "")) return; // only the Reelm pages (via content.js)
-  const job = m?.type === "fetch" ? run(m) : m?.type === "hdr" ? hdr(m) : null;
+  const job = m?.type === "fetch" ? run(m) : m?.type === "hdr" ? hdr(m) : m?.type === "cors" ? cors(m) : null;
   if (!job) return;
   job.then((res) => reply({ res }), (e) => reply({ error: String(e.message || e) }));
   return true;

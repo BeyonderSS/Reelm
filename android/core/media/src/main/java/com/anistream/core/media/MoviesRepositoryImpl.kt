@@ -7,9 +7,11 @@ import com.anistream.core.media.dramachi.DramachiSource
 import com.anistream.core.media.fourkhdhub.FourKHdHubSource
 import com.anistream.core.media.moviebox.MovieBoxSource
 import com.anistream.core.media.vega.VegaSources
+import com.anistream.domain.AudioLanguage
 import com.anistream.domain.KidsBlockedException
 import com.anistream.domain.KidsPolicy
 import com.anistream.domain.MaturePolicy
+import com.anistream.domain.model.AudioVariant
 import com.anistream.domain.model.MediaDetail
 import com.anistream.domain.model.MediaItem
 import com.anistream.domain.model.MediaRow
@@ -56,6 +58,7 @@ class MoviesRepositoryImpl @Inject constructor(
     private val ttToMb = ConcurrentHashMap<String, String>()           // tt → subjectId ("" = no MovieBox match)
     private val mbToTt = ConcurrentHashMap<String, String>()           // subjectId → tt ("" = not on Cinemeta)
     private val metaCache = ConcurrentHashMap<String, Stremio.Meta>()  // tt → Cinemeta meta
+    private val dubsOf = ConcurrentHashMap<String, List<AudioVariant>>()  // subjectId → its MovieBox audio variants
 
     override suspend fun home(): Result<List<MediaRow>> = safeApiCall {
         val rows = listOf(
@@ -162,13 +165,13 @@ class MoviesRepositoryImpl @Inject constructor(
     }
 
     private suspend fun rawDetail(id: String): Result<MediaDetail> = safeApiCall {
-        if (id.startsWith("mb:")) return@safeApiCall movieBox.detail(id.removePrefix("mb:"))
+        if (id.startsWith("mb:")) return@safeApiCall movieBox.detail(id.removePrefix("mb:")).also { dubsOf[it.id.removePrefix("mb:")] = it.audioVariants }
         if (id.startsWith("tmdb:")) return@safeApiCall tmdbDetail(id)
         val meta = cinemetaMeta(id)
         val cine = meta.detail
         val sid = matchMovieBox(id, meta)
         if (sid != null) {
-            val mb = movieBox.detail(sid)
+            val mb = movieBox.detail(sid).also { dubsOf[sid] = it.audioVariants }
             return@safeApiCall mb.copy(
                 description = mb.description ?: cine.description,
                 backdropUrl = mb.backdropUrl ?: cine.backdropUrl,
@@ -239,7 +242,7 @@ class MoviesRepositoryImpl @Inject constructor(
         val years: IntRange?
         if (id.startsWith("mb:")) {
             sid = id.removePrefix("mb:")
-            detail = runCatching { movieBox.detail(sid) }.getOrNull()
+            detail = runCatching { movieBox.detail(sid) }.getOrNull()?.also { dubsOf[sid] = it.audioVariants }
             tt = detail?.let { runCatching { imdbIdFor(sid, it) }.getOrNull() }
             years = detail?.year?.let { it..it }
         } else if (id.startsWith("tmdb:")) {
@@ -257,7 +260,10 @@ class MoviesRepositoryImpl @Inject constructor(
         val type = detail?.type ?: if (season > 0) MediaType.SERIES else MediaType.MOVIE
 
         val sources = mutableListOf<suspend () -> List<MediaStream>>()
-        if (sid != null) sources += { movieBox.streams(sid, season, episode) }
+        if (sid != null) {
+            sources += { movieBoxStreams(sid, season, episode, dub = false) }
+            sources += { movieBoxStreams(sid, season, episode, dub = true) } // its own source, so dubs never delay the original
+        }
         if (detail != null) titleSources.forEach { src ->
             sources += { src.streams(detail.title, years?.first, type, season, episode) }
         }
@@ -280,6 +286,32 @@ class MoviesRepositoryImpl @Inject constructor(
         results.flatMap { it.getOrNull().orEmpty() }
     }
 
+    /**
+     * MovieBox streams tagged with their audio language: the subject itself ([dub] false), or every other audio variant
+     * of it ("Hindi dub" is a separate MovieBox subject). A dub that only serves the notice clip resolves to nothing.
+     */
+    private suspend fun movieBoxStreams(sid: String, season: Int, episode: Int, dub: Boolean): List<MediaStream> = coroutineScope {
+        val variants = async {
+            dubsOf[sid] ?: runCatching { movieBox.detail(sid).audioVariants }.getOrDefault(emptyList()).also { dubsOf[sid] = it }
+        }
+        if (!dub) {
+            val streams = movieBox.streams(sid, season, episode)
+            val lang = AudioLanguage.normalize(variants.await().firstOrNull { it.id == "mb:$sid" }?.languageCode)
+            return@coroutineScope streams.map { it.copy(languages = listOfNotNull(lang)) }
+        }
+        // ponytail: capped at MAX_DUBS, preferred language first; raise it if titles with more dubs miss the one wanted
+        val pref = AudioLanguage.preferred.value
+        variants.await().filter { it.id != "mb:$sid" }
+            .sortedBy { if (AudioLanguage.normalize(it.languageCode) == pref) 0 else 1 }.take(MAX_DUBS)
+            .map { v ->
+                async {
+                    val lang = AudioLanguage.normalize(v.languageCode)
+                    runCatching { movieBox.streams(v.id.removePrefix("mb:"), season, episode) }.getOrDefault(emptyList())
+                        .map { it.copy(languages = listOfNotNull(lang)) }
+                }
+            }.awaitAll().flatten()
+    }
+
     private suspend fun streamAddons() = addonDao.getEnabled().filter { "stream" in it.resourcesCsv.split(",") }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
@@ -287,5 +319,6 @@ class MoviesRepositoryImpl @Inject constructor(
     private companion object {
         const val SOURCE_TIMEOUT_MS = 15_000L
         const val SEARCH_TIMEOUT_MS = 6_000L
+        const val MAX_DUBS = 6
     }
 }

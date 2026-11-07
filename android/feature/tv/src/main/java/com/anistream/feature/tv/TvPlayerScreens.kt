@@ -31,6 +31,8 @@ import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Surface
 import com.anistream.core.ui.theme.DisplayHeavy
 import com.anistream.domain.model.MediaStream
+import com.anistream.domain.AudioLanguage
+import com.anistream.feature.player.audioLanguages
 import com.anistream.core.media.GuideEp
 import com.anistream.feature.player.SubPosition
 import androidx.activity.compose.BackHandler
@@ -162,7 +164,7 @@ internal class EpisodeMeta(
 
 private val TabNames = listOf("Watch", "Subtitles", "Picture", "Playback", "Together", "Device")
 private fun tabOf(title: String) = when (title) {
-    "Source", "Quality", "Audio", "Audio track" -> 0
+    "Source", "Quality", "Audio", "Audio language", "Audio track" -> 0
     "Subtitles", "Subtitle size", "Subtitle delay", "Position" -> 1
     "Picture", "Speed" -> 2
     "Sleep timer", "Auto-skip intro and recap" -> 3
@@ -211,7 +213,10 @@ private fun TvPlayerChrome(
     skipSetting: Boolean = false,
     /** what is playing, for "Watch together" and for telling the room when it changes; null = not shareable (live) */
     partyPayload: JsonObject? = null,
-    meta: EpisodeMeta = EpisodeMeta()
+    meta: EpisodeMeta = EpisodeMeta(),
+    /** candidate streams, for the "Audio language" choices */
+    streams: List<MediaStream> = emptyList(),
+    onAudioLanguage: ((String?) -> Unit)? = null
 ) {
     val party: PartyViewModel = hiltViewModel()
     var partyOpen by remember { mutableStateOf(false) }
@@ -243,7 +248,10 @@ private fun TvPlayerChrome(
 
     val audio = audioOptions(tracks)
     val subs = hasSubtitles(tracks)
+    val languages = if (onAudioLanguage == null) emptyList() else audioLanguages(streams, tracks)
+    val preferredLang by AudioLanguage.preferred.collectAsStateWithLifecycle()
     val allSettings = settings + listOf(
+        SettingGroup("Audio language", if (languages.size > 1) listOf<String?>(null) + languages else emptyList(), { it?.let(AudioLanguage::name) ?: "Any" }, { it == preferredLang }) { onAudioLanguage?.invoke(it) },
         SettingGroup("Picture", Resize.entries, { it.label }, { it == tweaks.resize }, tweaks::updateResize),
         SettingGroup("Speed", if (isLive) emptyList() else PlaybackSpeeds, ::speedLabel, { it == tweaks.speed }) { tweaks.updateSpeed(player, it) },
         SettingGroup("Audio track", if (audio.size > 1) audio else emptyList(), { it.label }, { it.selected }) { selectAudio(player, it) },
@@ -948,6 +956,8 @@ fun TvMediaPlayerScreen(
         tweaksKey = r?.historyKey ?: r?.title ?: "media",
         episodic = (r?.episode ?: 0) > 0,
         onWebPlayer = if (s.canWebPlay) vm::openWebPlayer else null,
+        streams = streams,
+        onAudioLanguage = vm::selectAudioLanguage,
         upNextImage = r?.posterUrl,
         partyPayload = r?.takeIf { !s.isLive }?.let(::mediaPayload),
         meta = if (r == null) EpisodeMeta() else EpisodeMeta(
@@ -966,7 +976,8 @@ private fun srcInfo(st: MediaStream): SrcInfo {
     return SrcInfo(
         st.sourceName.ifBlank { "Source" }, st.qualityLabel,
         st.sizeBytes?.takeIf { it > 0 }?.let { if (mb >= 1024) String.format(Locale.US, "%.1f GB", mb / 1024) else "${mb.toLong()} MB" },
-        listOfNotNull(st.codec?.takeIf { it.isNotBlank() }?.uppercase(), "HDR".takeIf { "hdr" in t }),
+        listOfNotNull(st.codec?.takeIf { it.isNotBlank() }?.uppercase(), "HDR".takeIf { "hdr" in t }) +
+            listOfNotNull(st.languages.takeIf { it.isNotEmpty() }?.joinToString(" · ", transform = AudioLanguage::name)),
         listOfNotNull(
             "Dolby".takeIf { listOf("dolby", "ddp", "truehd", "eac3").any { it in t } },
             "Atmos".takeIf { "atmos" in t }

@@ -6,9 +6,10 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import com.anistream.core.common.LowEnd
+import com.anistream.domain.AudioLanguage
 import com.anistream.domain.model.MediaStream
 
-/** ExoPlayer; in low-end mode with 15 s / 30 s buffers (default 50 s) and adaptive streams capped at the hardware decoder's max size (1080p on the Fire TV Stick 2). */
+/** ExoPlayer preferring [AudioLanguage]; in low-end mode with 15 s / 30 s buffers (default 50 s) and adaptive streams capped at the hardware decoder's max size (1080p on the Fire TV Stick 2). */
 @OptIn(UnstableApi::class)
 internal fun buildPlayer(context: Context): ExoPlayer {
     val low = LowEnd.isOn(context)
@@ -17,6 +18,8 @@ internal fun buildPlayer(context: Context): ExoPlayer {
         .build()
         .apply {
             if (low) trackSelectionParameters = trackSelectionParameters.buildUpon().setMaxVideoSize(LowEnd.maxWidth, LowEnd.maxHeight).build()
+            // multi-audio files start on the device's preferred language (Hindi in a "Dual Audio" release)
+            trackSelectionParameters = trackSelectionParameters.buildUpon().setPreferredAudioLanguage(AudioLanguage.preferred.value).build()
         }
 }
 

@@ -5,7 +5,9 @@
 // "swresample","demuxer-matroska","demuxer-mov","parser-ac3","decoder-ac3","decoder-eac3","parser-dca","decoder-dca",
 // "parser-mlp","decoder-truehd","decoder-mlp","parser-aac","decoder-aac","parser-opus","decoder-opus","parser-flac",
 // "decoder-flac","zlib","filter-aformat","filter-anull"]', then make dist/libav-6.10.9.0-reelm{,.wasm}.js.
-// In: {type:"open",url} | {type:"seek",t,id} | {type:"want",until}. Out: {type:"info",codec} | {type:"pcm",id,t,sr,l,r} | {type:"error",message}
+// Also picks any audio track: multi-audio releases (Hindi + English MKVs) whose other tracks the browser won't switch to.
+// In: {type:"open",url,track?,probe?} | {type:"seek",t,id} | {type:"want",until}.
+// Out: {type:"tracks",tracks} | {type:"info",codec} | {type:"pcm",id,t,sr,l,r} | {type:"error",message}. probe: post tracks, then stop.
 declare const LibAV: any;
 // ponytail: 2 MB blocks, 6 in flight: startup needs 3 serial reads (header, cues at the end, seek target), which took
 // ~45 s with 8 MB blocks on Pixeldrain; more parallel requests keep the sequential rate. Tune if a host throttles connections.
@@ -13,13 +15,13 @@ const BLOCK = 2 << 20, AHEAD_BLOCKS = 6; // bytes per Range request (libav asks 
 let want = 0, seek: { t: number; id: number } | null = null, id = 0, wake = () => {};
 
 onmessage = ({ data: m }) => {
-  if (m.type === "open") run(m.url).catch((e) => postMessage({ type: "error", message: String(e?.message ?? e) }));
+  if (m.type === "open") run(m.url, m.track, m.probe).catch((e) => postMessage({ type: "error", message: String(e?.message ?? e) }));
   if (m.type === "seek") { seek = m; want = m.t + 10; }
   if (m.type === "want") want = m.until;
   wake();
 };
 
-async function run(url: string) {
+async function run(url: string, track?: number, probe = false) {
   (self as any).LibAV = { base: "/libav" };
   importScripts("/libav/libav-6.10.9.0-reelm.js");
   const av = await LibAV.LibAV({ noworker: true, nothreads: true, wasmurl: "/libav/libav-6.10.9.0-reelm.wasm.wasm" });
@@ -35,7 +37,7 @@ async function run(url: string) {
     if (!blocks.has(i) && i * BLOCK < size) {
       blocks.set(i, fetch(url, { headers: { Range: `bytes=${i * BLOCK}-${Math.min(size, (i + 1) * BLOCK) - 1}` } })
         .then(async (r) => { if (r.status !== 206) throw new Error(`HTTP ${r.status}`); return new Uint8Array(await r.arrayBuffer()); }));
-      blocks.get(i)!.catch(() => blocks.delete(i));
+      blocks.get(i)!.catch((e) => { blocks.delete(i); postMessage({ type: "warn", message: `block ${i}: ${e?.message ?? e}` }); });
       if (blocks.size > AHEAD_BLOCKS + 2) blocks.delete(blocks.keys().next().value!);
     }
     return blocks.get(i)!;
@@ -47,9 +49,15 @@ async function run(url: string) {
   };
   await av.mkblockreaderdev("in", size);
   const [fmt, streams] = await av.ff_init_demuxer_file("in");
-  // ponytail: first audio track; 4KHDHub multi-audio releases may lead with Hindi, add a picker if people ask
-  const s = streams.find((x: any) => x.codec_type === av.AVMEDIA_TYPE_AUDIO);
-  if (!s) throw new Error("no audio track");
+  const audio = streams.filter((x: any) => x.codec_type === av.AVMEDIA_TYPE_AUDIO);
+  if (!audio.length) throw new Error("no audio track");
+  const tracks = await Promise.all(audio.map(async (x: any) => {
+    const md = await av.ff_copyout_dict(await av.AVStream_metadata(await av.AVFormatContext_streams_a(fmt, x.index))).catch(() => ({}));
+    return { index: x.index, lang: String(md?.language ?? ""), title: String(md?.title ?? ""), codec: await av.avcodec_get_name(x.codec_id) };
+  }));
+  postMessage({ type: "tracks", tracks });
+  if (probe) return;
+  const s = audio.find((x: any) => x.index === track) ?? audio[0];
   // AVDISCARD_ALL (48) on the other streams so video packets are never copied out; lifted while seeking, since a
   // discarded default (video) stream makes matroska ignore its cues and scan the file linearly
   const others = await Promise.all(streams.filter((x: any) => x !== s).map((x: any) => av.AVFormatContext_streams_a(fmt, x.index)));

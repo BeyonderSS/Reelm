@@ -222,7 +222,7 @@ fun MediaPlayerScreen(
                         }
                     }
                 }
-                PlayerTweaksSection(viewModel.player, tweaks, live = ui.isLive)
+                PlayerTweaksSection(viewModel.player, tweaks, live = ui.isLive, streams = request.streams, onAudioLanguage = viewModel::selectAudioLanguage)
                 if (!ui.isLive) WatchTogetherSection(mediaPayload(request))
                 ui.request?.takeIf { !it.isLive && it.historyKey != null }?.let { r ->
                     com.anistream.core.account.ui.ContinueOnTvSection(

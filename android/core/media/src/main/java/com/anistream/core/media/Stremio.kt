@@ -130,7 +130,8 @@ internal object Stremio {
                     SubtitleTrack(subUrl, lang, lang, if (subUrl.substringBefore('?').endsWith(".vtt")) "text/vtt" else "application/x-subrip")
                 },
                 sourceName = sourceName,
-                isDirectFile = !(path.endsWith(".m3u8") || path.endsWith(".mpd"))
+                isDirectFile = !(path.endsWith(".m3u8") || path.endsWith(".mpd")),
+                languages = ReleaseLanguages.parse(listOfNotNull(o.str("title"), o.str("description")).joinToString(" "))
             )
         }.sortedByDescending { it.height }
 

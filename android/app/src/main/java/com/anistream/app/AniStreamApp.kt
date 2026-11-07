@@ -27,6 +27,7 @@ class AniStreamApp : Application(), Configuration.Provider, ImageLoaderFactory {
 
     override fun onCreate() {
         LowEnd.eligible = BuildConfig.FLAVOR == "tv"
+        com.anistream.domain.AudioLanguage.init(this)
         super.onCreate()
         createNotificationChannels(this)
         schedulePeriodicWork(this)

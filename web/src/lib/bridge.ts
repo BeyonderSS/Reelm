@@ -18,3 +18,7 @@ export const helperOld = () => { const [a = 0, b = 0] = helperVersion().split(".
 // Helper 1.2+ (vega: any https host, Referer/Origin via a per-host header rule, also used for <video> playback)
 export const helperVega = () => { const [a = 0, b = 0] = helperVersion().split(".").map(Number); return a > 1 || (a === 1 && b >= 2); };
 export const setHeaders = (url: string, headers: Record<string, string>) => bridge(url, { type: "hdr", headers });
+// Helper 1.3+: lets this page fetch one host's files (CORS headers added for Reelm's own requests), so the web player can
+// read audio tracks itself. Older Helpers, or none: resolves anyway; the read just fails on hosts without CORS.
+export const helperCors = () => { const [a = 0, b = 0] = helperVersion().split(".").map(Number); return a > 1 || (a === 1 && b >= 3); };
+export const allowRead = (url: string) => (helperCors() ? bridge(url, { type: "cors" }).then(() => {}, () => {}) : Promise.resolve());

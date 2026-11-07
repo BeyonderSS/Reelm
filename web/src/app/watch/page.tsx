@@ -16,13 +16,22 @@ import { track } from "@/lib/telemetry";
 import { helperVega, helperVersion } from "@/lib/bridge";
 import { bitrate, getBandwidth, getPin, pickStream, saveBandwidth, setPin } from "@/lib/pick-stream";
 import { useApi, useSession } from "@/lib/session";
-import { useLibavAudio } from "@/lib/use-libav-audio";
+import { languageName, trackLabel, useAudioTracks, useLibavAudio } from "@/lib/use-libav-audio";
+import { iso1 } from "@/lib/langs";
 import { cn } from "@/lib/utils";
-type Source = { src: string; hls: boolean; label: string; codec?: string; dolby?: boolean; height?: number };
+type Source = { src: string; hls: boolean; label: string; codec?: string; dolby?: boolean; height?: number; langs?: string[] };
 type Sub = { url: string; label: string; lang: string; default?: boolean };
 type Member = { id: string; name: string; avatar: string };
 type Device = { deviceId: string; deviceName: string; kind: string };
 
+// remembered audio language, ISO 639-1 ("hi"); older builds stored the track's 639-2 tag ("hin")
+const LANG_KEY = "reelm.audioLang";
+const savedLang = () => { try { return iso1(localStorage.getItem(LANG_KEY) ?? ""); } catch { return ""; } };
+/** pickStream over the sources that carry `lang` (all of them when none do), as an index into `all` */
+const pickFor = (all: Source[], lang: string, pin?: number) => {
+  const ix = all.map((_, i) => i).filter((i) => !lang || all[i].langs?.includes(lang)), pool = ix.length ? ix : all.map((_, i) => i);
+  return pool[pickStream(pool.map((i) => all[i]), { bandwidthBps: getBandwidth(), pinnedHeight: pin })];
+};
 const parse = (v: string | null) => { try { return toPlay(JSON.parse(v ?? "")); } catch { return null; } };
 const href = (p: P, extra = "") => `/watch?p=${encodeURIComponent(JSON.stringify(p))}${extra}`;
 /** Raw errors from the stream hosts are not for people; say what happened and what to try. */
@@ -72,6 +81,7 @@ function SourceStub({ x, on, tag, onPick }: { x: Source; on: boolean; tag?: stri
         {x.hls && <span className="rounded-full bg-white/8 px-2 py-0.5">Adaptive</span>}
         {extra.map((t) => <span key={t} className={cn("rounded-full px-2 py-0.5", /dolby/i.test(t) ? "bg-primary/16 text-primary" : "bg-white/8")}>{t}</span>)}
         {x.dolby && !extra.some((t) => /dolby/i.test(t)) && <span className="rounded-full bg-primary/16 px-2 py-0.5 text-primary">Dolby audio</span>}
+        {!!x.langs?.length && <span className="rounded-full bg-white/8 px-2 py-0.5">{x.langs.map(languageName).join(" · ")}</span>}
       </span>
     </button>
   );
@@ -102,6 +112,7 @@ function Player() {
   const [eps, setEps] = useState<any[]>([]), [skips, setSkips] = useState<{ s: number; e: number; type: string }[]>([]);
   const [cur, setCur] = useState(0), [dur, setDur] = useState(0), [paused, setPaused] = useState(true), [panel, setPanel] = useState<Tab | null>(null);
   const [copied, setCopied] = useState(false), [roomErr, setRoomErr] = useState("");
+  const [want, setWant] = useState(savedLang); // the audio language to prefer, "" = any
   const pid = s.profile?.id ?? "guest", pkey = p ? JSON.stringify(p) : "";
   const extra = room ? `&room=${room}` : "";
 
@@ -132,13 +143,13 @@ function Player() {
       if (!document.documentElement.dataset.reelmHelper) throw new Error("helper");
       const list = await get<any[]>(`movies/stream?id=${encodeURIComponent(p.id)}&type=${p.type}&title=${encodeURIComponent(p.title)}&year=${p.year ?? ""}&s=${p.season ?? 0}&e=${p.episode ?? 0}`);
       if (!list.length) throw new Error("No streams found for this title.");
-      return [list.map((x) => ({ src: x.url, hls: /\.m3u8(\?|$)/.test(x.url), label: x.label, codec: x.codec, dolby: x.dolby, height: x.height })), (list.find((x) => x.subtitles?.length)?.subtitles ?? []).map((x: Sub) => ({ ...x, url: `/api/sub?u=${encodeURIComponent(x.url)}` }))] as const;
+      return [list.map((x) => ({ src: x.url, hls: /\.m3u8(\?|$)/.test(x.url), label: x.label, codec: x.codec, dolby: x.dolby, height: x.height, langs: x.langs })), (list.find((x) => x.subtitles?.length)?.subtitles ?? []).map((x: Sub) => ({ ...x, url: `/api/sub?u=${encodeURIComponent(x.url)}` }))] as const;
     })().then((r) => {
       if (!live || !r) return;
       const [a, b] = r;
       setSources([...a]); setSubs([...b]);
       const sa = a as Source[];
-      if (p.kind === "movie" && sa.length > 1) { const pin = getPin(playKey(p)) ?? 0, i = pickStream(sa, { bandwidthBps: getBandwidth(), pinnedHeight: pin }); setSi(i); setTag({ i, pin: pin && sa[i].height === pin ? pin : 0 }); }
+      if (p.kind === "movie" && sa.length > 1) { const pin = getPin(playKey(p)) ?? 0, i = pickFor(sa, savedLang(), pin); setSi(i); setTag({ i, pin: pin && sa[i].height === pin ? pin : 0 }); }
       const d = b.findIndex((x: Sub) => x.default);
       setSubIdx(b.length ? (d >= 0 ? d : 0) : -1);
     }).catch((e) => live && setErr(e.message));
@@ -146,9 +157,28 @@ function Player() {
     return () => { live = false; };
   }, [pkey, nonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const src = sources[si];
-  // Dolby/DTS audio Chrome can't decode: libav.js decodes it in a worker and plays it in sync with the video
-  const audioNote = useLibavAudio(video, src && !src.hls ? src.src : undefined, !!src?.dolby, `${si}${pkey}${nonce}`);
+  const src = sources[si], fileUrl = src && !src.hls ? src.src : undefined, srcKey = `${si}${pkey}${nonce}`;
+  // Multi-audio files (Hindi + English releases): list the tracks; a remembered language is picked again automatically
+  const [pick, setPick] = useState<{ k: string; i: number } | null>(null); // a pick only holds for the source it was made on
+  const { tracks: raw, report } = useAudioTracks(fileUrl, srcKey, !!src?.dolby || (pick?.k === srcKey && pick.i !== undefined));
+  // many releases leave their tracks untagged ("Stereo", "Stereo"): then the release name's order ("Hindi & English") is the track order
+  const untagged = src?.langs?.length === raw.length && raw.every((t) => !languageName(t.lang));
+  const tracks = untagged ? raw.map((t, i) => ({ ...t, lang: src!.langs![i] })) : raw;
+  const chosen = pick?.k === srcKey ? pick.i : tracks.find((t) => want && iso1(t.lang) === want)?.index ?? tracks[0]?.index;
+  const atrack = chosen === undefined || chosen === tracks[0]?.index ? undefined : chosen; // the first track plays natively
+  const pickTrack = (index: number) => {
+    setPick({ k: srcKey, i: index }); saveLang(iso1(tracks.find((t) => t.index === index)?.lang ?? ""));
+  };
+  const saveLang = (l: string) => { setWant(l); try { localStorage.setItem(LANG_KEY, l); } catch {} };
+  // every language a source is tagged with or the playing file carries; picking one moves to a source that has it
+  const langList = [...new Set([...sources.flatMap((x) => x.langs ?? []), ...tracks.map((t) => iso1(t.lang)).filter((l) => languageName(l))])];
+  const pickLang = (l: string) => {
+    saveLang(l); setPick(null); // the track follows `want` (chosen above) once the file's tracks are read
+    if (!l || src?.langs?.includes(l) || tracks.some((t) => iso1(t.lang) === l) || !sources.some((x) => x.langs?.includes(l))) return;
+    setEmbed(false); setSi(pickFor(sources, l, p?.kind === "movie" ? getPin(playKey(p)) : undefined));
+  };
+  // Dolby/DTS audio Chrome can't decode, or a track the browser won't switch to: libav.js decodes it in a worker in sync with the video
+  const audioNote = useLibavAudio(video, fileUrl, !!src?.dolby, srcKey, atrack, report);
   // MovieBox often ships HEVC only; browsers without HEVC decode (most Chrome/Firefox on Linux) can't play it
   // admin telemetry: what played, from where, how fast, and what failed
   const info = () => {
@@ -424,11 +454,13 @@ function Player() {
                   <button aria-label="Close settings" onClick={() => setPanel(null)} className={cn(ctl, "absolute top-2 right-2 size-9")}><X /></button>
                   {panel === "watch" && <>
                     <h3 className={h3}>Watch</h3>
+                    {langList.length > 0 && <Opts label="Audio language" items={["", ...langList]} value={langList.includes(want) ? want : ""} onPick={pickLang} name={(l) => (l ? languageName(l) || l : "Any")} />}
                     {sources.length > 0 && <p className="mt-2 text-sm text-[#a3a1ae]">{sources.length > 1 ? "Source" : "Source (only one available)"}</p>}
                     <div className="space-y-2">{sources.map((x, i) => <SourceStub key={i} x={x} on={si === i && !embed} tag={tag.i === i ? (tag.pin ? `Pinned ${tag.pin}p` : "Auto") : undefined} onPick={() => { setEmbed(false); setSi(i); if (p?.kind === "movie" && x.height) { setPin(playKey(p), x.height); setTag({ i, pin: x.height }); } }} />)}</div>
                     {embedUrl && <button onClick={() => { setEmbed(true); setErr(""); setPanel(null); }} aria-pressed={embed} className={cn("beam w-full rounded-xl border-l-2 border-dashed border-white/25 bg-white/5 px-4 py-3 text-left", embed && "shadow-[inset_0_0_0_2px_#f2b45a]")}>
                       <b className="font-display text-lg">Web player</b><span className="block text-xs text-[#a3a1ae]">Plays in an embedded page when no source works here</span></button>}
                     {!!helperVersion() && !helperVega() && <a href={HELPER_URL()} target="_blank" rel="noreferrer" className="block text-xs text-foreground/52 underline">Update Reelm Helper for more sources</a>}
+                    {tracks.length > 1 && <Opts label="Audio track" items={tracks.map((t) => t.index)} value={chosen ?? tracks[0].index} onPick={pickTrack} name={(ix) => trackLabel(tracks.find((t) => t.index === ix)!, tracks.findIndex((t) => t.index === ix))} />}
                     {p.kind === "anime" && <Opts label="Audio" items={["sub", "dub"] as const} value={(p.lang ?? "sub") as "sub" | "dub"} onPick={(l) => go({ ...p, lang: l })} name={(l) => (l === "sub" ? "Japanese, subtitled" : "English dub")} />}
                     {p.kind === "anime" && eps.length > 1 && <Opts label="Episode" items={eps.map((e) => e.number as number)} value={p.ep ?? 0} onPick={(n) => { const e = eps.find((x) => x.number === n); if (e && n !== p.ep) go({ ...p, ep: n, epId: e.id }); }} />}
                     {series?.seasons?.length > 0 && <>

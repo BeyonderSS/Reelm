@@ -62,7 +62,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
 import com.anistream.core.ui.theme.Accent
+import com.anistream.domain.AudioLanguage
+import com.anistream.domain.model.MediaStream
 import com.anistream.domain.model.SkipInterval
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -246,6 +249,14 @@ fun audioOptions(tracks: Tracks): List<AudioOption> {
     return out
 }
 
+/** Languages of the playing file's audio tracks, ISO 639-1. */
+fun trackLanguages(tracks: Tracks): List<String> = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+    .flatMap { g -> (0 until g.length).mapNotNull { AudioLanguage.normalize(g.getTrackFormat(it).language) } }.distinct()
+
+/** "Audio language" choices: every language the request's [streams] advertise plus the playing file's tracks, by name. */
+fun audioLanguages(streams: List<MediaStream>, tracks: Tracks): List<String> =
+    (streams.flatMap { it.languages } + trackLanguages(tracks)).distinct().sortedBy(AudioLanguage::name)
+
 fun selectAudio(player: Player, o: AudioOption) {
     player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
         .setOverrideForType(TrackSelectionOverride(o.group.mediaTrackGroup, o.index))
@@ -422,8 +433,12 @@ internal fun Player.progressFraction(): Float = if (duration > 0) (currentPositi
 
 /** Phone settings-sheet section: speed, audio track, subtitle options, sleep timer. */
 @Composable
-internal fun PlayerTweaksSection(player: Player, tweaks: PlayerTweaks, live: Boolean, autoSkipToggle: Boolean = false) {
+internal fun PlayerTweaksSection(
+    player: Player, tweaks: PlayerTweaks, live: Boolean, autoSkipToggle: Boolean = false,
+    streams: List<MediaStream> = emptyList(), onAudioLanguage: ((String?) -> Unit)? = null
+) {
     val tracks = rememberTracks(player)
+    val preferredLanguage by AudioLanguage.preferred.collectAsState()
     if (autoSkipToggle) {
         SheetHeading("Auto-skip intro and recap")
         ChoiceRow(listOf(true, false), tweaks.autoSkip, { if (it) "On" else "Off" }, tweaks::updateAutoSkip)
@@ -434,6 +449,11 @@ internal fun PlayerTweaksSection(player: Player, tweaks: PlayerTweaks, live: Boo
     }
     SheetHeading("Picture")
     ChoiceRow(Resize.entries, tweaks.resize, { it.label }, tweaks::updateResize)
+    val languages = if (onAudioLanguage == null) emptyList() else audioLanguages(streams, tracks)
+    if (onAudioLanguage != null && languages.size > 1) {
+        SheetHeading("Audio language")
+        ChoiceRow(listOf<String?>(null) + languages, preferredLanguage, { it?.let(AudioLanguage::name) ?: "Any" }, onAudioLanguage)
+    }
     val audio = audioOptions(tracks)
     if (audio.size > 1) {
         SheetHeading("Audio track")

@@ -5,6 +5,7 @@ import android.util.Log
 import com.anistream.core.account.AccountApi
 import com.anistream.core.common.LowEnd
 import com.anistream.core.media.MediaHttp
+import com.anistream.core.media.ReleaseLanguages
 import com.anistream.core.media.StreamSource
 import com.anistream.core.media.Stremio
 import com.anistream.core.media.fourkhdhub.FourKHdHubParser
@@ -165,7 +166,8 @@ internal suspend fun VegaEngine.streams(
         val links = JsonArray(picks.map { it.second })
         call("Promise.all($links.map(link => stream.getStream({link,type:$kind,signal:new AbortController().signal,providerContext:ctx,isDownload:false}).catch(() => [])))")
             .jsonArray.zip(picks).flatMap { (streams, pick) ->
-                (streams as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.let { s -> VegaPick.toStream(s, pick.first, name) } }
+                val langs = ReleaseLanguages.parse("${(post["title"] as? JsonPrimitive)?.contentOrNull} ${(pick.first["title"] as? JsonPrimitive)?.contentOrNull}", title)
+                (streams as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.let { s -> VegaPick.toStream(s, pick.first, name)?.copy(languages = langs) } }
             }
     }
 }
