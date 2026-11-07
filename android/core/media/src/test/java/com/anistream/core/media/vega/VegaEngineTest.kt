@@ -1,6 +1,11 @@
 package com.anistream.core.media.vega
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
@@ -16,7 +21,7 @@ import org.junit.Test
 import java.io.File
 
 class VegaEngineTest {
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder().connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS).readTimeout(20, java.util.concurrent.TimeUnit.SECONDS).build() // as MediaHttp
     private val engine = VegaEngine(client, { File("src/main/assets/vega-runtime.js").readText() }, ::println)
 
     @Test
@@ -29,6 +34,32 @@ class VegaEngineTest {
             )
         }.jsonArray.map { it.jsonPrimitive.content }
         assertEquals(listOf("/x", "ok", "https://h.io/p?q=1", "a=b+c", "é"), out)
+    }
+
+    /** Providers run in parallel runtimes; one finishing must not break the host calls of those still running. */
+    @Test
+    fun closingOneRuntimeLeavesOthersWorking() = runBlocking {
+        val out = engine.session(emptyMap()) {
+            engine.session(emptyMap()) { call("1") }
+            call("new Promise(r => setTimeout(() => r('ok'), 1))")
+        }.jsonPrimitive.content
+        assertEquals("ok", out)
+    }
+
+    /** A promise nobody handles must not take down the runtime's other pending host calls (browsers just log it). */
+    @Test
+    fun unhandledRejectionIsHarmless() = runBlocking {
+        val out = engine.session(emptyMap()) {
+            call(
+                """(async () => {
+                     Promise.reject(new Error('a')); new Promise((_, no) => no(new Error('b'))); fetch('http://invalid.invalid/').finally(() => {});
+                     const late = Promise.reject(new Error('c')); await new Promise(r => setTimeout(r, 50));
+                     let caught = await late.catch(e => e.message);
+                     try { await fetch('http://invalid.invalid/') } catch (e) { caught += ' ' + (e && e.message ? 'msg' : 'null') }
+                     return caught + ' ' + (Promise.resolve(1) instanceof Promise) })()"""
+            )
+        }.jsonPrimitive.content
+        assertEquals("c msg true", out)
     }
 
     /** Live: hdhub4u search → meta → stream for Inception. Run with -Pvega.live. */
@@ -54,23 +85,36 @@ class VegaEngineTest {
         assertTrue(streams.any { (it as JsonObject)["link"]!!.jsonPrimitive.content.startsWith("http") })
     }
 
-    /** Live: the app's whole per-provider pipeline (movie + series) on every default provider. Run with -Pvega.live. */
+    /** Live: the app's whole per-provider pipeline on the server's pinned commit + first 10 enabled. Run with -Pvega.live. */
     @Test
     fun pipeline() = runBlocking {
         assumeTrue(System.getProperty("vega.live") == "true")
-        val base = "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@${VegaSources.DEFAULT.commit}/dist"
-        for (p in VegaSources.DEFAULT.enabled) {
-            val files = listOf("posts", "meta", "stream", "episodes").mapNotNull { f ->
-                client.newCall(Request.Builder().url("$base/$p/$f.js").build()).execute().use { r -> if (r.isSuccessful) f to r.body!!.string() else null }
-            }.toMap()
-            for ((title, year, s, e) in listOf(Quad("Inception", 2010, 0, 0), Quad("Breaking Bad", 2008, 2, 3))) {
-                val start = System.currentTimeMillis()
-                val out = runCatching {
-                    engine.streams(files, p, p, title, year, if (s > 0) MediaType.SERIES else MediaType.MOVIE, s, e, lowEnd = false)
+        val reg = runCatching {
+            client.newCall(Request.Builder().url("https://reelm-api.ssbeyonder.workers.dev/v1/sources").build()).execute()
+                .use { VegaSources.parseRegistry(kotlinx.serialization.json.Json.parseToJsonElement(it.body!!.string()).jsonObject["vega"]) }
+        }.getOrNull() ?: VegaSources.DEFAULT
+        val base = "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@${reg.commit}/dist"
+        val titles = listOf(Quad("Spider-Man: No Way Home", 2021, 0, 0), Quad("Breaking Bad", 2008, 2, 3))
+        val results = coroutineScope {
+            reg.enabled.take(10).map { p ->
+                async(Dispatchers.IO) {
+                    val files = listOf("posts", "meta", "stream", "episodes").mapNotNull { f ->
+                        client.newCall(Request.Builder().url("$base/$p/$f.js").build()).execute().use { r -> if (r.isSuccessful) f to r.body!!.string() else null }
+                    }.toMap()
+                    titles.map { (title, year, s, e) ->
+                        val start = System.currentTimeMillis()
+                        val out = runCatching {
+                            withTimeout(60_000) {
+                                engine.streams(files, p, p, title, year, if (s > 0) MediaType.SERIES else MediaType.MOVIE, s, e, lowEnd = false)
+                            }
+                        }
+                        "$p $title: ${System.currentTimeMillis() - start} ms " + out.fold(
+                            { l -> "${l.size} streams ${l.map { "${it.qualityLabel} ${it.url.take(60)}" }}" }, { "FAIL $it".take(500) })
+                    }
                 }
-                println("$p $title: ${System.currentTimeMillis() - start} ms ${out.map { l -> l.map { "${it.qualityLabel} h=${it.height} ${it.url.take(60)}" } }}")
-            }
+            }.awaitAll().flatten()
         }
+        println("=== vega ${reg.commit}\n" + results.joinToString("\n"))
     }
 
     private data class Quad(val a: String, val b: Int, val c: Int, val d: Int)

@@ -3,7 +3,7 @@
   "private": true,
   "description": "Globals the Vega providers expect, bundled for QuickJS. Output is committed to core/media assets.",
   "scripts": {
-    "build": "esbuild src/index.js --bundle --minify --format=iife --platform=browser --target=es2020 --legal-comments=none --outfile=../core/media/src/main/assets/vega-runtime.js"
+    "build": "esbuild src/index.js --bundle --minify --format=iife --platform=browser --target=es2020 --supported:async-await=false --legal-comments=none --outfile=../core/media/src/main/assets/vega-runtime.js"
   },
   "devDependencies": {
     "cheerio": "1.0.0-rc.12",

@@ -1,11 +1,33 @@
 // Globals the Vega providers expect (fetch, axios, cheerio, URL, atob, ...) on top of the Kotlin host functions:
 // __host_http(method, url, headersJson, body, follow, timeoutMs) -> Promise<json {status, url, headers:[[k,v]], body}>
-// __host_sleep(ms) -> Promise, __host_log(level, text)
+// -> or {error} on failure; __host_sleep(ms, id) -> Promise, __host_clear(id) ends that sleep early, __host_log(level, text)
 import "core-js/actual/url";
 import "core-js/actual/url-search-params";
 import * as cheerio from "cheerio";
 
 const g = globalThis;
+
+// quickjs-kt (alpha13) treats any promise rejected while it has no handler as fatal: it cancels every pending host
+// call, which then rejects with null ("cannot read property 'message' of null"). Browsers just log these, and the
+// providers rely on that (their shared urls.json fetch ends in a .finally() nobody awaits). So every promise gets a
+// silent handler before it can reject; real consumers still see the rejection.
+// Native async functions' promises bypass this, so the build lowers async/await (package.json) onto this Promise.
+const NativePromise = Promise, nativeThen = Promise.prototype.then, noop = () => {};
+Promise.prototype.then = function (onOk, onErr) {
+  const p = nativeThen.call(this, onOk, onErr);
+  nativeThen.call(p, undefined, noop);
+  return p;
+};
+g.Promise = class Promise extends NativePromise {
+  constructor(executor) {
+    let resolve, reject;
+    super((a, b) => { resolve = a; reject = b; });
+    nativeThen.call(this, undefined, noop);
+    try { executor(resolve, reject); } catch (e) { reject(e); }
+  }
+  static get [Symbol.species]() { return NativePromise; }
+  static [Symbol.hasInstance](x) { return x instanceof NativePromise; }
+};
 
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 g.btoa = (s) => {
@@ -47,12 +69,12 @@ let timerId = 0;
 const cleared = new Set();
 g.setTimeout = (fn, ms, ...args) => {
   const id = ++timerId;
-  __host_sleep(Math.max(0, +ms || 0)).then(() => { if (!cleared.delete(id)) fn(...args); });
+  __host_sleep(Math.max(0, +ms || 0), id).then(() => { if (!cleared.delete(id)) fn(...args); });
   return id;
 };
-g.clearTimeout = (id) => { cleared.add(id); };
+g.clearTimeout = (id) => { if (id) { cleared.add(id); __host_clear(id); } };
 
-const log = (level) => (...a) => __host_log(level, a.map((x) => (typeof x === "string" ? x : x instanceof Error ? x.stack || x.message : safeJson(x))).join(" "));
+const log = (level) => (...a) => __host_log(level, a.map((x) => (typeof x === "string" ? x : x instanceof Error ? String(x) + (x.stack ? "\n" + x.stack : "") : safeJson(x))).join(" "));
 function safeJson(x) { try { return JSON.stringify(x); } catch (e) { return String(x); } }
 g.console = { log: log("d"), info: log("i"), debug: log("d"), warn: log("w"), error: log("e") };
 
@@ -141,6 +163,7 @@ async function request(method, url, headers, data, follow, timeout, signal) {
   const obj = {};
   h.forEach((v, k) => { obj[k] = v; });
   const raw = JSON.parse(await __host_http(method.toUpperCase(), String(url), JSON.stringify(obj), body, follow, timeout || 0));
+  if (raw.error) throw new Error(raw.error);
   return new Response(raw.body, { status: raw.status, headers: raw.headers, url: raw.url, redirected: raw.url !== String(url) });
 }
 

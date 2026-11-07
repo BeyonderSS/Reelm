@@ -3,9 +3,14 @@ package com.anistream.core.media.vega
 import com.dokar.quickjs.QuickJs
 import com.dokar.quickjs.binding.asyncFunction
 import com.dokar.quickjs.binding.function
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -23,6 +28,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -37,12 +43,15 @@ class VegaEngine(
     private val log: (String) -> Unit = {}
 ) {
     @Volatile private var runtimeBytecode: ByteArray? = null
+    private val urlsLock = Mutex()
+    @Volatile private var urlsJson: Pair<Long, String>? = null
 
     /** Fresh runtime with [modules] (name → CommonJS source) loaded as globals; closed after [block]. */
     suspend fun <T> session(modules: Map<String, String>, block: suspend Session.() -> T): T {
-        val js = QuickJs.create(Dispatchers.Default)
+        val js = Runtimes.create()
+        val host = Host()
         try {
-            bind(js)
+            bind(js, host)
             // Parsing the 400 KB bundle is the slow part on a Fire TV stick; compile once, reuse the bytecode.
             val bytecode = runtimeBytecode ?: js.compile(runtimeJs(), "vega-runtime.js").also { runtimeBytecode = it }
             js.evaluate<Any?>(bytecode)
@@ -55,7 +64,46 @@ class VegaEngine(
             }
             return Session(js).block()
         } finally {
-            js.close()
+            // quickjs-kt's close() cancels in-flight host calls, whose completion then touches the freed context.
+            // So first fail every host call fast, let the JS settle, and only close an idle runtime.
+            withContext(NonCancellable) {
+                host.shutdown()
+                val idle = withTimeoutOrNull(DRAIN_MS) { runCatching { js.evaluate<Any?>("0", "drain.js") }; true } == true
+                if (!idle) log("runtime still busy after ${DRAIN_MS} ms; leaking it rather than crashing")
+                Runtimes.release(js, close = idle)
+            }
+        }
+    }
+
+    /**
+     * quickjs-kt alpha13's close() clears process-wide JNI caches (the JavaVM pointer and every cached class ref), so
+     * closing one runtime while another is alive makes the other's host calls throw `null` until a new runtime
+     * starts, and under CheckJNI aborts with "invalid global reference in releaseGlobals". So runtimes are closed
+     * only once none is alive, all together, with creation held off meanwhile.
+     * ponytail: a never-idle engine never frees; fine for search bursts, revisit if Vega runs continuously.
+     */
+    private object Runtimes {
+        private val lock = Mutex()
+        private var alive = 0
+        private val idle = mutableListOf<QuickJs>()
+
+        suspend fun create(): QuickJs = lock.withLock { QuickJs.create(Dispatchers.Default).also { alive++ } }
+
+        suspend fun release(js: QuickJs, close: Boolean) = lock.withLock {
+            if (close) idle += js
+            if (--alive == 0) { idle.forEach { it.close() }; idle.clear() }
+        }
+    }
+
+    /** Per-session host state: open calls and timers, so a session can be wound down before close. */
+    private class Host {
+        @Volatile var closed = false
+        val calls: MutableSet<Call> = ConcurrentHashMap.newKeySet()
+        val timers = ConcurrentHashMap<Int, CompletableDeferred<Unit>>()
+        fun shutdown() {
+            closed = true
+            calls.forEach { it.cancel() }
+            timers.values.forEach { it.complete(Unit) }
         }
     }
 
@@ -65,7 +113,7 @@ class VegaEngine(
             // evaluate() runs the event loop to idle but hands back the promise itself, so park the outcome in globals.
             js.evaluate<Any?>(
                 "__out = __err = null; (async () => JSON.stringify(await ($expr)))()" +
-                    ".then(v => { __out = v }, e => { __err = String(e && (e.stack || e.message) || e) })",
+                    ".then(v => { __out = v }, e => { __err = String(e) + (e && e.stack ? \"\\n\" + e.stack : \"\") })",
                 "call.js"
             )
             js.evaluate<String?>("__err")?.let { throw VegaException(it) }
@@ -73,22 +121,48 @@ class VegaEngine(
         }
     }
 
-    private fun bind(js: QuickJs) {
+    private fun bind(js: QuickJs, host: Host) {
         js.function("__host_log") { args -> log(args.getOrNull(1)?.toString().orEmpty()); null }
-        js.asyncFunction("__host_sleep") { args -> delay((args[0] as Number).toLong()); null }
+        // setTimeout/clearTimeout: evaluate() waits for every pending host call, so an uncleared timer would stall each call.
+        js.asyncFunction("__host_sleep") { args ->
+            val id = (args[1] as Number).toInt()
+            val cleared = host.timers.getOrPut(id) { CompletableDeferred() }
+            if (host.closed) cleared.complete(Unit)
+            withTimeoutOrNull((args[0] as Number).toLong()) { cleared.await() }
+            host.timers.remove(id)
+            null
+        }
+        js.function("__host_clear") { args -> host.timers.getOrPut((args[0] as Number).toInt()) { CompletableDeferred() }.complete(Unit); null }
+        // Never throws: quickjs-kt hands a thrown Kotlin exception to JS as `null`, and providers then die on `e.message`.
         js.asyncFunction("__host_http") { args ->
-            http(
-                method = args[0] as String,
-                url = args[1] as String,
-                headers = JSON.parseToJsonElement(args[2] as String).jsonObject,
-                body = args[3] as String?,
-                follow = args[4] as Boolean,
-                timeoutMs = (args[5] as Number).toLong()
-            )
+            runCatching {
+                if (host.closed) throw IOException("session closed")
+                val get: suspend () -> String = {
+                    http(
+                        host,
+                        method = args[0] as String,
+                        url = args[1] as String,
+                        headers = JSON.parseToJsonElement(args[2] as String).jsonObject,
+                        body = args[3] as String?,
+                        follow = args[4] as Boolean,
+                        timeoutMs = (args[5] as Number).toLong()
+                    )
+                }
+                if (args[0] == "GET" && args[1] == URLS_JSON) sharedUrlsJson(get) else get()
+            }.getOrElse { e -> buildJsonObject { put("error", "${e.message ?: e::class.simpleName} (${args[1]})") }.toString() }
         }
     }
 
-    private suspend fun http(method: String, url: String, headers: JsonObject, body: String?, follow: Boolean, timeoutMs: Long): String {
+    /**
+     * Every provider first reads its site's address from [URLS_JSON]. The web shares one copy across providers; here
+     * each provider runs in its own runtime, and ten parallel fetches get throttled by GitHub (8–11 s, or a timeout).
+     */
+    private suspend fun sharedUrlsJson(get: suspend () -> String): String = urlsLock.withLock {
+        urlsJson?.takeIf { System.currentTimeMillis() - it.first < URLS_TTL_MS }?.second
+            ?: get().also { if (it.startsWith("{\"status\":200,")) urlsJson = System.currentTimeMillis() to it }
+    }
+
+    private suspend fun http(host: Host, method: String, url: String, headers: JsonObject, body: String?, follow: Boolean, timeoutMs: Long): String {
         val type = headers["content-type"]?.jsonPrimitive?.content
         val builder = Request.Builder().url(url)
             .method(method, if (method == "GET" || method == "HEAD") null else (body ?: "").toRequestBody(type?.toMediaTypeOrNull()))
@@ -99,7 +173,9 @@ class VegaEngine(
         if (headers["user-agent"] == null) builder.header("User-Agent", USER_AGENT)
         val c = client.newBuilder().followRedirects(follow).followSslRedirects(follow)
             .apply { if (timeoutMs > 0) callTimeout(timeoutMs, TimeUnit.MILLISECONDS) }.build()
-        return c.newCall(builder.build()).await().use { res ->
+        val call = c.newCall(builder.build()).also { host.calls += it }
+        val response = try { call.await() } finally { host.calls -= call }
+        return response.use { res ->
             buildJsonObject {
                 put("status", res.code)
                 put("url", res.request.url.toString())
@@ -124,6 +200,9 @@ class VegaEngine(
     companion object {
         /** Desktop Chrome: the providers' sites serve desktop markup to it. */
         const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+        private const val DRAIN_MS = 5_000L
+        private const val URLS_JSON = "https://raw.githubusercontent.com/Zenda-Cross/vega-providers/refs/heads/main/urls.json"
+        private const val URLS_TTL_MS = 3_600_000L // the providers' own cache TTL
         private const val MAX_BODY = 8L * 1024 * 1024
         private val SKIP_HEADERS = setOf("accept-encoding", "content-length", "host", "connection")
         private val JSON = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; isLenient = true }
