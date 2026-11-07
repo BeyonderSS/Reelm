@@ -239,8 +239,11 @@ internal object VegaPick {
             ?: (EPISODE.find(t)?.groupValues?.get(1)?.toInt() == episode)
     }
 
+    /** Player configs or pages handed back as "streams" (autoEmbed's config-*.json), sometimes served as octet-stream. */
+    private val NOT_MEDIA = Regex("\\.(json|txt|xml)([?#]|$)", RegexOption.IGNORE_CASE)
+
     fun toStream(s: JsonObject, entry: JsonObject, provider: String): MediaStream? {
-        val url = s.str("link").takeIf { it.startsWith("http") } ?: return null
+        val url = s.str("link").takeIf { it.startsWith("http") && !NOT_MEDIA.containsMatchIn(it) } ?: return null
         val type = s.str("type").lowercase()
         val m3u8 = type == "m3u8" || url.substringBefore('?').endsWith(".m3u8")
         val h = s.str("quality").let { q -> q.toIntOrNull()?.takeIf { it in 144..4320 } ?: Stremio.parseHeight(q) }
@@ -254,7 +257,7 @@ internal object VegaPick {
         val label = (server + listOfNotNull(if (h > 0) "${h}p" else null)).joinToString(" ")
         return MediaStream(
             url = url,
-            qualityLabel = "$provider · $label".trimEnd(' ', '·'),
+            qualityLabel = label.ifBlank { "AUTO" }, // the provider is sourceName; the UI prints it once
             height = h,
             codec = if (codec != null && LowEnd.isHighBitDepth(title)) "$codec 10bit" else codec,
             headers = headers,

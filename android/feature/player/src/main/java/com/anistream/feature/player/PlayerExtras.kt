@@ -243,7 +243,8 @@ fun audioOptions(tracks: Tracks): List<AudioOption> {
             if (!g.isTrackSupported(i)) continue
             val f = g.getTrackFormat(i)
             val lang = f.language?.takeIf { it != "und" }?.let { Locale(it).displayLanguage }
-            out += AudioOption(f.label ?: lang ?: "Track ${out.size + 1}", g.isTrackSelected(i), g, i)
+            // language first: releases often title every track with their site name ("Vegamovies.NL" twice)
+            out += AudioOption(listOfNotNull(lang, f.label).distinct().joinToString(" · ").ifEmpty { "Track ${out.size + 1}" }, g.isTrackSelected(i), g, i)
         }
     }
     return out

@@ -159,7 +159,7 @@ fun MovieDetailScreen(
                         if (!desc.isNullOrBlank()) item(key = "synopsis") { Synopsis(desc) }
                         if (detail.cast.isNotEmpty()) item(key = "cast") {
                             Text(
-                                "Cast: " + detail.cast.take(6).joinToString(", "),
+                                "Cast: " + detail.cast.distinct().take(6).joinToString(", "),
                                 style = AppType.caption,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,

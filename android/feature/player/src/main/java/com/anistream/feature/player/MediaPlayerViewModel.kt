@@ -45,6 +45,7 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 import javax.inject.Inject
 
+private const val START_TIMEOUT_MS = 40_000L
 private const val DEFAULT_USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
@@ -165,6 +166,7 @@ class MediaPlayerViewModel @Inject constructor(
     private var fellBackFrom = -1
     /** when the current stream was handed to the player; 0 once it rendered (time to first frame) */
     private var startedAt = 0L
+    private var startWatch: kotlinx.coroutines.Job? = null
     private var ticks = 0
 
     /** Admin telemetry with what's playing; codec matters for the HEVC / Dolby failure counts. */
@@ -271,6 +273,14 @@ class MediaPlayerViewModel @Inject constructor(
         applySubtitle(stream, subtitleIndex)
         player.prepare()
         player.playWhenReady = true
+        // Some files load forever without an error (Google CDN MKVs whose index ExoPlayer can't reach): after 40 s
+        // without a first frame, fall back as if it had failed. startedAt is cleared on the first READY.
+        startWatch?.cancel()
+        if (!request.isLive) startWatch = viewModelScope.launch {
+            delay(START_TIMEOUT_MS)
+            if (startedAt > 0 && _uiState.value.streamIndex == index && fellBackFrom != index && index + 1 < request.streams.size)
+                handleError(PlaybackException("No first frame in ${START_TIMEOUT_MS / 1000} s", null, PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT))
+        }
     }
 
     private fun handleError(error: PlaybackException) {
@@ -296,6 +306,7 @@ class MediaPlayerViewModel @Inject constructor(
     fun selectStream(index: Int) {
         if (index == _uiState.value.streamIndex && _uiState.value.error == null) return
         _uiState.value.request?.let { r -> if (!r.isLive) r.streams.getOrNull(index)?.let { QualityPick.pin(appContext, pinKey(r), it.height) } }
+        fellBackFrom = -1 // a pick starts a fresh fallback chain (an earlier fallback from this index would block it)
         play(index, if (_uiState.value.isLive) null else player.currentPosition)
     }
 
