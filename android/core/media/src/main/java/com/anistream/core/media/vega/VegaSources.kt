@@ -61,12 +61,16 @@ class VegaSources @Inject constructor(
         return coroutineScope {
             providers.map { p ->
                 async {
+                    // the probe sits inside the provider's budget: probing after the slowest provider pushed the whole
+                    // Vega source past the repository's per-source timeout, and every provider's streams were lost
                     withTimeoutOrNull(PROVIDER_TIMEOUT_MS) {
-                        runCatching { provider(reg.commit, p, title, year, type, season, episode, lowEnd) }
-                            .onFailure { Log.w("Vega", "$p: ${it.message}") }.getOrNull()
-                    }.orEmpty()
+                        runCatching {
+                            val all = provider(reg.commit, p, title, year, type, season, episode, lowEnd)
+                            all.zip(all.map { async { playable(it) } }.awaitAll()).filter { it.second }.map { it.first }
+                        }.onFailure { Log.w("Vega", "$p: ${it.message}") }.getOrNull()
+                    }.orEmpty().also { Log.d("Vega", "$p: ${it.size} playable") }
                 }
-            }.awaitAll().flatten().let { all -> all.zip(all.map { async { playable(it) } }.awaitAll()).filter { it.second }.map { it.first } }
+            }.awaitAll().flatten()
         }
     }
 
