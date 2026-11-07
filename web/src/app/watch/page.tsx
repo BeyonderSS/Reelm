@@ -201,6 +201,7 @@ function Player() {
     return () => clearTimeout(t);
   }, [src]); // eslint-disable-line react-hooks/exhaustive-deps
   const onPlaying = () => {
+    setErr(""); // a source that plays (a fallback or a manual pick) clears the last one's error overlay
     // a codec the browser can't decode (Dramachi's HEVC) still plays the sound over a black picture: treat that as a failure
     const v = video.current;
     if (v && p?.kind !== "live") setTimeout(() => { if (video.current === v && !v.paused && !v.videoWidth) fail("This source plays sound but no picture in this browser."); }, 3000);

@@ -77,6 +77,8 @@ export function pickQualities(ll: Link[]) {
   const hs = [...by.keys()].sort((a, b) => b - a), top = hs[0], low = hs.filter((x) => x !== top).sort((a, b) => Math.abs(a - 720) - Math.abs(b - 720))[0];
   return [top, low].filter((x) => x !== undefined).map((x) => by.get(x)!);
 }
+/** Provider "streams" that are really player configs or pages (autoEmbed hands back config-*.json); some hosts serve them as octet-stream. */
+export const NOT_MEDIA = /\.(json|txt|xml)(\?|#|$)/i;
 export const pickEpisode = (eps: { title: string; link: string }[], e: number) =>
   eps.find((x) => { const m = x.title.match(/(?:^|[^a-z])E0*(\d+)\b|\bepisode\s*0*(\d+)\b|^\s*0*(\d+)\b/i); return m && +(m[1] ?? m[2] ?? m[3]) === e; }) ?? eps[e - 1];
 
@@ -131,7 +133,7 @@ export async function streams(title: string, year: number, type: "movie" | "seri
       const list = ((await stream.getStream({ link, type: t, signal: sig, providerContext: ctx, isDownload: false })) as any[]) ?? [];
       console.debug(`[vega] ${p} ${l.title.slice(0, 30)}: ${list.length} files`, list.map((s) => `${s.server} ${String(s.link).slice(8, 50)}`));
       for (const s of list) { // m3u8: hls.js needs CORS from the host, which these never send
-        if (!/^https:/.test(s.link ?? "") || s.type === "m3u8" || /\.m3u8(\?|$)/.test(s.link)) continue;
+        if (!/^https:/.test(s.link ?? "") || s.type === "m3u8" || /\.m3u8(\?|$)/.test(s.link) || NOT_MEDIA.test(s.link)) continue;
         const hd = s.headers ?? {};
         if (Object.keys(hd).some((k) => !["referer", "origin", "user-agent"].includes(k.toLowerCase()))) continue; // can't be applied to a <video>
         if (Object.keys(hd).length) try { await setHeaders(s.link, hd); } catch { continue; }
