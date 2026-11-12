@@ -37,6 +37,12 @@ class VegaPickTest {
 
         val eps = listOf(o("""{"title":"EPISODE 1","link":"x"}"""), o("""{"title":"Episode 12","link":"y"}"""))
         assertEquals("y", VegaPick.episode(eps, 1, 12)!!["link"]!!.jsonPrimitive.content)
+        // 4khdhub and autoEmbed list a season's episodes as directLinks titled like these
+        val dl = listOf(o("""{"title":"Episode-01 2.88 GB","link":"a"}"""), o("""{"title":"Episode-11 2.9 GB","link":"b"}"""))
+        assertEquals("b", VegaPick.episode(dl, 6, 11)!!["link"]!!.jsonPrimitive.content)
+        val ae = listOf(o("""{"title":"1. The Desert Rose","link":"a"}"""), o("""{"title":"11. White Lines","link":"b"}"""))
+        assertEquals("b", VegaPick.episode(ae, 6, 11)!!["link"]!!.jsonPrimitive.content)
+        assertNull(VegaPick.episode(listOf(o("""{"title":"Season Pack","link":"p"}""")), 6, 1))
     }
 
     @Test

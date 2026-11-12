@@ -18,5 +18,6 @@ internal object QualityPick {
 
     private fun prefs(context: Context) = context.getSharedPreferences("quality_pins", Context.MODE_PRIVATE)
     fun pinned(context: Context, key: String): Int? = prefs(context).getInt(key, 0).takeIf { it > 0 }
-    fun pin(context: Context, key: String, height: Int) { if (height > 0) prefs(context).edit().putInt(key, height).apply() }
+    /** 0 = back to Auto */
+    fun pin(context: Context, key: String, height: Int) = prefs(context).edit().apply { if (height > 0) putInt(key, height) else remove(key) }.apply()
 }

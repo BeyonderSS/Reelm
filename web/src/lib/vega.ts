@@ -6,7 +6,7 @@ import { langs } from "./langs.ts";
 export type F = (url: string, o?: { headers?: Record<string, string>; probe?: boolean; method?: string; body?: string; vega?: boolean }) => Promise<{ status: number; url: string; headers: Record<string, string>; text: string }>;
 const vf: F = (u, o) => bridge(u, { ...o, vega: true }, 20000);
 const DEFAULT = { commit: "4ecbc98e12da870ffc06b41bd7affe4b1fe316f0", enabled: ["hdhub4u", "drive", "vega", "mod", "topmovies"], base: "" };
-const NAMES: Record<string, string> = { hdhub4u: "HDHub4u", drive: "Drive", vega: "VegaMovies", mod: "MoD", topmovies: "TopMovies" };
+const NAMES: Record<string, string> = { "4khdhub": "4KHDHub", hdhub4u: "HDHub4u", drive: "Drive", vega: "VegaMovies", mod: "MoD", topmovies: "TopMovies" };
 const cdn = (c: string) => `https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@${c}/dist`;
 
 const qs = (u: string, p?: Record<string, unknown>) => { if (!p) return u; const x = new URL(u); for (const [k, v] of Object.entries(p)) if (v != null) x.searchParams.set(k, String(v)); return x.toString(); };
@@ -80,7 +80,7 @@ export function pickQualities(ll: Link[]) {
 /** Provider "streams" that are really player configs or pages (autoEmbed hands back config-*.json); some hosts serve them as octet-stream. */
 export const NOT_MEDIA = /\.(json|txt|xml)(\?|#|$)/i;
 export const pickEpisode = (eps: { title: string; link: string }[], e: number) =>
-  eps.find((x) => { const m = x.title.match(/(?:^|[^a-z])E0*(\d+)\b|\bepisode\s*0*(\d+)\b|^\s*0*(\d+)\b/i); return m && +(m[1] ?? m[2] ?? m[3]) === e; }) ?? eps[e - 1];
+  eps.find((x) => { const m = x.title.match(/(?:^|[^a-z])E0*(\d+)\b|\bepisode[\s._-]*0*(\d+)\b|^\s*0*(\d+)\b/i); return m && +(m[1] ?? m[2] ?? m[3]) === e; }) ?? eps.filter((x) => !/\bpack\b/i.test(x.title))[e - 1]; // "Episode-01 2.9 GB" (4khdhub); a lone "Season Pack" is no episode
 
 // ---- loading ----
 const mods = new Map<string, Promise<any>>();
@@ -105,52 +105,82 @@ const registry = async () => {
 };
 const tmo = <T,>(p: Promise<T>, ms: number) => Promise.race([p, new Promise<never>((_, no) => setTimeout(() => no(new Error("timeout")), ms))]);
 
-export async function streams(title: string, year: number, type: "movie" | "series", season: number, episode: number, f: F = vf) {
-  const reg = await registry(), cheerio = await import("cheerio");
-  const ctx = { axios: makeAxios(f), cheerio, commonHeaders: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" },
-    kvStore: (() => { const m = new Map<string, any>(); return { get: async (k: string) => m.get(k), set: async (k: string, v: any) => void m.set(k, v), delete: async (k: string) => void m.delete(k) }; })(),
-    openWebView: async () => { throw new Error("unsupported"); } };
-  const q = title.replace(/\s+(s\d{1,2}|season \d{1,2})\s*$/i, "").trim();
-  const one = async (p: string) => {
-    const [posts, meta, stream, eps] = await Promise.all(["posts", "meta", "stream", "episodes"].map((n) => load(reg.base, p, n, f).catch(() => null)));
-    const sig = new AbortController().signal, base = { providerValue: p, signal: sig, providerContext: ctx };
-    const found = ((await posts.getSearchPosts({ searchQuery: q, page: 1, ...base })) as { title: string; link: string }[])
-      .map((x) => ({ x, s: score(q, x.title.replace(/\(.*?\)|\[.*?\]|\b(19|20)\d{2}\b.*$/g, " ")) + (year && x.title.includes(String(year)) ? 0.3 : 0) }))
-      .filter((e) => e.s >= 0.6).sort((a, b) => b.s - a.s)[0]?.x;
-    if (!found) { console.debug(`[vega] ${p}: no post matched "${q}"`); return []; }
-    const m = await meta.getMeta({ link: found.link, provider: p, providerContext: ctx });
-    console.debug(`[vega] ${p}: "${found.title.slice(0, 60)}" has ${m?.linkList?.length ?? 0} links`);
-    const ll: Link[] = type === "series" ? pickSeason(m.linkList ?? [], season) : m.linkList ?? [];
-    const out = await Promise.all(pickQualities(ll).map(async (l) => {
-      let link = "", t = "movie";
-      if (type === "series") {
-        if (!l.episodesLink || !eps) return null;
-        const ep = pickEpisode(await eps.getEpisodes({ url: l.episodesLink, providerContext: ctx }), episode);
-        if (!ep) return null;
-        link = ep.link; t = "series";
-      } else for (const d of l.directLinks ?? []) { link = d.link; t = d.type ?? "movie"; if (link) break; }
-      if (!link) return null;
-      const list = ((await stream.getStream({ link, type: t, signal: sig, providerContext: ctx, isDownload: false })) as any[]) ?? [];
-      console.debug(`[vega] ${p} ${l.title.slice(0, 30)}: ${list.length} files`, list.map((s) => `${s.server} ${String(s.link).slice(8, 50)}`));
-      for (const s of list) { // m3u8: hls.js needs CORS from the host, which these never send
-        if (!/^https:/.test(s.link ?? "") || s.type === "m3u8" || /\.m3u8(\?|$)/.test(s.link) || NOT_MEDIA.test(s.link)) continue;
-        const hd = s.headers ?? {};
-        if (Object.keys(hd).some((k) => !["referer", "origin", "user-agent"].includes(k.toLowerCase()))) continue; // can't be applied to a <video>
-        if (Object.keys(hd).length) try { await setHeaders(s.link, hd); } catch { continue; }
-        // ask the way a <video> does (open range): some hosts only serve bounded ranges and answer players with a 403 page
-        const pr = await f(s.link, { probe: true, vega: true, headers: { ...hd, Range: "bytes=0-" } }).catch(() => null);
-        if (!pr || (pr.status !== 200 && pr.status !== 206) || /text\/html|json|xml/.test(pr.headers["content-type"] ?? "")) { console.debug(`[vega] ${p}: dropped ${String(s.link).slice(8, 50)} (${pr ? pr.status + " " + pr.headers["content-type"] : "probe failed"})`); continue; }
-        const ht = h(l) || +(`${s.quality ?? ""}`.match(/\d{3,4}/)?.[0] ?? 0), ac = /ddp|dd\+|dd ?[257]\.1|e-?ac-?3|\bac-?3|dts|atmos|truehd/i.test(l.title) && !/aac|opus/i.test(l.title);
-        return { url: s.link as string, height: ht, label: `${NAMES[p] ?? p} · ${String(s.server ?? "").split(" · ").filter((x) => x && x !== "Unknown" && !/^\d{3,4}p$/.test(x)).join(" ") || "Direct"}${ht ? " " + ht + "p" : ""}${ac ? " · Dolby audio" : ""}`, dolby: ac,
-          codec: /av1/i.test(l.title) ? "AV1" : /hevc|x265|h\.?265/i.test(l.title) ? "HEVC" : /avc|x264|h\.?264/i.test(l.title) ? "H.264" : undefined, subtitles: [] as any[],
-          langs: langs(langs(l.title).length ? l.title : found.title) }; // the link names its own audio when it differs from the post (a Hindi-only 480p under a Dual Audio post)
-      }
-      return null;
-    }).map((x) => x.catch(() => null)));
-    return out.filter((x) => !!x);
-  };
+type Req = { title: string; year: number; type: "movie" | "series"; season: number; episode: number };
+export type Stage = "load" | "search" | "meta" | "episodes" | "stream" | "done";
+const context = async (f: F) => ({ axios: makeAxios(f), cheerio: await import("cheerio"), commonHeaders: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" },
+  kvStore: (() => { const m = new Map<string, any>(); return { get: async (k: string) => m.get(k), set: async (k: string, v: any) => void m.set(k, v), delete: async (k: string) => void m.delete(k) }; })(),
+  openWebView: async () => { throw new Error("unsupported"); } });
+
+/** One provider, one title: search, meta, (episodes), stream, then probe each file the way a <video> asks. `at` reports each stage reached. */
+async function resolve(base: string, p: string, r: Req, ctx: any, f: F, at: (s: Stage) => void = () => {}) {
+  const { year, type, season, episode } = r, q = r.title.replace(/\s+(s\d{1,2}|season \d{1,2})\s*$/i, "").trim();
+  const [posts, meta, stream, eps] = await Promise.all(["posts", "meta", "stream", "episodes"].map((n) => load(base, p, n, f).catch((e) => (n === "episodes" ? null : Promise.reject(e)))));
+  const sig = new AbortController().signal, ctxBase = { providerValue: p, signal: sig, providerContext: ctx };
+  at("search");
+  const res = (await posts.getSearchPosts({ searchQuery: q, page: 1, ...ctxBase })) as { title: string; link: string }[];
+  const found = res
+    .map((x) => ({ x, s: score(q, x.title.replace(/\(.*?\)|\[.*?\]|\b(19|20)\d{2}\b.*$/g, " ")) + (year && x.title.includes(String(year)) ? 0.3 : 0) }))
+    .filter((e) => e.s >= 0.6 && (type !== "series" || pickSeason([e.x], season).length)).sort((a, b) => b.s - a.s)[0]?.x; // not a post for another season
+  if (!found) { console.debug(`[vega] ${p}: no post matched "${q}"`, res.slice(0, 8).map((x) => x.title)); return []; }
+  at("meta");
+  const m = await meta.getMeta({ link: found.link, provider: p, providerContext: ctx });
+  console.debug(`[vega] ${p}: "${found.title.slice(0, 60)}" has ${m?.linkList?.length ?? 0} links`);
+  const ll: Link[] = type === "series" ? pickSeason(m.linkList ?? [], season) : m.linkList ?? [];
+  console.debug(`[vega] ${p}: links`, (m.linkList ?? []).map((l: Link) => `${l.title.slice(0, 50)}${l.episodesLink ? " [eps]" : ""}${l.directLinks?.length ? ` [${l.directLinks.length} dl: ${l.directLinks.slice(0, 3).map((d) => d.title).join("|")}]` : ""}`), `-> S${season}: ${ll.length}`);
+  const out = await Promise.all(pickQualities(ll).map(async (l) => {
+    let link = "", t = "movie";
+    if (type === "series") {
+      at("episodes"); // 4khdhub and autoEmbed list a season's episodes as its directLinks
+      const el: { title: string; link: string }[] = l.directLinks?.length ? l.directLinks.map((d) => ({ title: d.title ?? "", link: d.link }))
+        : l.episodesLink && eps ? await eps.getEpisodes({ url: l.episodesLink, providerContext: ctx }) : [];
+      const ep = pickEpisode(el, episode);
+      console.debug(`[vega] ${p} ${l.title.slice(0, 30)}: ${el.length} episodes`, el.slice(0, 30).map((x: any) => x.title), `-> E${episode}: ${ep?.title}`);
+      if (!ep) return null;
+      link = ep.link; t = "series";
+    } else for (const d of l.directLinks ?? []) { link = d.link; t = d.type ?? "movie"; if (link) break; }
+    if (!link) return null;
+    at("stream");
+    const list = ((await stream.getStream({ link, type: t, signal: sig, providerContext: ctx, isDownload: false })) as any[]) ?? [];
+    console.debug(`[vega] ${p} ${l.title.slice(0, 30)}: ${list.length} files from ${link.slice(0, 80)}`, list.map((s) => `${s.server} ${String(s.link).slice(8, 50)}`));
+    for (const s of list) { // m3u8: hls.js needs CORS from the host, which these never send
+      if (!/^https:/.test(s.link ?? "") || s.type === "m3u8" || /\.m3u8(\?|$)/.test(s.link) || NOT_MEDIA.test(s.link)) continue;
+      const hd = s.headers ?? {};
+      if (Object.keys(hd).some((k) => !["referer", "origin", "user-agent"].includes(k.toLowerCase()))) continue; // can't be applied to a <video>
+      if (Object.keys(hd).length) try { await setHeaders(s.link, hd); } catch { continue; }
+      // ask the way a <video> does (open range): some hosts only serve bounded ranges and answer players with a 403 page
+      const pr = await f(s.link, { probe: true, vega: true, headers: { ...hd, Range: "bytes=0-" } }).catch(() => null);
+      if (!pr || (pr.status !== 200 && pr.status !== 206) || /text\/html|json|xml/.test(pr.headers["content-type"] ?? "")) { console.debug(`[vega] ${p}: dropped ${String(s.link).slice(8, 50)} (${pr ? pr.status + " " + pr.headers["content-type"] : "probe failed"})`); continue; }
+      const ht = h(l) || +(`${s.quality ?? ""}`.match(/\d{3,4}/)?.[0] ?? 0), ac = /ddp|dd\+|dd ?[257]\.1|e-?ac-?3|\bac-?3|dts|atmos|truehd/i.test(l.title) && !/aac|opus/i.test(l.title);
+      return { url: s.link as string, height: ht, label: `${NAMES[p] ?? p} · ${String(s.server ?? "").split(" · ").filter((x) => x && x !== "Unknown" && !/^\d{3,4}p$/.test(x)).join(" ") || "Direct"}${ht ? " " + ht + "p" : ""}${ac ? " · Dolby audio" : ""}`, dolby: ac,
+        codec: /av1/i.test(l.title) ? "AV1" : /hevc|x265|h\.?265/i.test(l.title) ? "HEVC" : /avc|x264|h\.?264/i.test(l.title) ? "H.264" : undefined, subtitles: [] as any[],
+        langs: langs(langs(l.title).length ? l.title : found.title) }; // the link names its own audio when it differs from the post (a Hindi-only 480p under a Dual Audio post)
+    }
+    return null;
+  }).map((x) => x.catch(() => null)));
+  return out.filter((x) => !!x);
+}
+
+/** `on` gets each provider's files as soon as it has them; slow ones (VegaMovies, autoEmbed: 15-25 s for a series) get up to 45 s. */
+export async function streams(title: string, year: number, type: "movie" | "series", season: number, episode: number, f: F = vf, on: (x: Awaited<ReturnType<typeof resolve>>) => void = () => {}) {
+  const reg = await registry(), ctx = await context(f), r = { title, year, type, season, episode };
   // ponytail: first 10 enabled run in parallel; a queue with a deadline if admins enable more and want them all
-  const t0 = Date.now(), r = await Promise.all(reg.enabled.slice(0, 10).map((p) => tmo(one(p), 15000)
-    .then((x) => (console.debug(`[vega] ${p}: ${x.length} in ${Date.now() - t0} ms`), x), (e) => (console.debug(`[vega] ${p}: ${e?.message} after ${Date.now() - t0} ms`), [] as any[]))));
-  return r.flat().sort((a, b) => b.height - a.height);
+  const t0 = Date.now(), all = await Promise.all(reg.enabled.slice(0, 10).map((p) => tmo(resolve(reg.base, p, r, ctx, f), 45000)
+    .then((x) => (console.debug(`[vega] ${p}: ${x.length} in ${Date.now() - t0} ms`), x.length && on(x), x), (e) => (console.debug(`[vega] ${p}: ${e?.message} after ${Date.now() - t0} ms`), [] as any[]))));
+  return all.flat().sort((a, b) => b.height - a.height);
+}
+
+/** Admin "Test update": the same cases as the Android VegaEngineTest family. */
+export const CHECK_CASES = { movie: { title: "Spider-Man: Into the Spider-Verse", year: 2018, type: "movie", season: 0, episode: 0 }, series: { title: "Breaking Bad", year: 2008, type: "series", season: 1, episode: 1 } } as const;
+export type CheckCase = keyof typeof CHECK_CASES;
+export type Check = { ok: boolean; stage: Stage; files: number; ms: number; error?: string };
+const ORDER: Stage[] = ["load", "search", "meta", "episodes", "stream", "done"];
+/** Run ONE provider at an explicit commit (not the registry's pin) through the player's path. `files` = playable files found (max one per picked quality). */
+export async function checkProvider(commit: string, provider: string, c: CheckCase, f: F = vf, ms = 30000): Promise<Check> {
+  const t0 = Date.now();
+  let stage = "load" as Stage;
+  try {
+    const out = await tmo(resolve(cdn(commit), provider, CHECK_CASES[c], await context(f), f, (s) => { if (ORDER.indexOf(s) > ORDER.indexOf(stage)) stage = s; }), ms);
+    if (out.length) return { ok: true, stage: "done", files: out.length, ms: Date.now() - t0 };
+    return { ok: false, stage, files: 0, ms: Date.now() - t0, error: stage === "search" ? "no search match" : "no playable file" };
+  } catch (e: any) { return { ok: false, stage, files: 0, ms: Date.now() - t0, error: String(e?.message ?? e) }; }
 }

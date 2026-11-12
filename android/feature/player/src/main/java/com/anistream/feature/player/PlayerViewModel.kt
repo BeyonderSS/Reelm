@@ -72,7 +72,7 @@ data class PlayerUiState(
     /** current episode played to the end; the screen shows a countdown or end card */
     val ended: Boolean = false,
     val downloadStarted: Boolean = false,
-    /** AniSkip intro/recap/credits for the current episode; empty = unknown (the fixed +85 s button stays) */
+    /** AniSkip intro/recap/credits for the current episode; empty = unknown (no skip button) */
     val skips: List<SkipInterval> = emptyList()
 )
 
@@ -269,7 +269,7 @@ class PlayerViewModel @Inject constructor(
             .setSubtitleConfigurations(subtitles)
             .build()
         startedAt = System.currentTimeMillis()
-        player.setMediaSource(DefaultMediaSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(appContext, http)).createMediaSource(item), startMs ?: 0L)
+        player.setMediaSource(DefaultMediaSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(appContext, http)).setLoadErrorHandlingPolicy(FailFast4xx).createMediaSource(item), startMs ?: 0L)
         player.prepare()
         player.playWhenReady = true
     }

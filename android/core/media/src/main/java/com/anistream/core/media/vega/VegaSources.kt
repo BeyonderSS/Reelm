@@ -183,7 +183,8 @@ internal object VegaPick {
     private val SEASON_RANGE = Regex("""(?i)\bseasons?\s*:?\s*(\d{1,2})(?:\s*(?:-|–|to)\s*(\d{1,2}))?""")
     private val SEASON_LIST = Regex("""(?i)\bseasons?\s*:?\s*(\d{1,2}(?:\s*\+\s*\d{1,2})+)""")
     private val S_TAG = Regex("""(?i)\bS(\d{1,2})(?:\s*(?:-|–)\s*S?(\d{1,2}))?(?:E\d+)?\b""")
-    private val EPISODE = Regex("""(?i)(?:\bepisode|\bep|\bE)\s*\.?\s*0*(\d{1,4})\b""")
+    // "Episode 12", "Episode-01 2.9 GB" (4khdhub), "E05", or numbered titles "11. White Lines" (autoEmbed)
+    private val EPISODE = Regex("""(?i)(?:\bepisode|\bep|\bE)[\s._-]*0*(\d{1,4})\b|^\s*0*(\d{1,4})\b""")
     private val SXE = Regex("""(?i)\bS(\d{1,2})\s*E(\d{1,4})\b""")
 
     private fun JsonObject.str(k: String) = (this[k] as? JsonPrimitive)?.contentOrNull.orEmpty()
@@ -236,7 +237,7 @@ internal object VegaPick {
     fun episode(eps: List<JsonObject>, season: Int, episode: Int): JsonObject? = eps.firstOrNull { e ->
         val t = e.str("title")
         SXE.find(t)?.let { it.groupValues[1].toInt() == season && it.groupValues[2].toInt() == episode }
-            ?: (EPISODE.find(t)?.groupValues?.get(1)?.toInt() == episode)
+            ?: (EPISODE.find(t)?.groupValues?.drop(1)?.firstOrNull { it.isNotEmpty() }?.toInt() == episode)
     }
 
     /** Player configs or pages handed back as "streams" (autoEmbed's config-*.json), sometimes served as octet-stream. */

@@ -46,37 +46,43 @@ export const movieRoutes: Record<string, (q: URLSearchParams) => Promise<unknown
   },
   // Dramachi has no CORS, so the browser asks our server for it (below); a source that fails drops out alone.
   "movies/dramachi": (q) => dr.streams(q.get("title") ?? "", num(q.get("year")), q.get("type") === "series" ? "series" : "movie", num(q.get("s")), num(q.get("e"))),
-  "movies/stream": async (q) => {
-    const id = q.get("id")!;
-    const mbPart = async () => {
-      const sid = id.startsWith("mb:") ? id.slice(3) : await findMb(q);
-      if (!sid) throw new Error("No stream source found for this title");
-      // each dub is its own subject: play the dubs too, tagged with their language ("Original" stays untagged: we don't know it)
-      const one = async (id: string, label = "Original") => (await mb.streams(id, num(q.get("s")), num(q.get("e"))))
-        .map((x) => ({ ...x, label: `MovieBox · ${x.label}`, langs: label === "Original" ? [] : langs(label) }));
-      const audio = mb.detail(sid).then((d) => d.audio).catch(() => [] as Awaited<ReturnType<typeof mb.detail>>["audio"]);
-      const [main, dubs] = await Promise.all([audio.then((a) => one(sid, a.find((x) => x.current)?.label)),
-        // ponytail: first 6 dubs with a known language; a dub subject often serves only a notice video, which streams() drops
-        audio.then((a) => Promise.all(a.filter((x) => !x.current && langs(x.label).length).slice(0, 6).map((x) => one(x.id.slice(3), x.label).catch(() => []))))]);
-      return [...main, ...dubs.flat()];
-    };
-    const drPart = async () => {
-      if (!q.get("title")) return []; // an "mb:" id arrives without a title
-      return typeof window === "undefined" ? movieRoutes["movies/dramachi"](q) : json(`/api/movies/dramachi?${q}`);
-    };
-    // 4KHDHub blocks datacenter IPs and has no CORS: only the Reelm Helper (1.1+) can reach it, from the viewer's browser.
-    const fkPart = async () => {
-      if (typeof document === "undefined" || !q.get("title") || helperOld() || !helperVersion()) return [];
-      return (await import("./fourkhdhub")).streams(bridge, q.get("title")!, num(q.get("year")), q.get("type") === "series" ? "series" : "movie", num(q.get("s")), num(q.get("e")));
-    };
-    // Vega providers (open-source scrapers, see vega.ts): same gate, needs Helper 1.2+ (any host, Referer rules).
-    const vegaPart = async () => {
-      if (typeof document === "undefined" || !q.get("title") || !helperVega()) return [];
-      return (await import("./vega")).streams(q.get("title")!, num(q.get("year")), q.get("type") === "series" ? "series" : "movie", num(q.get("s")), num(q.get("e")));
-    };
-    const r = await Promise.allSettled([mbPart(), drPart(), fkPart(), vegaPart()]);
-    const list = r.flatMap((x) => (x.status === "fulfilled" ? (x.value as any[]) : []));
-    if (!list.length) throw new Error((r.find((x) => x.status === "rejected") as PromiseRejectedResult | undefined)?.reason?.message ?? "No streams found");
-    return list.sort((a, b) => +!!a.dolby - +!!b.dolby); // stable: Dolby releases (decoded in JS, see use-libav-audio) last, else Android order: MovieBox first, then the title sources (Dramachi, 4KHDHub), each best-first
-  },
+  "movies/stream": (q) => streamAll(q),
 };
+
+/** Every source for a title. `on` gets each part (MovieBox, Dramachi, 4KHDHub, each Vega provider) as it lands, so the player can start before the slow ones finish. */
+export async function streamAll(q: URLSearchParams, on: (part: any[]) => void = () => {}) {
+  const id = q.get("id")!, emit = <T,>(x: T) => ((x as any[])?.length && on(x as any[]), x);
+  const mbPart = async () => {
+    const sid = id.startsWith("mb:") ? id.slice(3) : await findMb(q);
+    if (!sid) throw new Error("No stream source found for this title");
+    // each dub is its own subject: play the dubs too, tagged with their language ("Original" stays untagged: we don't know it)
+    const one = async (id: string, label = "Original") => (await mb.streams(id, num(q.get("s")), num(q.get("e"))))
+      .map((x) => ({ ...x, label: `MovieBox · ${x.label}`, langs: label === "Original" ? [] : langs(label) }));
+    const audio = mb.detail(sid).then((d) => d.audio).catch(() => [] as Awaited<ReturnType<typeof mb.detail>>["audio"]);
+    const [main, dubs] = await Promise.all([audio.then((a) => one(sid, a.find((x) => x.current)?.label)),
+      // ponytail: first 6 dubs with a known language; a dub subject often serves only a notice video, which streams() drops
+      audio.then((a) => Promise.all(a.filter((x) => !x.current && langs(x.label).length).slice(0, 6).map((x) => one(x.id.slice(3), x.label).catch(() => []))))]);
+    return [...main, ...dubs.flat()];
+  };
+  const drPart = async () => {
+    if (!q.get("title")) return []; // an "mb:" id arrives without a title
+    return typeof window === "undefined" ? movieRoutes["movies/dramachi"](q) : json(`/api/movies/dramachi?${q}`);
+  };
+  // 4KHDHub blocks datacenter IPs and has no CORS: only the Reelm Helper (1.1+) can reach it, from the viewer's browser.
+  const fkPart = async () => {
+    if (typeof document === "undefined" || !q.get("title") || helperOld() || !helperVersion()) return [];
+    // its mirror chain moves to new hosts the Helper's fixed list lacks; Helper 1.2+ lets vega requests reach any public https host
+    const f: typeof bridge = helperVega() ? (u, o) => bridge(u, { ...o, vega: true }) : bridge;
+    return (await import("./fourkhdhub")).streams(f, q.get("title")!, num(q.get("year")), q.get("type") === "series" ? "series" : "movie", num(q.get("s")), num(q.get("e")));
+  };
+  // Vega providers (open-source scrapers, see vega.ts): same gate, needs Helper 1.2+ (any host, Referer rules).
+  const vegaPart = async () => {
+    if (typeof document === "undefined" || !q.get("title") || !helperVega()) return [];
+    return (await import("./vega")).streams(q.get("title")!, num(q.get("year")), q.get("type") === "series" ? "series" : "movie", num(q.get("s")), num(q.get("e")), undefined, on);
+  };
+  const t0 = Date.now(), log = (n: string) => <T,>(p: Promise<T>) => p.then((x: any) => (console.debug(`[stream] ${n}: ${x?.length} in ${Date.now() - t0} ms`), x), (e) => { console.debug(`[stream] ${n}: ${e?.message} after ${Date.now() - t0} ms`); throw e; });
+  const r = await Promise.allSettled([log("moviebox")(mbPart().then(emit)), log("dramachi")(drPart().then(emit)), log("4khdhub")(fkPart().then(emit)), log("vega")(vegaPart())]);
+  const list = r.flatMap((x) => (x.status === "fulfilled" ? (x.value as any[]) : []));
+  if (!list.length) throw new Error((r.find((x) => x.status === "rejected") as PromiseRejectedResult | undefined)?.reason?.message ?? "No streams found");
+  return list.sort((a, b) => +!!a.dolby - +!!b.dolby); // stable: Dolby releases (decoded in JS, see use-libav-audio) last, else Android order: MovieBox first, then the title sources (Dramachi, 4KHDHub), each best-first
+}

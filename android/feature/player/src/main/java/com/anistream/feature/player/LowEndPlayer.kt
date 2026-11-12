@@ -4,7 +4,11 @@ import android.content.Context
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.common.C
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import com.anistream.core.common.LowEnd
 import com.anistream.domain.AudioLanguage
 import com.anistream.domain.model.MediaStream
@@ -21,6 +25,13 @@ internal fun buildPlayer(context: Context): ExoPlayer {
             // multi-audio files start on the device's preferred language (Hindi in a "Dual Audio" release)
             trackSelectionParameters = trackSelectionParameters.buildUpon().setPreferredAudioLanguage(AudioLanguage.preferred.value).build()
         }
+}
+
+/** A dead link (HTTP 4xx) fails at once so the next source starts, instead of ~4 retries (~10 s); network errors and 5xx still retry. */
+@OptIn(UnstableApi::class)
+internal object FailFast4xx : DefaultLoadErrorHandlingPolicy() {
+    override fun getRetryDelayMsFor(info: LoadErrorHandlingPolicy.LoadErrorInfo): Long =
+        if ((info.exception as? HttpDataSource.InvalidResponseCodeException)?.responseCode in 400..499) C.TIME_UNSET else super.getRetryDelayMsFor(info)
 }
 
 /**

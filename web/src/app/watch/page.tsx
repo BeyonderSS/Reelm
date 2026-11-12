@@ -6,15 +6,18 @@ import { selectControls, usePlayer } from "@videojs/react";
 import { HlsJsVideo } from "@videojs/react/media/hlsjs-video";
 import { Video, VideoPlayer, VideoSkin } from "@videojs/react/video";
 import "@videojs/react/video/skin.css";
-import { ArrowLeft, Check, Copy, MonitorPlay, RotateCcw, Settings2, SkipForward, Users, X } from "lucide-react";
+import { ArrowLeft, Check, Copy, RotateCcw, Settings2, SkipForward, Users, X } from "lucide-react";
 import { Avatar, Chips, Marquee, pill, timeLeft } from "@/components/app";
 import { ReelMark } from "@/components/reel";
 import { SeekPreview } from "@/components/seek-preview";
+import { hereFor, PlayOnTv, RemotePanel } from "@/components/play-on-tv";
+import { setRemoteHere, useHub, type Now } from "@/lib/hub";
 import { frac } from "@/lib/eps";
-import { deviceId, get, getHistory, epKey, playKey, proxied, reelm, saveProgress, syncHistory, toPlay, WS, type Play as P } from "@/lib/core";
+import { get, getHistory, epKey, playKey, proxied, reelm, saveProgress, syncHistory, toPlay, WS, type Play as P } from "@/lib/core";
 import { track } from "@/lib/telemetry";
 import { helperVega, helperVersion } from "@/lib/bridge";
-import { bitrate, getBandwidth, getPin, pickStream, saveBandwidth, setPin } from "@/lib/pick-stream";
+import { bitrate, dv, getBandwidth, getPin, pickStream, risky, saveBandwidth, setPin } from "@/lib/pick-stream";
+import { fallbackOrder, loadStats, qualities, recordStat } from "@/lib/src-rank";
 import { useApi, useSession } from "@/lib/session";
 import { languageName, trackLabel, useAudioTracks, useLibavAudio } from "@/lib/use-libav-audio";
 import { iso1 } from "@/lib/langs";
@@ -22,7 +25,7 @@ import { cn } from "@/lib/utils";
 type Source = { src: string; hls: boolean; label: string; codec?: string; dolby?: boolean; height?: number; langs?: string[] };
 type Sub = { url: string; label: string; lang: string; default?: boolean };
 type Member = { id: string; name: string; avatar: string };
-type Device = { deviceId: string; deviceName: string; kind: string };
+type Skip = { s: number; e: number; type: string };
 
 // remembered audio language, ISO 639-1 ("hi"); older builds stored the track's 639-2 tag ("hin")
 const LANG_KEY = "reelm.audioLang";
@@ -32,6 +35,9 @@ const pickFor = (all: Source[], lang: string, pin?: number) => {
   const ix = all.map((_, i) => i).filter((i) => !lang || all[i].langs?.includes(lang)), pool = ix.length ? ix : all.map((_, i) => i);
   return pool[pickStream(pool.map((i) => all[i]), { bandwidthBps: getBandwidth(), pinnedHeight: pin })];
 };
+const ALL_KEY = "reelm.allSources";
+/** AniSkip and TheIntroDB (same shape from /api/introdb); no end = the end of the video */
+const toSkips = (d: any): Skip[] => (d.results ?? []).map((x: any) => ({ s: x.interval.startTime, e: x.interval.endTime ?? Infinity, type: x.skipType }));
 const parse = (v: string | null) => { try { return toPlay(JSON.parse(v ?? "")); } catch { return null; } };
 const href = (p: P, extra = "") => `/watch?p=${encodeURIComponent(JSON.stringify(p))}${extra}`;
 /** Raw errors from the stream hosts are not for people; say what happened and what to try. */
@@ -71,8 +77,8 @@ function Opts<T extends string | number>({ label, items, value, onPick, name = S
 
 /** A source as a stub: quality big, then the host, codec and audio; the one playing says so. */
 function SourceStub({ x, on, tag, onPick }: { x: Source; on: boolean; tag?: string; onPick: () => void }) {
-  const parts = x.label.split(" · "), q = parts.find((t) => /^(\d{3,4}p|auto|4k)$/i.test(t)) ?? parts[parts.length - 1];
-  const host = parts.length > 1 ? parts[0] : "Stream", extra = parts.slice(1).filter((t) => t !== q);
+  const parts = x.label.split(" · "), q = x.height ? `${x.height}p` : parts.find((t) => /^(\d{3,4}p|auto|4k)$/i.test(t)) ?? parts[parts.length - 1];
+  const host = parts.length > 1 ? parts[0] : "Stream", extra = parts.slice(1).map((t) => t.replace(/\s*\b\d{3,4}p$/, "")).filter((t) => t && t !== q); // "CF Worker 720p" -> "CF Worker"
   return (
     <button onClick={onPick} aria-pressed={on} className={cn("beam grid w-full grid-cols-[auto_1fr] items-center gap-x-4 gap-y-1 rounded-xl border-l-2 border-dashed border-white/25 bg-gradient-to-br from-[#25222f] to-[#121219] px-4 py-3 text-left", on && "shadow-[inset_0_0_0_2px_#f2b45a]")}>
       <span className="row-span-2 min-w-16 font-display text-2xl leading-none font-extrabold">{q}{x.codec && <small className="mt-1 block font-sans text-xs font-medium text-[#a3a1ae]">{x.codec}</small>}</span>
@@ -87,6 +93,13 @@ function SourceStub({ x, on, tag, onPick }: { x: Source; on: boolean; tag?: stri
   );
 }
 
+/** A skip button shows while inside its interval, for 8 s after it appears, then only with the player's controls. */
+function SkipButton({ k, onSkip, children }: { k: string; onSkip: () => void; children: React.ReactNode }) {
+  const controls = usePlayer(selectControls)?.controlsVisible ?? true, [fresh, setFresh] = useState(true);
+  useEffect(() => { setFresh(true); const t = setTimeout(() => setFresh(false), 8000); return () => clearTimeout(t); }, [k]);
+  return <button onClick={onSkip} className={cn(pill.secondary, "absolute right-4 bottom-28 z-10 bg-dusk/80 ring-1 ring-white/15 backdrop-blur transition-opacity duration-300 md:right-8", !fresh && !controls && "pointer-events-none opacity-0")}>{children}</button>;
+}
+
 /** Fades the overlay with the skin's own controls (they hide while playing). */
 function Fade({ className, children }: { className?: string; children: React.ReactNode }) {
   const on = usePlayer(selectControls)?.controlsVisible ?? true;
@@ -99,7 +112,7 @@ function Player() {
   const p = useMemo(() => parse(q.get("p")), [q]);
   const t0 = Number(q.get("t")) || 0, f0 = Number(q.get("f")) || 0;
   const video = useRef<HTMLVideoElement>(null), keep = useRef(0);
-  const wsRef = useRef<WebSocket | null>(null), hub = useRef<WebSocket | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
   const applying = useRef(false), youId = useRef("");
   const [sources, setSources] = useState<Source[]>([]), [si, setSi] = useState(0), [tag, setTag] = useState({ i: -1, pin: 0 });
   const [subs, setSubs] = useState<Sub[]>([]), [subIdx, setSubIdx] = useState(-1);
@@ -108,11 +121,18 @@ function Player() {
   // TMDB-only titles ("tmdb:movie:<n>") use ?tmdb=
   const ext = p && p.kind === "movie" ? (/^tt\d+$/.test(p.id) ? `imdb=${p.id}` : /^tmdb:(movie|tv):\d+$/.test(p.id) ? `tmdb=${p.id.split(":")[2]}` : "") : "";
   const embedUrl = ext && (p!.type === "series" ? `https://vsembed.ru/embed/tv?${ext}&season=${p!.season ?? 1}&episode=${p!.episode ?? 1}` : `https://vsembed.ru/embed/movie?${ext}`);
-  const [members, setMembers] = useState<Member[]>([]), [devices, setDevices] = useState<Device[]>([]);
-  const [eps, setEps] = useState<any[]>([]), [skips, setSkips] = useState<{ s: number; e: number; type: string }[]>([]);
+  const [members, setMembers] = useState<Member[]>([]), [remote, setRemote] = useState<string | null>(null); // remote: the TV this page handed off to
+  const [eps, setEps] = useState<any[]>([]), [skips, setSkips] = useState<Skip[]>([]);
   const [cur, setCur] = useState(0), [dur, setDur] = useState(0), [paused, setPaused] = useState(true), [panel, setPanel] = useState<Tab | null>(null);
   const [copied, setCopied] = useState(false), [roomErr, setRoomErr] = useState("");
   const [want, setWant] = useState(savedLang); // the audio language to prefer, "" = any
+  // quality-first: the chip picked (0 = Auto), the height fallbacks aim for, sources already tried, a note when it had to go lower
+  const [qsel, setQsel] = useState(0), [note, setNote] = useState(""), [toast, setToast] = useState(""), [more, setMore] = useState(false);
+  const [allSrc, setAllSrc] = useState(false);
+  useEffect(() => { try { setAllSrc(localStorage.getItem(ALL_KEY) === "1"); } catch {} }, []);
+  const target = useRef(0), tried = useRef(new Set<number>()), exhausted = useRef(""), failRef = useRef<(m: string) => void>(() => {}), stalled = useRef("");
+  /** best-ranked source of height `h` (fallbacks start over from there) */
+  const choose = (list: Source[], lang: string, h: number) => { target.current = h; tried.current = new Set(); exhausted.current = ""; setNote(""); return fallbackOrder(list, { lang, height: h, stats: loadStats() })[0]; };
   const pid = s.profile?.id ?? "guest", pkey = p ? JSON.stringify(p) : "";
   const extra = room ? `&room=${room}` : "";
 
@@ -120,7 +140,11 @@ function Player() {
   useEffect(() => {
     if (!p) return;
     let live = true;
-    setErr(""); setSources([]); setSubs([]); setSkips([]); setSi(0); setTag({ i: -1, pin: 0 }); keep.current = 0;
+    setErr(""); setSources([]); setSubs([]); setSkips([]); setSi(-1); setTag({ i: -1, pin: 0 }); setQsel(0); setMore(false); keep.current = 0;
+    target.current = 0; tried.current = new Set(); exhausted.current = ""; setNote("");
+    // TheIntroDB for movies and series: by IMDb id (Cinemeta), else the TMDB id
+    const sid = p.kind === "movie" ? (/^tt\d+$/.test(p.id) ? p.id : p.id.match(/^tmdb:(?:movie|tv):(\d+)$/)?.[1]) : undefined;
+    if (sid) get(`introdb?id=${sid}&s=${p.season ?? 0}&e=${p.episode ?? 0}`).then((d) => live && setSkips(toSkips(d))).catch(() => {});
     (async () => {
       if (p.kind === "live") return [[{ src: proxied(p.url!, "", true), hls: true, label: "Live" }], []] as const;
       if (p.kind === "anime") {
@@ -137,19 +161,39 @@ function Player() {
           return null;
         }
         const r = await get(`anime/stream?ep=${p.epId}&lang=${p.lang ?? "sub"}`);
-        if (r.malId) get(`aniskip?mal=${r.malId}&ep=${p.ep}`).then((d) => live && setSkips((d.results ?? []).map((x: any) => ({ s: x.interval.startTime, e: x.interval.endTime, type: x.skipType })))).catch(() => {});
+        if (r.malId) get(`aniskip?mal=${r.malId}&ep=${p.ep}`).then((d) => live && setSkips(toSkips(d))).catch(() => {});
         return [[{ src: proxied(r.master, r.referer), hls: true, label: "Auto" }], r.subtitles.map((x: Sub) => ({ ...x, url: proxied(x.url, r.referer) }))] as const;
       }
       if (!document.documentElement.dataset.reelmHelper) throw new Error("helper");
-      const list = await get<any[]>(`movies/stream?id=${encodeURIComponent(p.id)}&type=${p.type}&title=${encodeURIComponent(p.title)}&year=${p.year ?? ""}&s=${p.season ?? 0}&e=${p.episode ?? 0}`);
-      if (!list.length) throw new Error("No streams found for this title.");
-      return [list.map((x) => ({ src: x.url, hls: /\.m3u8(\?|$)/.test(x.url), label: x.label, codec: x.codec, dolby: x.dolby, height: x.height, langs: x.langs })), (list.find((x) => x.subtitles?.length)?.subtitles ?? []).map((x: Sub) => ({ ...x, url: `/api/sub?u=${encodeURIComponent(x.url)}` }))] as const;
+      // progressive: sources join as each provider lands; play once the first ones are in plus a 4 s grace (or all are done), never switch for late ones.
+      // After the grace, wait for one this browser can surely decode (not HEVC/MKV/Dolby Vision), up to 15 s.
+      let acc: Source[] = [], started = false, grace: ReturnType<typeof setTimeout> | undefined, subbed = false, waited = false;
+      const ready = () => waited && acc.some((x) => !risky({ ...x, url: x.src }) && !dv(x));
+      const tl = Date.now();
+      const begin = () => {
+        if (started || !live || !acc.length) return;
+        started = true; clearTimeout(grace);
+        const pin = getPin(playKey(p)) ?? 0, lang = savedLang(), h = acc[pickFor(acc, lang, pin)].height ?? 0, i = choose(acc, lang, h);
+        setQsel(pin ? h : 0); setSi(i); setTag({ i, pin: pin && acc[i].height === pin ? pin : 0 });
+        console.debug(`[stream] start ${acc[i].label} (of ${acc.length}) after ${Date.now() - tl} ms`);
+      };
+      setMore(true);
+      await (await import("@/lib/movies")).streamAll(new URLSearchParams({ id: p.id, type: p.type ?? "movie", title: p.title, year: String(p.year ?? ""), s: String(p.season ?? 0), e: String(p.episode ?? 0) }), (part) => {
+        if (!live) return;
+        acc = [...acc, ...part.map((x) => ({ src: x.url, hls: /\.m3u8(\?|$)/.test(x.url), label: x.label, codec: x.codec, dolby: x.dolby, height: x.height, langs: x.langs }))];
+        setSources(acc);
+        console.debug(`[stream] +${part.length} = ${acc.length} at ${Date.now() - tl} ms`);
+        const sb = part.find((x) => x.subtitles?.length)?.subtitles;
+        if (sb && !subbed) { subbed = true; const b = sb.map((x: Sub) => ({ ...x, url: `/api/sub?u=${encodeURIComponent(x.url)}` })), d = b.findIndex((x: Sub) => x.default); setSubs(b); setSubIdx(d >= 0 ? d : 0); }
+        if (!grace) { grace = setTimeout(begin, 15000); setTimeout(() => { waited = true; if (ready()) begin(); }, 4000); }
+        else if (ready()) begin();
+      }).finally(() => live && setMore(false));
+      begin();
+      return null;
     })().then((r) => {
       if (!live || !r) return;
       const [a, b] = r;
-      setSources([...a]); setSubs([...b]);
-      const sa = a as Source[];
-      if (p.kind === "movie" && sa.length > 1) { const pin = getPin(playKey(p)) ?? 0, i = pickFor(sa, savedLang(), pin); setSi(i); setTag({ i, pin: pin && sa[i].height === pin ? pin : 0 }); }
+      setSources([...a]); setSubs([...b]); setSi(0);
       const d = b.findIndex((x: Sub) => x.default);
       setSubIdx(b.length ? (d >= 0 ? d : 0) : -1);
     }).catch((e) => live && setErr(e.message));
@@ -175,8 +219,23 @@ function Player() {
   const pickLang = (l: string) => {
     saveLang(l); setPick(null); // the track follows `want` (chosen above) once the file's tracks are read
     if (!l || src?.langs?.includes(l) || tracks.some((t) => iso1(t.lang) === l) || !sources.some((x) => x.langs?.includes(l))) return;
-    setEmbed(false); setSi(pickFor(sources, l, p?.kind === "movie" ? getPin(playKey(p)) : undefined));
+    setEmbed(false); setSi(choose(sources, l, sources[pickFor(sources, l, p?.kind === "movie" ? getPin(playKey(p)) : undefined)].height ?? 0));
   };
+  // a quality chip (0 = Auto, the connection-aware pick); remembered like a picked source
+  const pickQ = (h: number) => {
+    if (p?.kind !== "movie" || !sources.length) return;
+    setPin(playKey(p), h); setQsel(h); setEmbed(false); setPick(null);
+    const i = choose(sources, want, h || (sources[pickFor(sources, want, 0)].height ?? 0));
+    setSi(i); setTag({ i, pin: h });
+  };
+  const pickOne = (i: number) => {
+    const h = sources[i].height ?? 0;
+    setEmbed(false); choose(sources, want, h); setSi(i); setQsel(h);
+    if (p?.kind === "movie" && h) { setPin(playKey(p), h); setTag({ i, pin: h }); }
+  };
+  const quals = p?.kind === "movie" ? qualities(sources, langList.includes(want) ? want : "") : [];
+  // "Show all sources": every source, grouped under its height (best first), ranked within it
+  const listed = panel === "watch" && allSrc ? fallbackOrder(sources, { height: Infinity, stats: loadStats() }) : [];
   // Dolby/DTS audio Chrome can't decode, or a track the browser won't switch to: libav.js decodes it in a worker in sync with the video
   const audioNote = useLibavAudio(video, fileUrl, !!src?.dolby, srcKey, atrack, report);
   // MovieBox often ships HEVC only; browsers without HEVC decode (most Chrome/Firefox on Linux) can't play it
@@ -204,21 +263,43 @@ function Player() {
     setErr(""); // a source that plays (a fallback or a manual pick) clears the last one's error overlay
     // a codec the browser can't decode (Dramachi's HEVC) still plays the sound over a black picture: treat that as a failure
     const v = video.current;
-    if (v && p?.kind !== "live") setTimeout(() => { if (video.current === v && !v.paused && !v.videoWidth) fail("This source plays sound but no picture in this browser."); }, 3000);
+    if (v && p?.kind !== "live") setTimeout(() => { if (video.current === v && !v.paused && !v.videoWidth) failRef.current("This source plays sound but no picture in this browser."); }, 3000);
     if (!startedAt.current) return;
     track("play", info());
     track("source_used", { ...info(), ttff: Date.now() - startedAt.current });
+    recordStat(src?.label, { ok: true, ttff: Date.now() - startedAt.current });
     startedAt.current = 0;
   };
   useEffect(() => {
     const i = setInterval(() => { const v = video.current; if (src && v && !v.paused) track("heartbeat", { ...info(), position: Math.round(v.currentTime), duration: Math.round(v.duration || 0) }); }, 60_000);
     return () => clearInterval(i);
   }); // eslint-disable-line react-hooks/exhaustive-deps
+  // fall over: the next-ranked source of the same height, then the nearest lower one (with a note); late sources count too
+  const next1 = () => fallbackOrder(sources, { lang: want, height: target.current, stats: loadStats() }).find((i) => !tried.current.has(i));
   const fail = (m: string) => {
-    if (src) track("play_error", { ...info(), error: m });
+    if (src) { track("play_error", { ...info(), error: m }); recordStat(src.label, { fail: true }); }
+    tried.current.add(si);
     const hevc = /hevc|h265/i.test(src?.codec ?? "") && !document.createElement("video").canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"');
-    if (si + 1 < sources.length) setSi(si + 1); else setErr(hevc ? "hevc" : m);
+    const nx = next1();
+    if (nx === undefined) { exhausted.current = hevc ? "hevc" : m; return more ? setToast("Looking for another source…") : setErr(exhausted.current); } // late sources may still land
+    const h = sources[nx].height ?? 0, t = target.current;
+    if (t && h < t && h !== (src?.height ?? 0)) { const n = `${t}p didn't load — playing ${h ? `${h}p` : "another source"}`; setNote(n); setToast(n); }
+    console.debug(`[stream] fallback ${src?.label} -> ${sources[nx].label}: ${m}`);
+    setSi(nx);
   };
+  failRef.current = fail;
+  // every source failed, then a late one landed: try it; nothing more coming: say so
+  useEffect(() => {
+    const nx = exhausted.current ? next1() : undefined;
+    if (nx !== undefined) { exhausted.current = ""; setErr(""); setSi(nx); } else if (exhausted.current && !more) setErr(exhausted.current);
+  }, [sources.length, more]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 6000); return () => clearTimeout(t); }, [toast]);
+  // no first frame in 40 s (a host that hangs instead of failing): next source. Not when autoplay was blocked (the data is there).
+  useEffect(() => {
+    if (!src || p?.kind === "live" || remote || embed) return;
+    const t = setTimeout(() => { if (startedAt.current && (video.current?.readyState ?? 0) < 3) failRef.current("No picture after 40 s."); }, 40_000);
+    return () => clearTimeout(t);
+  }, [srcKey, remote, embed]); // eslint-disable-line react-hooks/exhaustive-deps
   const onMeta = (v: HTMLVideoElement) => {
     if (p?.kind === "live") return;
     const hist = p && epKey(getHistory(pid)[playKey(p)]?.payload ?? p) === epKey(p) ? getHistory(pid)[playKey(p)] : undefined;
@@ -266,16 +347,19 @@ function Player() {
   const roomLink = () => `${location.origin}/watch?room=${room}${p ? `&p=${encodeURIComponent(pkey)}` : ""}`;
   const pos = () => video.current?.currentTime ?? 0;
 
-  // continue on TV: this browser is a "phone" on the account hub
-  useEffect(() => {
-    if (!s.token) return;
-    const ws = new WebSocket(`${WS}/v1/hub?token=${s.token}`);
-    hub.current = ws;
-    ws.onopen = () => ws.send(JSON.stringify({ type: "hello", deviceId: deviceId(), deviceName: "Reelm Web", kind: "phone" }));
-    ws.onmessage = (ev) => { const m = JSON.parse(ev.data); if (m.type === "devices") setDevices(m.devices); };
-    return () => ws.close();
-  }, [s.token]);
-  const handoff = (to: string) => { hub.current?.send(JSON.stringify({ type: "handoff", to, profileId: pid, playback: { payload: p, position: pos() } })); video.current?.pause(); };
+  // play on TV: hand off (ms), pause here and become its remote; the global "Playing on" bar hides for that TV meanwhile
+  const { tvs } = useHub();
+  useEffect(() => { setRemoteHere(remote); return () => setRemoteHere(null); }, [remote]);
+  const toTv = () => ({ payload: p!, positionMs: pos() * 1000, source: p?.kind === "movie" ? src?.label : undefined });
+  const sentTo = (tv: string) => { video.current?.pause(); setPanel(null); setRemote(tv); };
+  const playHere = (ms: number, n: Now | null) => {
+    setRemote(null);
+    const np = n && p && hereFor(p, n); // the TV may have moved on to another episode
+    if (np && epKey(np) !== epKey(p!)) return router.replace(href(np, `${extra}&t=${Math.round(ms / 1000)}`));
+    keep.current = ms / 1000;
+    const v = video.current;
+    if (v) { v.currentTime = ms / 1000; v.play().catch(() => {}); }
+  };
   // next episode
   // what the pause marquee shows: the title's detail, and for series the season's episodes (same cached paths as the show page)
   const det = useApi(p?.kind === "movie" ? `movies/detail?id=${encodeURIComponent(p.id)}&type=${p.type ?? "movie"}` : p?.kind === "anime" ? `anime/detail?slug=${p.id}` : null).data;
@@ -294,7 +378,18 @@ function Player() {
   }, [p, eps, series]);
   const go = (np: P) => { save(); if (room) sendRoom({ type: "load", payload: np, position: 0 }); router.replace(href(np, extra)); };
   
-  const skip = skips.find((k) => cur >= k.s && cur < k.e - 1);
+  // a skip inside its interval; credits that run to the end are only worth a button when a next episode follows (the card below)
+  const skip = dur > 0 ? skips.find((k) => cur >= k.s && cur < Math.min(k.e, dur) - 1 && (k.type !== "ed" || k.e < dur - 1 || !!next)) : undefined;
+  const credits = skip?.type === "ed" && !!next;
+  const [watchCredits, setWatchCredits] = useState(""), [count, setCount] = useState(10);
+  const nextCard = credits && watchCredits !== pkey && !err && !remote;
+  useEffect(() => { setCount(10); }, [skip?.s]);
+  useEffect(() => {
+    if (!nextCard || paused) return;
+    if (count <= 0) { go(next!); return; }
+    const t = setTimeout(() => setCount((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [nextCard, paused, count]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // settings ticket: subtitle size and position, picture fit, speed, auto-skip (all but speed remembered per browser)
   const [pref, setPrefState] = useState<Pref>(DEFAULT_PREF);
@@ -302,7 +397,7 @@ function Player() {
   const setPref = (n: Partial<Pref>) => setPrefState((o) => { const v = { ...o, ...n }; try { localStorage.setItem(PREF_KEY, JSON.stringify(v)); } catch {} return v; });
   const [speed, setSpeed] = useState(1);
   useEffect(() => { if (video.current) video.current.playbackRate = speed; }, [speed, src]);
-  useEffect(() => { if (pref.autoSkip && skip && video.current) video.current.currentTime = skip.e; }, [skip?.s, pref.autoSkip]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (pref.autoSkip && skip && /op|recap/.test(skip.type) && video.current) video.current.currentTime = Math.min(skip.e, dur); }, [skip?.s, pref.autoSkip]); // eslint-disable-line react-hooks/exhaustive-deps
   // subtitles: our pick shows (by label, so hls.js tracks don't shift it), the rest stay off; each cue is placed at the chosen height
   useEffect(() => {
     const v = video.current;
@@ -323,7 +418,7 @@ function Player() {
     const on = (e: KeyboardEvent) => {
       if (/INPUT|TEXTAREA/.test((e.target as HTMLElement).tagName) || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "n" && next) go(next);
-      else if (e.key === "s" && skip && video.current) video.current.currentTime = skip.e;
+      else if (e.key === "s" && skip && !credits && video.current) video.current.currentTime = Math.min(skip.e, dur);
     };
     addEventListener("keydown", on);
     return () => removeEventListener("keydown", on);
@@ -370,10 +465,11 @@ function Player() {
     onLoadedMetadata: (e: React.SyntheticEvent<HTMLVideoElement>) => { onMeta(e.currentTarget); e.currentTarget.playbackRate = speed; setDur(e.currentTarget.duration || 0); },
     onError: () => fail("The video failed to load."),
     onPlaying: () => { setPaused(false); onPlaying(); },
-    onPlay: () => { setPaused(false); if (!applying.current) sendRoom({ type: "play", position: pos() }); },
+    onPlay: (e: React.SyntheticEvent<HTMLVideoElement>) => { if (remote) return e.currentTarget.pause(); setPaused(false); if (!applying.current) sendRoom({ type: "play", position: pos() }); },
     onPause: () => { setPaused(true); save(); if (!applying.current) sendRoom({ type: "pause", position: pos() }); },
     onSeeked: () => !applying.current && sendRoom({ type: "seek", position: pos() }),
     onTimeUpdate: (e: React.SyntheticEvent<HTMLVideoElement>) => { keep.current = e.currentTarget.currentTime; setCur(keep.current); },
+    onWaiting: (e: React.SyntheticEvent<HTMLVideoElement>) => { const v = e.currentTarget; if (!startedAt.current && !v.seeking && v.currentTime > 1 && stalled.current !== srcKey) { stalled.current = srcKey; recordStat(src?.label, { stall: true }); } },
     onDurationChange: (e: React.SyntheticEvent<HTMLVideoElement>) => setDur(e.currentTarget.duration || 0),
     onEnded: () => { save(); if (next) go(next); },
     children: subs.map((t, i) => <track key={t.url} kind="subtitles" src={t.url} label={t.label} srcLang={t.lang || "en"} default={i === subIdx} />),
@@ -415,11 +511,26 @@ function Player() {
             </div>
           )}
 
+          {toast && <p role="status" className="pointer-events-none absolute top-20 left-1/2 z-30 -translate-x-1/2 rounded-full bg-dusk/80 px-4 py-2 text-sm ring-1 ring-white/15 backdrop-blur">{toast}</p>}
           {audioNote && <p role="status" className="pointer-events-none absolute bottom-28 left-1/2 z-10 -translate-x-1/2 rounded-full bg-dusk/80 px-4 py-2 text-sm ring-1 ring-white/15 backdrop-blur">{audioNote}</p>}
-          {skip && !err && !pref.autoSkip && (
-            <button onClick={() => { video.current!.currentTime = skip.e; }} className={cn(pill.secondary, "absolute right-4 bottom-28 z-10 bg-dusk/80 ring-1 ring-white/15 backdrop-blur md:right-8")}>
-              <SkipForward />Skip {skip.type.includes("op") ? "intro" : skip.type === "ed" ? "outro" : "recap"}
-            </button>
+          {skip && !credits && !err && !(pref.autoSkip && /op|recap/.test(skip.type)) && (
+            <SkipButton k={`${pkey}${skip.s}`} onSkip={() => { video.current!.currentTime = Math.min(skip.e, dur); }}>
+              <SkipForward />Skip {skip.type.includes("op") ? "intro" : skip.type === "ed" ? "credits" : skip.type}
+            </SkipButton>
+          )}
+          {nextCard && (
+            <div role="status" className="page-in absolute right-4 bottom-28 z-10 w-[min(22rem,calc(100%-2rem))] rounded-[22px] bg-[#101016]/90 p-3 ring-1 ring-white/10 backdrop-blur-xl md:right-8">
+              <button onClick={() => go(next!)} className="beam grid w-full grid-cols-[7rem_1fr] items-center gap-3 rounded-xl text-left">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                {nextEp?.still || p?.poster ? <img src={nextEp?.still || p?.poster} alt="" referrerPolicy="no-referrer" className="aspect-video w-full rounded-md object-cover" /> : <span className="aspect-video rounded-md bg-haze" />}
+                <span className="min-w-0"><small className="block text-xs font-semibold text-primary">Next episode in {count}</small><b className="line-clamp-2 font-display text-lg leading-tight">{nextName}</b></span>
+              </button>
+              <div className="track-bar mt-3"><i className="transition-[width] duration-1000 ease-linear" style={{ width: `${(10 - count) * 10}%` }} /></div>
+              <div className="mt-2 flex gap-2">
+                <button onClick={() => go(next!)} className={cn(pill.primary, "h-9 flex-1 px-4 text-sm")}><SkipForward />Next episode</button>
+                <button onClick={() => setWatchCredits(pkey)} className={cn(pill.ghost, "h-9 px-4 text-sm")}>Watch credits</button>
+              </div>
+            </div>
           )}
 
           <Fade className="absolute inset-x-0 top-0 z-20 flex items-center gap-2 bg-gradient-to-b from-black/80 to-transparent px-3 pt-[max(env(safe-area-inset-top),12px)] pb-10 max-sm:pr-28 md:px-6">
@@ -428,7 +539,7 @@ function Player() {
               <h1 className="truncate font-display text-lg font-semibold md:text-xl">{p?.title ?? "Watch together"}</h1>
               {sub && <p className="truncate text-xs text-foreground/72">{sub}</p>}
             </div>
-            {devices.filter((d) => d.kind === "tv").map((d) => <button key={d.deviceId} className={cn(pill.ghost, "h-10")} onClick={() => handoff(d.deviceId)}><MonitorPlay className="size-4" /><span className="hidden sm:inline">Continue on {d.deviceName}</span></button>)}
+            {p && p.kind !== "live" && <PlayOnTv icon get={toTv} onSent={sentTo} className={ctl} />}
             {next && <button onClick={() => go(next)} className={cn(pill.ghost, "h-10 px-3")}><SkipForward className="size-4" /><span className="hidden sm:inline">Next episode</span></button>}
             {p?.kind !== "live" && (
               <button onClick={() => setPanel("together")} className={cn(pill.ghost, "h-10 px-4", room && "text-primary")} aria-label="Watch together">
@@ -456,8 +567,25 @@ function Player() {
                   {panel === "watch" && <>
                     <h3 className={h3}>Watch</h3>
                     {langList.length > 0 && <Opts label="Audio language" items={["", ...langList]} value={langList.includes(want) ? want : ""} onPick={pickLang} name={(l) => (l ? languageName(l) || l : "Any")} />}
-                    {sources.length > 0 && <p className="mt-2 text-sm text-[#a3a1ae]">{sources.length > 1 ? "Source" : "Source (only one available)"}</p>}
-                    <div className="space-y-2">{sources.map((x, i) => <SourceStub key={i} x={x} on={si === i && !embed} tag={tag.i === i ? (tag.pin ? `Pinned ${tag.pin}p` : "Auto") : undefined} onPick={() => { setEmbed(false); setSi(i); if (p?.kind === "movie" && x.height) { setPin(playKey(p), x.height); setTag({ i, pin: x.height }); } }} />)}</div>
+                    {quals.length > 0 && <div>
+                      <p className="mt-2 mb-1.5 text-sm text-[#a3a1ae]">Quality</p>
+                      <div role="radiogroup" aria-label="Quality" className="flex flex-wrap gap-1.5">
+                        {[0, ...quals.map((x) => x.h)].map((h) => { const n = quals.find((x) => x.h === h)?.n ?? 0; return (
+                          <button key={h} role="radio" aria-checked={qsel === h} onClick={() => pickQ(h)} className="beam opt">{h ? `${h}p` : "Auto"}
+                            {n > 1 && <small className="font-normal opacity-60">· {n}</small>}{!!h && !embed && src?.height === h && <small className="text-signal">Playing</small>}</button>); })}
+                      </div>
+                    </div>}
+                    {note && <p className="text-xs text-[#a3a1ae]">{note}</p>}
+                    {more && <p className="text-xs text-[#a3a1ae]">Looking for more sources…</p>}
+                    {allSrc && sources.length > 1 ? <div className="space-y-2">{listed.map((i, k) => { const h = sources[i].height ?? 0; return <div key={i} className="space-y-2">
+                      {(k === 0 || (sources[listed[k - 1]].height ?? 0) !== h) && <p className="mt-3 text-sm font-semibold text-[#a3a1ae]">{h ? `${h}p` : "Other"}</p>}
+                      <SourceStub x={sources[i]} on={si === i && !embed} tag={tag.i === i ? (tag.pin ? `Pinned ${tag.pin}p` : "Auto") : undefined} onPick={() => pickOne(i)} /></div>; })}</div>
+                    : src && <>
+                      <p className="mt-2 text-sm text-[#a3a1ae]">{sources.length > 1 ? "Playing from" : "Source (only one available)"}</p>
+                      <SourceStub x={src} on={!embed} onPick={() => setPanel(null)} />
+                    </>}
+                    {sources.length > 1 && <Opts label="Show all sources" items={["off", "on"]} value={allSrc ? "on" : "off"} name={(v) => (v === "on" ? "On" : "Off")}
+                      onPick={(v) => { setAllSrc(v === "on"); try { localStorage.setItem(ALL_KEY, v === "on" ? "1" : "0"); } catch {} }} />}
                     {embedUrl && <button onClick={() => { setEmbed(true); setErr(""); setPanel(null); }} aria-pressed={embed} className={cn("beam w-full rounded-xl border-l-2 border-dashed border-white/25 bg-white/5 px-4 py-3 text-left", embed && "shadow-[inset_0_0_0_2px_#f2b45a]")}>
                       <b className="font-display text-lg">Web player</b><span className="block text-xs text-[#a3a1ae]">Plays in an embedded page when no source works here</span></button>}
                     {!!helperVersion() && !helperVega() && <a href={HELPER_URL()} target="_blank" rel="noreferrer" className="block text-xs text-foreground/52 underline">Update Reelm Helper for more sources</a>}
@@ -484,7 +612,7 @@ function Player() {
                     <h3 className={h3}>Playback</h3>
                     <Opts label="Speed" items={SPEEDS} value={speed} onPick={setSpeed} name={(v) => `${v}x`} />
                     <Opts label="Skip intros and recaps on their own" items={[true, false].map(String)} value={String(pref.autoSkip)} onPick={(v) => setPref({ autoSkip: v === "true" })} name={(v) => (v === "true" ? "On" : "Off")} />
-                    <p className="text-xs text-[#a3a1ae]">Works where the episode's openings are known, mostly anime.</p>
+                    <p className="text-xs text-[#a3a1ae]">Works where the episode's intro is known: most anime and many series.</p>
                   </>}
                   {panel === "together" && <>
                     <h3 className={h3}>Together</h3>
@@ -502,7 +630,7 @@ function Player() {
                       <p className="text-foreground/72">Start a room and share the code. Everyone in it plays, pauses and seeks together.</p>
                       <button className={pill.primary} onClick={startRoom}><Users />Start a room</button>
                     </>}
-                    {devices.some((d) => d.kind === "tv") && <div className="flex flex-wrap gap-2 pt-2">{devices.filter((d) => d.kind === "tv").map((d) => <button key={d.deviceId} className={pill.secondary} onClick={() => handoff(d.deviceId)}><MonitorPlay />Continue on {d.deviceName}</button>)}</div>}
+                    {tvs.length > 0 && <div className="pt-2"><PlayOnTv get={toTv} onSent={sentTo} className={pill.secondary} /></div>}
                     {roomErr && <p role="alert" className="text-sm text-destructive">{roomErr}</p>}
                   </>}
                 </div>
@@ -511,6 +639,11 @@ function Player() {
           )}
         </VideoSkin>
       </VideoPlayer>
+      {remote && p && (
+        <div className="absolute inset-0 z-[60] flex items-end justify-center bg-[#06060a]/80 p-2 backdrop-blur-md md:items-center">
+          <RemotePanel tv={remote} fallback={{ title: p.title, subtitle: sub, poster: p.poster }} onPlayHere={playHere} onClose={() => setRemote(null)} />
+        </div>
+      )}
       {embed && embedUrl && <iframe src={embedUrl} allowFullScreen allow="autoplay; fullscreen; encrypted-media" referrerPolicy="no-referrer" className="absolute inset-x-0 bottom-0 top-16 z-40 h-[calc(100%-4rem)] w-full border-0 bg-black" />}
           {fe && (
             <div className="absolute inset-0 z-50 grid place-items-center bg-dusk/80 p-6 backdrop-blur-md">
@@ -520,7 +653,7 @@ function Player() {
                 <p className="text-sm text-foreground/72">{fe.b}</p>
                 <div className="mt-2 flex gap-2">
                   {err === "helper" && <a href={HELPER_URL()} target="_blank" rel="noreferrer" className={pill.primary}>Install Reelm Helper</a>}
-                  <button className={err === "helper" ? pill.secondary : pill.primary} onClick={() => { setErr(""); setSi(0); setNonce(nonce + 1); }}><RotateCcw />Retry</button>
+                  <button className={err === "helper" ? pill.secondary : pill.primary} onClick={() => { setErr(""); setSi(-1); setNonce(nonce + 1); }}><RotateCcw />Retry</button>
                   <Link href={back} className={pill.secondary}>Back</Link>
                 </div>
                 {next && <button className="mt-1 text-sm text-primary hover:underline" onClick={() => go(next)}>Play the next episode instead</button>}

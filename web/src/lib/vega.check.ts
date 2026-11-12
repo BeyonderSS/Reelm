@@ -35,3 +35,9 @@ assert.equal(pickQualities([L("1080p [2GB]")]).length, 1);
 const eps = [{ title: "Episode 1", link: "a" }, { title: "Episode 2", link: "b" }, { title: "S01E10 x", link: "c" }];
 assert.equal(pickEpisode(eps, 2)?.link, "b"); assert.equal(pickEpisode(eps, 10)?.link, "c");
 assert.equal(pickEpisode([{ title: "Ep one", link: "x" }, { title: "Ep two", link: "y" }], 2)?.link, "y"); // index fallback
+// 4khdhub / autoEmbed season directLinks; a lone "Season Pack" (hdhub4u) is not episode 1
+assert.equal(pickEpisode([{ title: "Episode-01 2.88 GB", link: "a" }, { title: "Episode-02 1 GB", link: "x" }, { title: "Episode-11 2.9 GB", link: "b" }], 11)?.link, "b");
+assert.equal(pickEpisode([{ title: "1. The Desert Rose", link: "a" }, { title: "11. White Lines", link: "b" }], 11)?.link, "b");
+assert.equal(pickEpisode([{ title: "Season Pack", link: "p" }], 1), undefined);
+// a post for another season is skipped (hdhub4u has one post per season)
+assert.equal(pickSeason([L("The Mentalist (Season 4) WEB-DL 1080p")], 6).length, 0); assert.equal(pickSeason([L("The Mentalist (Season 1 – 7)")], 6).length, 1);

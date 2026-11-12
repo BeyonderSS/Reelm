@@ -88,10 +88,13 @@ export async function streams(f: F, title: string, year: number, type: "movie" |
   const get = async (u: string) => (await f(u)).text;
   const q = title.replace(BR, " ").replace(/\s+(s\d{1,2}|season \d{1,2})\s*$/i, "").replace(/\s+/g, " ").trim();
   // ponytail: series match ignores the year (a per-season subject carries that season's year)
-  const m = parseSearch(await get(`${BASE}/?s=${encodeURIComponent(q)}`)).filter((h) => h.series === (type === "series") && norm(h.title) === norm(title) && (type === "series" || !year || !h.year || Math.abs(h.year - year) <= 1))
+  const hits = parseSearch(await get(`${BASE}/?s=${encodeURIComponent(q)}`));
+  console.debug(`[4khdhub] search "${q}"`, hits.map((h) => `${h.title} ${h.year} ${h.series ? "series" : "movie"}`));
+  const m = hits.filter((h) => h.series === (type === "series") && norm(h.title) === norm(title) && (type === "series" || !year || !h.year || Math.abs(h.year - year) <= 1))
     .sort((a, b) => +/\[[^\]]*\]/.test(a.title) - +/\[[^\]]*\]/.test(b.title))[0];
   if (!m) return [];
   const rel = parseReleases(await get(BASE + m.id), season, episode), per: Record<number, number> = {};
+  console.debug(`[4khdhub] ${m.id}: ${rel.length} releases`, rel.map((r) => r.title));
   const picked = rel.filter((r) => (per[r.height] = (per[r.height] ?? 0) + 1) <= 2).slice(0, 4);
   const mirror = async (u: string, d = 0): Promise<[string, string][]> => {
     if (d > 3) return [];
@@ -116,10 +119,11 @@ export async function streams(f: F, title: string, year: number, type: "movie" |
     return [b[0], b[1]];
   };
   const one = async (r: (typeof rel)[0]) => {
-    const c = (await Promise.all(r.links.map((l) => mirror(l).catch(() => [] as [string, string][])))).flat();
+    const c = (await Promise.all(r.links.map((l) => mirror(l).catch((e) => (console.debug(`[4khdhub] ${l}: ${e?.message}`), [] as [string, string][]))))).flat();
     const top = [...new Map(c.map((x) => [x[0], x])).values()].sort((a, b) => score(...a) - score(...b)).slice(0, 6);
     const ok = (await Promise.all(top.map(([u, l]) => verify(u).then((v) => ({ v, s: score(u, l) })).catch(() => null)))).filter((x) => x !== null);
     const best = ok.sort((a, b) => +!a.v[1] - +!b.v[1] || a.s - b.s)[0];
+    console.debug(`[4khdhub] ${r.title.slice(0, 50)}: links`, r.links, "candidates", top, "playable", ok.length);
     return best && { url: best.v[0], seek: best.v[1], height: r.height, // Chrome/Firefox can't decode Dolby/DTS audio; flagged releases get it decoded by libav.js (use-libav-audio) and sort after AAC ones
     dolby: /ddp|dd\+|dd ?[257]\.1|e-?ac-?3|\bac-?3|dts|atmos|truehd/i.test(r.title) && !/aac|opus/i.test(r.title),
     label: `4KHDHub · ${r.height ? r.height + "p" : "Auto"}${/ddp|dd\+|dd ?[257]\.1|e-?ac-?3|\bac-?3|dts|atmos|truehd/i.test(r.title) && !/aac|opus/i.test(r.title) ? " · Dolby audio" : ""}`, codec: /av1/i.test(r.title) ? "AV1" : /hevc|x265|h\.?265/i.test(r.title) ? "HEVC" : /avc|x264|h\.?264/i.test(r.title) ? "H.264" : undefined, subtitles: [] as any[], langs: langs(r.title) };

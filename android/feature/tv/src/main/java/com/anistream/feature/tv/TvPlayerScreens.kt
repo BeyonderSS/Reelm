@@ -33,6 +33,7 @@ import com.anistream.core.ui.theme.DisplayHeavy
 import com.anistream.domain.model.MediaStream
 import com.anistream.domain.AudioLanguage
 import com.anistream.feature.player.audioLanguages
+import com.anistream.feature.player.qualityChip
 import com.anistream.core.media.GuideEp
 import com.anistream.feature.player.SubPosition
 import androidx.activity.compose.BackHandler
@@ -85,8 +86,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import android.text.format.DateFormat
 import java.util.Date
-import com.anistream.feature.player.INTRO_SKIP_MS
-import com.anistream.feature.player.INTRO_WINDOW_MS
+import com.anistream.feature.player.CREDITS_NEXT_MS
+import com.anistream.feature.player.UP_NEXT_MS
+import com.anistream.feature.player.isCredits
+import com.anistream.feature.player.rememberSkipFresh
 import com.anistream.feature.player.CountdownRing
 import com.anistream.feature.player.activeSkip
 import com.anistream.feature.player.skipLabel
@@ -140,12 +143,14 @@ import java.util.Locale
 private enum class Panel { NONE, SETTINGS, STRIP }
 
 /** What distinguishes one source on its ticket stub. */
-internal class SrcInfo(val name: String, val quality: String, val size: String?, val tags: List<String>, val flags: List<String>)
+internal class SrcInfo(val name: String, val quality: String, val size: String?, val tags: List<String>, val flags: List<String>, val note: String? = null)
 
 /** One option group in the ↑ settings panel. */
 internal class SettingGroup<T>(val title: String, val options: List<T>, val label: (T) -> String, val selected: (T) -> Boolean, val pick: (T) -> Unit) {
     /** sources render as stubs instead of chips */
     var stub: ((T) -> SrcInfo?)? = null
+    /** picking keeps the panel open (a toggle, not a choice of what to play) */
+    var stay = false
     fun current(): String? = options.firstOrNull(selected)?.let(label)
 }
 
@@ -164,7 +169,7 @@ internal class EpisodeMeta(
 
 private val TabNames = listOf("Watch", "Subtitles", "Picture", "Playback", "Together", "Device")
 private fun tabOf(title: String) = when (title) {
-    "Source", "Quality", "Audio", "Audio language", "Audio track" -> 0
+    "Source", "Playing from", "Show all sources", "Quality", "Audio", "Audio language", "Audio track" -> 0
     "Subtitles", "Subtitle size", "Subtitle delay", "Position" -> 1
     "Picture", "Speed" -> 2
     "Sleep timer", "Auto-skip intro and recap" -> 3
@@ -202,14 +207,12 @@ private fun TvPlayerChrome(
     onCancelUpNext: () -> Unit,
     /** per-title key for remembered speed / picture / subtitle size */
     tweaksKey: String,
-    /** episodes get a "Skip intro" chip in their first 5 minutes */
-    episodic: Boolean,
     onWebPlayer: (() -> Unit)? = null,
     /** art for the up-next card (poster) */
     upNextImage: String? = null,
-    /** AniSkip intervals; non-empty replaces the fixed +85 s chip */
+    /** AniSkip / TheIntroDB intervals: a skip chip inside each; at credits with [upNext], a "Next episode" countdown */
     skips: List<SkipInterval> = emptyList(),
-    /** offer the "Auto-skip intro and recap" setting (anime) */
+    /** offer the "Auto-skip intro and recap" setting */
     skipSetting: Boolean = false,
     /** what is playing, for "Watch together" and for telling the room when it changes; null = not shareable (live) */
     partyPayload: JsonObject? = null,
@@ -234,7 +237,8 @@ private fun TvPlayerChrome(
     val tracks = rememberTracks(player)
     val introFocus = remember { FocusRequester() }
     var introFocused by remember { mutableStateOf(false) }
-    var introSkippedFor by remember { mutableStateOf<String?>(null) }
+    var creditsDismissed by remember { mutableStateOf<SkipInterval?>(null) }
+    var creditsFocused by remember { mutableStateOf(false) }
     var skipToast by remember { mutableStateOf<String?>(null) }
     val autoSkipped = remember(title, subtitle) { mutableSetOf<SkipInterval>() }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -243,6 +247,7 @@ private fun TvPlayerChrome(
     var paused by remember { mutableStateOf(false) }
     var lastSeekAt by remember { mutableLongStateOf(0L) }
     val nextFocus = remember { FocusRequester() }
+    val creditsFocus = remember { FocusRequester() }
     var nextFocused by remember { mutableStateOf(false) }
     val room by party.client.room.collectAsStateWithLifecycle()
 
@@ -250,8 +255,10 @@ private fun TvPlayerChrome(
     val subs = hasSubtitles(tracks)
     val languages = if (onAudioLanguage == null) emptyList() else audioLanguages(streams, tracks)
     val preferredLang by AudioLanguage.preferred.collectAsStateWithLifecycle()
-    val allSettings = settings + listOf(
-        SettingGroup("Audio language", if (languages.size > 1) listOf<String?>(null) + languages else emptyList(), { it?.let(AudioLanguage::name) ?: "Any" }, { it == preferredLang }) { onAudioLanguage?.invoke(it) },
+    // the Watch tab reads audio language → quality → source
+    val allSettings = listOf(
+        SettingGroup("Audio language", if (languages.size > 1) listOf<String?>(null) + languages else emptyList(), { it?.let(AudioLanguage::name) ?: "Any" }, { it == preferredLang }) { onAudioLanguage?.invoke(it) }
+    ) + settings + listOf(
         SettingGroup("Picture", Resize.entries, { it.label }, { it == tweaks.resize }, tweaks::updateResize),
         SettingGroup("Speed", if (isLive) emptyList() else PlaybackSpeeds, ::speedLabel, { it == tweaks.speed }) { tweaks.updateSpeed(player, it) },
         SettingGroup("Audio track", if (audio.size > 1) audio else emptyList(), { it.label }, { it.selected }) { selectAudio(player, it) },
@@ -264,13 +271,15 @@ private fun TvPlayerChrome(
         SettingGroup("Low-end mode (applies on restart)", listOf(true, false), { if (it) "On" else "Off" }, { it == lowEnd }) { lowEnd = it; LowEnd.set(context, it) }
     )
     val hasSettings = allSettings.any { it.options.isNotEmpty() }
-    val skipNow = if (episodic && !isLive && error == null && !ended) activeSkip(skips, position) else null
-    val showIntro = panel == Panel.NONE && (
-        skipNow != null ||
-            (skips.isEmpty() && episodic && !isLive && error == null && !ended && introSkippedFor != title &&
-                duration > INTRO_WINDOW_MS && position < INTRO_WINDOW_MS)
-        )
-    val skipText = skipNow?.let { skipLabel(it.type) } ?: "Skip intro"
+    val skipNow = if (!isLive && error == null && !ended) activeSkip(skips, position) else null
+    val skipFresh = rememberSkipFresh(skipNow)
+    val creditsCard = skipNow != null && skipNow.isCredits && upNext != null && creditsDismissed != skipNow && !loading &&
+        panel == Panel.NONE && !partyOpen
+    // the chip: 8 s, then only with the controls; credits without a next episode (movies, last episode) get none
+    val chipAvailable = panel == Panel.NONE && skipNow != null && !creditsCard && !(skipNow.isCredits && upNext == null)
+    val showIntro = chipAvailable && (skipFresh || visible || introFocused)
+    var focusChip by remember { mutableStateOf(false) }
+    val skipText = skipNow?.let { skipLabel(it.type) } ?: ""
     val upNextShown = ended && upNext != null
     // the paused marquee: not while seeking (the ramp pauses/buffers), live, ended, or with another panel up
     val marquee = paused && !isLive && !loading && error == null && !upNextShown && !partyOpen && panel != Panel.STRIP &&
@@ -306,6 +315,9 @@ private fun TvPlayerChrome(
     LaunchedEffect(Unit) { withFrameNanos { }; runCatching { rootFocus.requestFocus() } }
     LaunchedEffect(partyOpen) { if (partyOpen) { withFrameNanos { }; runCatching { partyFocus.requestFocus() } } }
     LaunchedEffect(showIntro) { if (!showIntro && introFocused) runCatching { rootFocus.requestFocus() } }
+    LaunchedEffect(creditsCard) { if (!creditsCard && creditsFocused) runCatching { rootFocus.requestFocus() } }
+    // ↓ while the chip was hidden: it comes back with the controls, then takes focus
+    LaunchedEffect(focusChip, showIntro) { if (focusChip && showIntro) { withFrameNanos { }; runCatching { introFocus.requestFocus() }; focusChip = false } }
     LaunchedEffect(message) { if (message != null) { delay(3500); onMessageShown() } }
     // AniSkip auto-skip: intro/recap once per interval, with a short toast
     LaunchedEffect(skipNow, tweaks.autoSkip) {
@@ -324,6 +336,8 @@ private fun TvPlayerChrome(
     }
 
     BackHandler(enabled = partyOpen && panel == Panel.NONE) { partyOpen = false; closePanel() }
+    // Back on the credits card = "Watch credits"
+    BackHandler(enabled = creditsCard && creditsFocused) { creditsDismissed = skipNow }
 
     BoxWithConstraints(
         Modifier
@@ -335,8 +349,10 @@ private fun TvPlayerChrome(
                 if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 // Back must not re-show the controls: it did, and BackHandler then hid them, so Back toggled forever
                 if (e.key == Key.Back || e.key == Key.Escape) return@onPreviewKeyEvent false
+                // the credits card moves between its buttons with ←/→
+                if (creditsFocused && (e.key == Key.DirectionLeft || e.key == Key.DirectionRight)) return@onPreviewKeyEvent false
                 // the skip-intro chip (reached with ↓) takes OK; ↑ backs out; anything else acts as usual
-                val fromIntro = introFocused || nextFocused
+                val fromIntro = introFocused || nextFocused || creditsFocused
                 if (fromIntro) {
                     when (e.key) {
                         Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> return@onPreviewKeyEvent false
@@ -364,7 +380,8 @@ private fun TvPlayerChrome(
                     Key.DirectionRight, Key.MediaFastForward -> seek(step)
                     Key.DirectionUp -> if (hasSettings) panel = Panel.SETTINGS
                     Key.DirectionDown -> when {
-                        showIntro && !marquee && !fromIntro -> runCatching { introFocus.requestFocus() }
+                        creditsCard && !fromIntro -> runCatching { creditsFocus.requestFocus() }
+                        chipAvailable && !marquee && !fromIntro -> focusChip = true
                         nextCard && !fromIntro -> runCatching { nextFocus.requestFocus() }
                         strip != null && strip.numbers.isNotEmpty() -> panel = Panel.STRIP
                     }
@@ -497,11 +514,9 @@ private fun TvPlayerChrome(
                 skipText,
                 onClick = {
                     val s = skipNow
-                    if (s != null) player.seekTo(s.endMs)
-                    else player.seekTo((player.currentPosition + INTRO_SKIP_MS).coerceAtMost(duration))
+                    if (s != null) player.seekTo(if (duration > 0) s.endMs.coerceAtMost(duration) else s.endMs)
                     position = player.currentPosition
                     lastSeekAt = System.currentTimeMillis()
-                    if (s == null) introSkippedFor = title
                     show()
                 },
                 modifier = Modifier
@@ -532,6 +547,13 @@ private fun TvPlayerChrome(
 
         if (upNextShown) {
             UpNextCard(upNextImage, upNext.orEmpty(), title, onUpNext, onCancelUpNext, Modifier.align(Alignment.BottomEnd).padding(Overscan))
+        }
+        if (creditsCard) {
+            UpNextCard(
+                meta.nextStill ?: upNextImage, upNext.orEmpty(), meta.nextName ?: title, onUpNext, { creditsDismissed = skipNow },
+                Modifier.align(Alignment.BottomEnd).padding(end = Overscan, bottom = if (visible) 150.dp else 40.dp).onFocusChanged { creditsFocused = it.hasFocus },
+                cancelLabel = "Watch credits", countdownMs = CREDITS_NEXT_MS, playFocus = creditsFocus
+            )
         }
         val note = message ?: skipToast
         if (note != null) {
@@ -578,8 +600,10 @@ private fun TvPartyPanel(payload: JsonObject, focus: FocusRequester, onClose: ()
 
 /** Next-episode preview: art under the countdown ring, "Episode N", Play now (focused) / Cancel. The ring runs the countdown. */
 @Composable
-private fun UpNextCard(imageUrl: String?, episodeLabel: String, title: String, onPlay: () -> Unit, onCancel: () -> Unit, modifier: Modifier) {
-    val playFocus = remember { FocusRequester() }
+private fun UpNextCard(
+    imageUrl: String?, episodeLabel: String, title: String, onPlay: () -> Unit, onCancel: () -> Unit, modifier: Modifier,
+    cancelLabel: String = "Cancel", countdownMs: Long = UP_NEXT_MS, playFocus: FocusRequester = remember { FocusRequester() }
+) {
     LaunchedEffect(Unit) { withFrameNanos { }; runCatching { playFocus.requestFocus() } }
     Row(
         modifier.background(Bg.raised, Radius.xl).padding(20.dp),
@@ -592,7 +616,7 @@ private fun UpNextCard(imageUrl: String?, episodeLabel: String, title: String, o
                 modifier = Modifier.width(240.dp).aspectRatio(16f / 9f).clip(Radius.lg).background(Bg.overlay)
             )
             Box(Modifier.matchParentSize().clip(Radius.lg).background(Bg.base.copy(alpha = 0.45f)))
-            CountdownRing(onDone = onPlay, size = 64.dp, textStyle = TvType.title)
+            CountdownRing(onDone = onPlay, size = 64.dp, textStyle = TvType.title, durationMs = countdownMs)
         }
         Column {
             Text("Up next", style = TvType.body.copy(color = Ink.muted))
@@ -601,7 +625,7 @@ private fun UpNextCard(imageUrl: String?, episodeLabel: String, title: String, o
             Spacer(Modifier.height(16.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 TvPill("Play now", onPlay, modifier = Modifier.focusRequester(playFocus))
-                TvPill("Cancel", onCancel)
+                TvPill(cancelLabel, onCancel)
             }
         }
     }
@@ -688,7 +712,7 @@ private fun SettingsTicket(groups: List<SettingGroup<*>>, cq: Dp, partySize: Int
         ) {
             Text(TabNames[active], modifier = Modifier.padding(bottom = cq * 0.4f), style = TvType.headline.copy(fontFamily = DisplayHeavy, fontWeight = FontWeight.ExtraBold, fontSize = sp(1.9f), lineHeight = sp(2.2f)))
             val gs = byTab[active]
-            gs.forEachIndexed { gi, g -> GroupBody(g, if (gs.size > 1 || g.title != TabNames[active] || g.stub != null) heading(g.title) else null, if (gi == 0) bodyReq else null, cq) { if (active == 0 || active == 4) close() } }
+            gs.forEachIndexed { gi, g -> GroupBody(g, if (gs.size > 1 || g.title != TabNames[active] || g.stub != null) heading(g.title) else null, if (gi == 0) bodyReq else null, cq) { if ((active == 0 || active == 4) && !g.stay) close() } }
         }
     }
 }
@@ -734,8 +758,7 @@ private fun <T> GroupBody(g: SettingGroup<T>, heading: String?, focus: FocusRequ
     }
 }
 
-/** A source on its stub: big quality over its codec, then name (and "Playing"), then size / audio tags. */
-@kotlin.OptIn(ExperimentalLayoutApi::class)
+/** A source on its stub, one compact row: quality, then name (and "Playing") over one line of size / codec / audio tags. */
 @Composable
 private fun SourceStub(i: SrcInfo, playing: Boolean, onClick: () -> Unit, cq: Dp, modifier: Modifier) {
     fun sp(n: Float) = (cq.value * n).sp
@@ -751,23 +774,18 @@ private fun SourceStub(i: SrcInfo, playing: Boolean, onClick: () -> Unit, cq: Dp
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
     ) {
         Row(
-            Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(Color(0xFF3A3029), Color(0xFF121219)))).dashedLeft(cq).padding(horizontal = cq * 1.2f, vertical = cq * 1f),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(cq * 1.2f)
+            Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(Color(0xFF3A3029), Color(0xFF121219)))).dashedLeft(cq).padding(horizontal = cq * 1.1f, vertical = cq * 0.55f),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(cq * 1f)
         ) {
-            Column(Modifier.widthIn(min = cq * 6.4f)) {
-                Text(i.quality.ifBlank { "?" }, style = TvType.headline.copy(fontFamily = DisplayHeavy, fontWeight = FontWeight.ExtraBold, fontSize = sp(2.2f), lineHeight = sp(2.3f)), maxLines = 1)
-                i.tags.firstOrNull()?.let { Text(it, style = TvType.body.copy(color = Color(0xFFA3A1AE), fontSize = sp(0.9f), lineHeight = sp(1.2f), fontWeight = FontWeight.Medium), maxLines = 1) }
-            }
-            Column(verticalArrangement = Arrangement.spacedBy(cq * 0.3f)) {
+            Text(i.quality.ifBlank { "?" }, modifier = Modifier.widthIn(min = cq * 4.6f), style = TvType.headline.copy(fontFamily = DisplayHeavy, fontWeight = FontWeight.ExtraBold, fontSize = sp(1.5f), lineHeight = sp(1.7f)), maxLines = 1)
+            Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(cq * 0.8f)) {
-                    Text(i.name, style = TvType.body.copy(color = Ink.high, fontWeight = FontWeight.SemiBold, fontSize = sp(1.25f), lineHeight = sp(1.6f)), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                    if (playing) Text("Playing", style = TvType.body.copy(color = Color(0xFF6FD39A), fontSize = sp(0.85f), fontWeight = FontWeight.SemiBold))
+                    Text(i.name, style = TvType.body.copy(color = Ink.high, fontWeight = FontWeight.SemiBold, fontSize = sp(1.1f), lineHeight = sp(1.4f)), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (playing) Text("Playing", style = TvType.body.copy(color = Color(0xFF6FD39A), fontSize = sp(0.85f), fontWeight = FontWeight.SemiBold), maxLines = 1)
                 }
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(cq * 0.4f), verticalArrangement = Arrangement.spacedBy(cq * 0.3f)) {
-                    val tag = TvType.body.copy(fontSize = sp(0.9f), lineHeight = sp(1.2f))
-                    (listOfNotNull(i.size) + i.tags.drop(1)).forEach { Text(it, style = tag.copy(color = Color(0xFFCFCBD9)), modifier = Modifier.background(Color(0x14FFFFFF), Radius.pill).padding(horizontal = cq * 0.7f, vertical = cq * 0.15f)) }
-                    i.flags.forEach { Text(it, style = tag.copy(color = Accent.main), modifier = Modifier.background(Color(0x29F2B45A), Radius.pill).padding(horizontal = cq * 0.7f, vertical = cq * 0.15f)) }
-                }
+                val line = listOfNotNull(i.size) + i.tags + i.flags
+                if (line.isNotEmpty()) Text(line.joinToString(" · "), style = TvType.body.copy(color = Color(0xFFA3A1AE), fontSize = sp(0.85f), lineHeight = sp(1.15f)), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                i.note?.let { Text(it, style = TvType.body.copy(color = Accent.main, fontSize = sp(0.85f), lineHeight = sp(1.15f)), maxLines = 1, overflow = TextOverflow.Ellipsis) }
             }
         }
     }
@@ -865,6 +883,7 @@ fun TvAnimePlayerScreen(onExit: () -> Unit, vm: PlayerViewModel = hiltViewModel(
         if (s.animeTitle.isNotBlank()) value = guideVm.guide.anime(s.animeTitle, null, null, s.episodeNumbers.size.takeIf { it > 0 } ?: 20).associateBy { it.n }
     }
     val nextEp = next?.let { guide[it] }
+    TvRemoteBridge(vm.player, s.animeTitle.takeIf { it != s.animeSlug }.orEmpty(), "Episode ${s.episodeNumber}", s.posterUrl, s.hasNext, s.hasPrevious, vm::nextEpisode, vm::previousEpisode, onExit)
     TvPlayerChrome(
         player = vm.player,
         title = s.animeTitle,
@@ -887,7 +906,6 @@ fun TvAnimePlayerScreen(onExit: () -> Unit, vm: PlayerViewModel = hiltViewModel(
         onUpNext = vm::nextEpisode,
         onCancelUpNext = vm::dismissEnd,
         tweaksKey = s.animeSlug,
-        episodic = true,
         upNextImage = s.posterUrl,
         skips = s.skips,
         skipSetting = true,
@@ -918,6 +936,7 @@ fun TvMediaPlayerScreen(
         onWebPlayer(tt, r?.season ?: 0, r?.episode ?: 0)
     }
     val streams = r?.streams.orEmpty()
+    val quals = vm.qualities()
     val guide by produceState(emptyMap<Int, GuideEp>(), r?.mediaId, r?.season) {
         if (r != null && r.mediaId != null && r.season > 0 && r.episode > 0)
             value = guideVm.guide.season(r.mediaId!!, r.title, null, r.season).associateBy { it.n }
@@ -925,6 +944,7 @@ fun TvMediaPlayerScreen(
     val ge = r?.episode?.let { guide[it] }
     val nextEp = r?.episode?.let { guide[it + 1] }
     val subs = s.stream?.subtitles.orEmpty()
+    TvRemoteBridge(vm.player, r?.title.orEmpty(), listOfNotNull(r?.subtitle, ge?.title?.takeIf { it.isNotBlank() }).joinToString(" · ").ifBlank { null }, r?.posterUrl, s.hasNextEpisode, false, vm::nextEpisode, {}, onExit)
     TvPlayerChrome(
         player = vm.player,
         title = r?.title.orEmpty(),
@@ -938,13 +958,18 @@ fun TvMediaPlayerScreen(
         onStop = vm::onStop,
         onExit = onExit,
         settings = listOf(
-            // WEB_SOURCE = last-resort web player, after the real sources
+            SettingGroup("Quality", quals.takeIf { it.isNotEmpty() }?.let { listOf(0) + it.map { q -> q.first } }.orEmpty(),
+                { h -> qualityChip(h, quals, s.stream?.height) }, { it == s.quality }, vm::selectQuality),
+            // WEB_SOURCE = last-resort web player, after the real sources; without "Show all sources" just the playing one
             SettingGroup(
-                "Source", streams.indices.toList() + listOfNotNull(WEB_SOURCE.takeIf { s.canWebPlay }),
+                if (s.showAllSources || streams.size < 2) "Source" else "Playing from",
+                (if (s.showAllSources) vm.allSourcesOrder() else listOfNotNull(s.streamIndex.takeIf { it in streams.indices })) + listOfNotNull(WEB_SOURCE.takeIf { s.canWebPlay }),
                 { i -> if (i == WEB_SOURCE) "Web player" else streams[i].let { listOf(it.sourceName, it.qualityLabel).filter(String::isNotBlank).joinToString(" ") + if (i == s.autoIndex) " · ${s.autoNote}" else "" } },
                 { it == s.streamIndex },
                 { i -> if (i == WEB_SOURCE) vm.openWebPlayer() else vm.selectStream(i) }
-            ).apply { stub = { i -> streams.getOrNull(i)?.let(::srcInfo) } },
+            ).apply { stub = { i -> streams.getOrNull(i)?.let { srcInfo(it, if (i == s.streamIndex) s.note else null) } } },
+            SettingGroup("Show all sources", if (streams.size > 1) listOf(false, true) else emptyList(), { if (it) "On" else "Off" }, { it == s.showAllSources }, vm::setShowAllSources)
+                .apply { stay = true },
             SettingGroup("Subtitles", if (subs.isEmpty()) emptyList() else listOf(-1) + subs.indices, { i -> if (i < 0) "Off" else subs[i].label }, { it == s.subtitleIndex }, vm::selectSubtitle)
         ),
         // MediaPlayerViewModel can only advance one episode, so the strip offers exactly that
@@ -954,8 +979,9 @@ fun TvMediaPlayerScreen(
         onUpNext = vm::nextEpisode,
         onCancelUpNext = vm::dismissEnd,
         tweaksKey = r?.historyKey ?: r?.title ?: "media",
-        episodic = (r?.episode ?: 0) > 0,
         onWebPlayer = if (s.canWebPlay) vm::openWebPlayer else null,
+        skips = s.skips,
+        skipSetting = !s.isLive,
         streams = streams,
         onAudioLanguage = vm::selectAudioLanguage,
         upNextImage = r?.posterUrl,
@@ -970,17 +996,21 @@ fun TvMediaPlayerScreen(
 
 private const val WEB_SOURCE = -1
 
-private fun srcInfo(st: MediaStream): SrcInfo {
+/** [note]: "1080p didn't load — playing 720p" on the source that took over */
+private fun srcInfo(st: MediaStream, note: String? = null): SrcInfo {
     val t = "${st.sourceName} ${st.qualityLabel} ${st.url}".lowercase()
     val mb = (st.sizeBytes ?: 0) / 1_048_576.0
+    // the height leads the stub; the rest of the label (Vega's server, "VCloud") goes with the name
+    val server = st.qualityLabel.replace(Regex("""\b\d{3,4}p\b"""), "").trim().takeIf { st.height > 0 && it.isNotBlank() && !it.equals("auto", true) }
     return SrcInfo(
-        st.sourceName.ifBlank { "Source" }, st.qualityLabel,
+        listOfNotNull(st.sourceName.ifBlank { "Source" }, server).joinToString(" · "), if (st.height > 0) "${st.height}p" else st.qualityLabel,
         st.sizeBytes?.takeIf { it > 0 }?.let { if (mb >= 1024) String.format(Locale.US, "%.1f GB", mb / 1024) else "${mb.toLong()} MB" },
         listOfNotNull(st.codec?.takeIf { it.isNotBlank() }?.uppercase(), "HDR".takeIf { "hdr" in t }) +
             listOfNotNull(st.languages.takeIf { it.isNotEmpty() }?.joinToString(" · ", transform = AudioLanguage::name)),
         listOfNotNull(
             "Dolby".takeIf { listOf("dolby", "ddp", "truehd", "eac3").any { it in t } },
             "Atmos".takeIf { "atmos" in t }
-        )
+        ),
+        note?.takeIf { it.isNotBlank() }
     )
 }

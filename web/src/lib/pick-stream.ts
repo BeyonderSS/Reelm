@@ -1,9 +1,9 @@
-export type Pickable = { height?: number; hls?: boolean; codec?: string; dolby?: boolean; label?: string; url?: string };
+export type Pickable = { height?: number; hls?: boolean; codec?: string; dolby?: boolean; label?: string; url?: string; langs?: string[] };
 const MBPS: [number, number][] = [[2160, 16], [1440, 9], [1080, 5], [720, 2.5], [480, 1.2], [0, 0.7]];
 /** Bits/s a stream needs; HLS adapts, so it fits anywhere. Sizes and durations aren't in the stream objects, so height stands in. */
 export const bitrate = (x: Pickable) => x.hls ? 0 : (MBPS.find(([h]) => (x.height ?? 0) >= h)![1]) * 1e6;
-const dv = (x: Pickable) => /dolby vision|\bdovi\b|\bdv\b/i.test(`${x.label} ${x.codec}`);
-const risky = (x: Pickable) => /hevc|x265|h\.?265/i.test(x.codec ?? "") || /^Dramachi/.test(x.label ?? "") || /\.mkv(\?|$)/i.test(x.url ?? ""); // may not play in the browser
+export const dv = (x: Pickable) => /dolby vision|\bdovi\b|\bdv\b/i.test(`${x.label} ${x.codec}`);
+export const risky = (x: Pickable) => /hevc|x265|h\.?265/i.test(x.codec ?? "") || /^Dramachi/.test(x.label ?? "") || /\.mkv(\?|$)/i.test(x.url ?? ""); // may not play in the browser
 
 /** Index of the stream to start with: the pinned height (else the closest lower) if any, else the highest that fits 70% of the bandwidth. */
 export function pickStream(list: Pickable[], o: { bandwidthBps: number; pinnedHeight?: number }): number {
@@ -20,7 +20,7 @@ export function pickStream(list: Pickable[], o: { bandwidthBps: number; pinnedHe
 
 export const pinKey = (showKey: string) => `reelm.pin.${showKey}`;
 export const getPin = (showKey: string) => { try { return Number(localStorage.getItem(pinKey(showKey))) || undefined; } catch { return undefined; } };
-export const setPin = (showKey: string, height: number) => { try { if (height) localStorage.setItem(pinKey(showKey), String(height)); } catch {} };
+export const setPin = (showKey: string, height: number) => { try { if (height) localStorage.setItem(pinKey(showKey), String(height)); else localStorage.removeItem(pinKey(showKey)); } catch {} };
 /** bits/s: measured ("reelm.bw"), else the browser's downlink hint, else 10 Mbps */
 export const getBandwidth = () => {
   try { const m = Number(localStorage.getItem("reelm.bw")); if (m > 0) return m; } catch {}
