@@ -5,21 +5,32 @@ import { Play } from "lucide-react";
 import { animeCard, Chips, FavButton, Notice, pill, Rail } from "@/components/app";
 import { DetailHero, DetailSkeleton, SeasonNumerals } from "@/components/detail";
 import { EpisodeStrip, EpisodeStripSkeleton, type EpInfo } from "@/components/episode-cards";
+import { PlayOnTv } from "@/components/play-on-tv";
+import { histMs } from "@/lib/hub";
 import { frac } from "@/lib/eps";
 import { getHistory, kids, KIDS_BLOCKED, epProgress, syncHistory, watchHref, type Play as P } from "@/lib/core";
 import { useApi, useSession } from "@/lib/session";
+
+/** MAL's "you might also like" mapped onto hianime; hianime's own generic list (as "Popular on Reelm") when MAL has nothing. */
+function MoreLike({ slug, fallback }: { slug: string; fallback: any[] }) {
+  const { s } = useSession(), p = s.profile;
+  const r = useApi(`anime/similar?slug=${slug}${p?.mature && !p.kids ? "&mature=1" : ""}${p?.kids ? "&kids=1" : ""}`);
+  if (r.loading) return null;
+  const mal = r.data?.source === "mal";
+  return <Rail title={mal ? "You might also like" : "Popular on Reelm"} items={(mal ? r.data.items : r.data?.items ?? fallback).map(animeCard).filter((c: any) => !p?.kids || kids.animeCard(c))} />;
+}
 
 export default function Anime({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = use(params), { s } = useSession();
   const d = useApi(`anime/detail?slug=${slug}`), e = useApi(`anime/episodes?slug=${slug}`);
   const info = useApi(d.data ? `anime/episodes-info?title=${encodeURIComponent(d.data.title)}&jp=${encodeURIComponent(d.data.japanese ?? "")}&year=${d.data.year ?? ""}` : null);
   const [lang, setLang] = useState("sub");
-  const [resume, setResume] = useState<{ p: P; f: number } | null>(null), [prog, setProg] = useState<Record<string, number>>({});
+  const [resume, setResume] = useState<{ p: P; f: number; ms: number } | null>(null), [prog, setProg] = useState<Record<string, number>>({});
   useEffect(() => {
     const pid = s.profile?.id ?? "guest";
     const read = () => {
       const h = Object.values(getHistory(pid)).filter((x) => !x.deleted && x.payload.kind === "anime" && x.payload.id === slug).sort((a, b) => b.updatedAt - a.updatedAt)[0];
-      setResume(h ? { p: h.payload, f: frac(h.position, h.duration) } : null);
+      setResume(h ? { p: h.payload, f: frac(h.position, h.duration), ms: histMs(h) } : null);
       setProg(epProgress(pid, { kind: "anime", id: slug, title: "" }));
     };
     read();
@@ -46,6 +57,7 @@ export default function Anime({ params }: { params: Promise<{ slug: string }> })
               <Play className="fill-current" />{resumeEp ? `Resume episode ${resumeEp.number}` : eps.length > 1 ? "Play episode 1" : "Play"}
             </Link>
           )}
+          {!e.loading && (resumeEp || eps[0]) && <PlayOnTv className={pill.secondary} get={() => (resumeEp ? { payload: { ...play(resumeEp), lang: resume!.p.lang ?? lang }, positionMs: resume!.ms } : { payload: play(eps[0]), positionMs: 0 })} />}
           <FavButton c={{ ...animeCard(a), href: `/anime/${slug}`, sub: a.type }} />
           <div role="radiogroup" aria-label="Audio" className="seg">
             {["sub", "dub"].filter((l) => l === "sub" || a.dub).map((l) => (
@@ -65,7 +77,7 @@ export default function Anime({ params }: { params: Promise<{ slug: string }> })
           : e.loading || info.loading ? <EpisodeStripSkeleton />
           : <EpisodeStrip items={eps.map((x) => ({ n: x.number, info: kitsu.get(x.number) ?? { title: x.title }, href: watchHref(play(x)), progress: prog[`e${x.number}`], current: resume?.p.ep === x.number }))} />}
       </section>
-      <Rail title="More like this" items={a.recommendations.map(animeCard).filter((c: any) => !s.profile?.kids || kids.animeCard(c))} />
+      <MoreLike slug={slug} fallback={a.recommendations} />
     </main>
   );
 }

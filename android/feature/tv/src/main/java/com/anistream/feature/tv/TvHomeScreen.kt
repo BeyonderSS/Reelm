@@ -335,7 +335,8 @@ private fun buildRows(
     return buildList {
         add(TvRow("Continue watching", continueRow, wide = true))
         when (filter) {
-            HomeFilter.ALL -> { addAll(mediaPicks); addAll(if (showAnime) animePicks else emptyList()); if (showAnime) add(animeRow("Trending anime", c.trending)); addAll(mediaRows); addAll(animeRowsAll) }
+            // the first catalog row (Bollywood for users in India) right after the picks, so the low-end 8-row cap keeps it
+            HomeFilter.ALL -> { addAll(mediaPicks); mediaRows.firstOrNull()?.let(::add); addAll(if (showAnime) animePicks else emptyList()); if (showAnime) add(animeRow("Trending anime", c.trending)); addAll(mediaRows); addAll(animeRowsAll) }
             HomeFilter.MEDIA -> { addAll(mediaPicks); addAll(mediaRows) }
             HomeFilter.ANIME -> if (showAnime) { addAll(animePicks); add(animeRow("Trending anime", c.trending)); addAll(animeRows) }
         }

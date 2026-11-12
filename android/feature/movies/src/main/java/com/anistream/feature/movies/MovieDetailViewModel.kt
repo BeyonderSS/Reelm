@@ -54,7 +54,9 @@ data class MovieDetailUiState(
     /** null = still finding sources */
     val dlOptions: List<DownloadOption>? = null,
     val dlSelected: String? = null,
-    val dlPicked: Set<Int> = emptySet()
+    val dlPicked: Set<Int> = emptySet(),
+    /** "More like this" (TMDB) */
+    val similar: List<com.anistream.domain.model.MediaItem> = emptyList()
 )
 
 private val EpSubtitle = Regex("S(\\d+) · E(\\d+)")
@@ -112,6 +114,7 @@ class MovieDetailViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
             if (isCanonicalKey(id)) id = resolveCanonical(id) ?: id
+            val asked = id
             when (val r = movies.detail(id)) {
                 is Result.Success -> {
                     val d = r.data
@@ -125,6 +128,9 @@ class MovieDetailViewModel @Inject constructor(
                     _uiState.update { it.copy(isFavorite = favorites.isSaved(d.asFavorite()).getOrNull() ?: false) }
                     refreshHistory()
                     pollDownloads()
+                    // the asked "tt…" id spares a MovieBox → IMDb lookup
+                    val similarId = asked.takeIf { it.startsWith("tt") || it.startsWith("tmdb:") } ?: d.id
+                    viewModelScope.launch { _uiState.update { it.copy(similar = movies.similar(similarId)) } }
                 }
                 is Result.Error -> _uiState.update { it.copy(isLoading = false, error = r.message ?: "Failed to load") }
                 Result.Loading -> Unit

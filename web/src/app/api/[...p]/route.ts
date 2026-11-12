@@ -1,6 +1,7 @@
 import * as hi from "@/lib/server/hianime";
 import { movieRoutes } from "@/lib/movies";
 import * as misc from "@/lib/server/misc";
+import * as recs from "@/lib/server/recs";
 import { episodes, animeEpisodes } from "@/lib/server/episodes";
 
 // One catch-all so the server side of every feature is a flat table.
@@ -16,6 +17,9 @@ const routes: Record<string, (q: URLSearchParams) => Promise<unknown>> = {
   "anime/stream": (q) => hi.stream(num(q.get("ep")), q.get("lang") ?? "sub"),
   "anime/schedule": () => hi.schedule(),
   "aniskip": (q) => misc.aniskip(q.get("mal")!, q.get("ep")!),
+  "introdb": (q) => misc.introdb(q.get("id")!, q.get("s"), q.get("e")),
+  "anime/similar": (q) => recs.similarAnime(q.get("slug")!, q.get("mature") === "1", q.get("kids") === "1"),
+  "movies/similar": (q) => recs.similarMedia(q.get("id")!, q.get("type") ?? "movie", q.get("title") ?? "", num(q.get("year"))),
   "movies/catalog": (q) => misc.catalog(q.get("key") ?? "movie/top", num(q.get("skip"))),
   "anime/episodes-info": (q) => animeEpisodes(q.get("title") ?? "", q.get("jp") ?? "", num(q.get("year"))),
   "movies/episodes": (q) => episodes(q.get("id")!, num(q.get("season"), 1), q.get("title") ?? "", num(q.get("year"))),
@@ -42,7 +46,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ p: string[] }> 
   const fn = routes[key];
   if (!fn) return Response.json({ error: "not found" }, { status: 404 });
   try {
-    return Response.json(await fn(new URL(req.url).searchParams), { headers: { "cache-control": key === "movies/episodes" ? "public, max-age=3600, s-maxage=86400" : "no-store" } });
+    return Response.json(await fn(new URL(req.url).searchParams), { headers: { "cache-control": key === "movies/episodes" || key === "introdb" ? "public, max-age=3600, s-maxage=86400" : "no-store" } });
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 502 });
   }

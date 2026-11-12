@@ -9,18 +9,18 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface RecommendationDao {
-    @Query("SELECT * FROM recommendations WHERE kind = :kind ORDER BY position")
-    fun observe(kind: String): Flow<List<RecommendationEntity>>
+    @Query("SELECT * FROM recommendations WHERE profileId = :profileId AND kind = :kind ORDER BY position")
+    fun observe(profileId: String, kind: String): Flow<List<RecommendationEntity>>
 
-    @Query("DELETE FROM recommendations WHERE kind = :kind")
-    suspend fun deleteKind(kind: String)
+    @Query("DELETE FROM recommendations WHERE profileId = :profileId AND kind = :kind")
+    suspend fun deleteKind(profileId: String, kind: String)
 
     @Insert
     suspend fun insertAll(items: List<RecommendationEntity>)
 
     @Transaction
-    suspend fun replace(kind: String, items: List<RecommendationEntity>) {
-        deleteKind(kind)
+    suspend fun replace(profileId: String, kind: String, items: List<RecommendationEntity>) {
+        deleteKind(profileId, kind)
         insertAll(items)
     }
 }

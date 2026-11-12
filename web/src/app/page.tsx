@@ -2,7 +2,9 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Info, Play } from "lucide-react";
-import { animeCard, Chips, ContinueStrip, Marquee, RecommendedRow, kidsOk, mediaCard, pill, Row, useContinue } from "@/components/app";
+import { animeCard, Chips, ContinueStrip, Marquee, kidsOk, mediaCard, pill, Rail, Row, useContinue } from "@/components/app";
+import { audioLang, HomeRecs } from "@/components/home-recs";
+import { INDIAN } from "@/lib/recs-rank";
 import { ShimmerButton } from "@/components/ui/shimmer-button";
 import { useApi, useSession } from "@/lib/session";
 import { entryHref, entrySub, shows, syncFavs, watchHref, type Entry } from "@/lib/core";
@@ -84,24 +86,34 @@ export default function HomePage() {
   const sh = (k: Parameters<typeof shows>[1]) => shows(s.profile, k);
   // hidden kinds aren't even fetched
   const anime = useApi(sh("anime") ? "anime/home" : null), movies = useApi(sh("movies") ? "movies/catalog?key=movie/top" : null);
+  const ind = useApi<{ country: string; rows: { title: string; items: any[] }[] }>(sh("movies") || sh("series") ? "india" : null);
+  const [lang] = useState(audioLang); // "" on the server; only reorders rows that load client side
   const [cw, removeCw] = useContinue();
   const k = s.profile?.kids;
+  // Indian rows lead for viewers in India or who chose an Indian audio language; otherwise they follow the Cinemeta rows
+  const indiaFirst = ind.data?.country === "IN" || INDIAN.includes(lang);
+  const indiaRows = (ind.data?.rows ?? []).map((r) => ({ title: r.title, items: r.items.map(mediaCard).filter((c) => kidsOk(c, k, s.profile)) }));
   const slides: Slide[] = cw[0] ? [resumeSlide(cw[0])] : [];
+  const desi = indiaFirst ? (ind.data?.rows ?? []).flatMap((r) => r.items).filter((x) => x.backdrop && x.type === "movie" && kidsOk(mediaCard(x), k, s.profile)).slice(0, 2) : [];
   const m = ((movies.data ?? []) as any[]).filter((x) => x.backdrop && kidsOk(mediaCard(x), k)).slice(0, 3);
   const a = ((anime.data?.trending ?? []) as any[]).filter((x) => kidsOk(animeCard(x), k)).slice(0, 3);
   for (let n = 0; n < 3; n++) {
+    if (desi[n]) slides.push({ key: desi[n].id, title: desi[n].title, poster: desi[n].poster, desc: desi[n].description, chips: ["Movie", desi[n].year, desi[n].rating && `★ ${desi[n].rating}`], href: mediaCard(desi[n]).href, play: watchHref({ kind: "movie", id: desi[n].id, title: desi[n].title, poster: desi[n].poster, season: 0, episode: 0, type: "movie", year: desi[n].year }) });
     if (m[n]) slides.push({ key: m[n].id, title: m[n].title, poster: m[n].poster, desc: m[n].description, chips: ["Movie", m[n].year, m[n].rating && `IMDb ${m[n].rating}`], href: mediaCard(m[n]).href, play: watchHref({ kind: "movie", id: m[n].id, title: m[n].title, poster: m[n].poster, season: 0, episode: 0, type: "movie", year: m[n].year }) });
     if (a[n]) slides.push({ key: a[n].slug, title: a[n].title, poster: a[n].poster, chips: ["Anime", a[n].rating], href: `/anime/${a[n].slug}`, anime: a[n].slug });
   }
+  const indian = indiaRows.map((r) => <Rail key={r.title} title={r.title} items={r.items} />);
   const loading = anime.loading || movies.loading || !s.profile;
   return (
     <main className="pb-16">
       {loading && !slides.length ? <div className="skel -mt-16 h-[600px] md:-mt-20" /> : slides.length ? <Hero slides={slides} /> : <div className="h-8" />}
       <div className="relative z-10 -mt-10 md:-mt-14"><ContinueStrip items={cw} onRemove={removeCw} /></div>
-      <RecommendedRow />
+      <HomeRecs />
+      {indiaFirst && indian}
       {sh("anime") && <Row title="Trending anime" path="anime/home" map={(d) => d.trending.map(animeCard)} />}
       {sh("movies") && <Row title="Popular movies" path="movies/catalog?key=movie/top" map={(d) => d.map(mediaCard)} />}
       {sh("series") && <Row title="Popular series" path="movies/catalog?key=series/top" map={(d) => d.map(mediaCard)} />}
+      {!indiaFirst && indian}
       {sh("anime") && <Row title="Top airing" path="anime/home" map={(d) => d.topAiring.map(animeCard)} />}
       {sh("anime") && <Row title="Most popular anime" path="anime/home" map={(d) => d.popular.map(animeCard)} />}
       {sh("anime") && <Row title="Latest episodes" path="anime/home" map={(d) => d.recent.map(animeCard)} />}

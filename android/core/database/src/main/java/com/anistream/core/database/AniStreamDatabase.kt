@@ -31,7 +31,7 @@ import com.anistream.core.database.entity.WatchHistoryEntity
         PlaylistEntity::class,
         RecommendationEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class AniStreamDatabase : RoomDatabase() {
@@ -63,6 +63,14 @@ abstract class AniStreamDatabase : RoomDatabase() {
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `recommendations` (`kind` TEXT NOT NULL, `id` TEXT NOT NULL, `title` TEXT NOT NULL, `posterUrl` TEXT, `year` INTEGER, `rating` REAL, `mediaType` TEXT, `because` TEXT, `position` INTEGER NOT NULL, PRIMARY KEY(`kind`, `id`))")
+            }
+        }
+
+        /** v10: picks are per profile (+ the seed they came from). Old rows had no owner, so they are dropped; the next refresh refills. */
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP TABLE IF EXISTS `recommendations`")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `recommendations` (`profileId` TEXT NOT NULL, `kind` TEXT NOT NULL, `id` TEXT NOT NULL, `title` TEXT NOT NULL, `posterUrl` TEXT, `year` INTEGER, `rating` REAL, `mediaType` TEXT, `because` TEXT, `seed` INTEGER NOT NULL, `position` INTEGER NOT NULL, PRIMARY KEY(`profileId`, `kind`, `id`))")
             }
         }
 

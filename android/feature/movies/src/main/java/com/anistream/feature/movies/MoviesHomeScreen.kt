@@ -1,5 +1,6 @@
 package com.anistream.feature.movies
 
+import com.anistream.domain.model.heroItems
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -107,7 +108,7 @@ fun MoviesHomeScreen(
         onPauseOrDispose { }
     }
 
-    val hero = uiState.rows.firstOrNull()?.items.orEmpty().distinctBy { it.id }.take(HERO_COUNT)
+    val hero = uiState.rows.heroItems(HERO_COUNT)
     val error = uiState.error
     val mode = when {
         uiState.rows.isNotEmpty() -> Mode.Content

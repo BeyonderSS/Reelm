@@ -75,6 +75,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.anistream.core.ui.components.AnimeCarousel
 import com.anistream.core.ui.components.ArtworkImage
 import com.anistream.core.ui.components.DownloadSheet
 import com.anistream.core.ui.components.DownloadStubButton
@@ -109,6 +110,8 @@ fun MovieDetailScreen(
     onOpenPlayer: () -> Unit,
     /** (imdbId, season, episode) */
     onWebPlayer: (String, Int, Int) -> Unit = { _, _, _ -> },
+    /** another title's id ("More like this") */
+    onOpen: (String) -> Unit = {},
     viewModel: MovieDetailViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -229,6 +232,12 @@ fun MovieDetailScreen(
                             }
                             if (detail.playable) item(key = "legend") { EpisodeLegend() }
                         }
+                        if (uiState.similar.isNotEmpty()) item(key = "similar") {
+                            Column(Modifier.padding(top = Space.xxl)) {
+                                Heading("More like this")
+                                AnimeCarousel(items = remember(uiState.similar) { uiState.similar.map { it.asCard() } }, onAnimeClick = { onOpen(it.slug) })
+                            }
+                        }
                     }
                 }
             }
@@ -295,7 +304,18 @@ fun MovieDetailScreen(
                     else if (webOnly) viewModel.openWebPlayer(target)
                     else viewModel.play(target.season, target.episode)
                 },
-                onFavorite = viewModel::toggleFavorite
+                onFavorite = viewModel::toggleFavorite,
+                playOnTv = {
+                    if (target != null && !webOnly) com.anistream.core.account.ui.PlayOnTvButton(
+                        item = {
+                            com.anistream.domain.model.WatchHistory(
+                                com.anistream.domain.model.mediaSlug(isSeries, detail.title), detail.title, posterUrl = detail.posterUrl,
+                                totalEpisodes = detail.seasons.firstOrNull { it.number == target.season }?.episodeCount ?: 0, lastEpisodeWatched = target.episode,
+                                kind = "media", season = target.season, mediaId = detail.id, subtitle = if (target.episode > 0) "S${target.season} · E${target.episode}" else null
+                            )
+                        }, circle = true
+                    )
+                }
             )
         }
 
@@ -469,7 +489,8 @@ private fun BoxScope.ActionBar(
     dlTrailing: String?,
     onDownload: () -> Unit,
     onPlay: () -> Unit,
-    onFavorite: () -> Unit
+    onFavorite: () -> Unit,
+    playOnTv: @Composable () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     val heartScale = remember { Animatable(1f) }
@@ -531,6 +552,7 @@ private fun BoxScope.ActionBar(
         if (!secondary) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.md)) {
                 DownloadStubButton(dlLabel, dlCaption, onDownload, Modifier.weight(1f), progress = dlProgress, trailing = dlTrailing)
+                playOnTv()
                 heart()
             }
         }

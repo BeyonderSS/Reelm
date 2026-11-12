@@ -161,6 +161,8 @@ fun TvMovieDetailScreen(
     onPlayer: () -> Unit,
     /** (imdbId, season, episode) */
     onWebPlayer: (String, Int, Int) -> Unit,
+    /** another title's id ("More like this") */
+    onOpen: (String) -> Unit = {},
     vm: MovieDetailViewModel = hiltViewModel(),
     guideVm: EpisodeGuideViewModel = hiltViewModel()
 ) {
@@ -182,6 +184,8 @@ fun TvMovieDetailScreen(
         if (s.isLoading) TvMessage("Loading…") else TvMessage(s.error ?: "Couldn't load this title") { TvPill("Retry", vm::load) }
         return
     }
+    // Play on TV from a phone: start the sent episode right away
+    LaunchedEffect(d.id) { com.anistream.core.account.HandoffHint.takeAutoplay()?.let { (sn, ep) -> if (d.playable) vm.play(sn, ep) } }
     val series = d.type == MediaType.SERIES
     val r = s.resume
     val firstSeason = d.seasons.firstOrNull()?.number ?: 1
@@ -231,6 +235,12 @@ fun TvMovieDetailScreen(
         },
         seasons = if (series) d.seasons.map { it.number } else emptyList(), season = season, onSeason = vm::selectSeason,
         seasonNote = if (series && count > 0) "Season $season, $count episodes" else null,
-        stubs = stubs, initial = (resumeHere - 1).coerceAtLeast(0), onStub = { play(season, it) }
+        stubs = stubs, initial = (resumeHere - 1).coerceAtLeast(0), onStub = { play(season, it) },
+        below = if (s.similar.isEmpty()) null else ({
+            val row = TvRow("More like this", s.similar.map { m ->
+                TvItem(key = m.id, title = m.title, imageUrl = m.posterUrl, onClick = { onOpen(m.id) })
+            })
+            TvCardRow(row, restoreKey = null, restoreRequester = remember { FocusRequester() }, onFocused = {}, modifier = Modifier.padding(bottom = 40.dp))
+        })
     )
 }

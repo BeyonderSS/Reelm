@@ -1,5 +1,6 @@
 package com.anistream.feature.home
 
+import com.anistream.domain.model.heroItems
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
@@ -159,7 +160,7 @@ fun HomeScreen(
     // Hero: trending anime and the first Movies & TV row, interleaved.
     val hero = remember(c.trending, mediaRows) {
         val anime = c.trending.distinctBy { it.slug }.take(HERO_COUNT / 2).map { HeroItem(it, media = false) }
-        val media = mediaRows.firstOrNull()?.items.orEmpty().distinctBy { it.id }.take(HERO_COUNT / 2).map { HeroItem(it.asCard(), media = true) }
+        val media = mediaRows.heroItems(HERO_COUNT / 2).map { HeroItem(it.asCard(), media = true) }
         (0 until maxOf(anime.size, media.size)).flatMap { i -> listOfNotNull(anime.getOrNull(i), media.getOrNull(i)) }
     }
     val rows = remember(c, mediaRows, hero) { buildRows(c, mediaRows.map { r -> HomeRow("m-${r.title}", r.title, r.items.map { it.asCard() }, media = true, catalogKey = r.catalogKey) }, hero) }

@@ -1,0 +1,91 @@
+{
+ "page": 1,
+ "results": [
+  {
+   "adult": false,
+   "genre_ids": [
+    80,
+    10759,
+    18
+   ],
+   "id": 84105,
+   "origin_country": [
+    "IN"
+   ],
+   "original_language": "hi",
+   "original_name": "मिर्ज़ापुर",
+   "overview": "The iron-fisted Akhandanand Tripathi is a millionaire carpet exporter and the mafia don of Mirzapur. His son, Munna, is ",
+   "popularity": 11.9655,
+   "poster_path": "/p0qM8hhlMF5DuxHBzl2EZR6TehX.jpg",
+   "first_air_date": "2018-11-15",
+   "softcore": false,
+   "name": "Mirzapur",
+   "vote_average": 8.0,
+   "vote_count": 200
+  },
+  {
+   "adult": false,
+   "genre_ids": [
+    18,
+    10759
+   ],
+   "id": 93352,
+   "origin_country": [
+    "IN"
+   ],
+   "original_language": "hi",
+   "original_name": "द फ़ैमिली मैन",
+   "overview": "The story of a middle-class man who works for a special cell of the National Investigation Agency. While he tries to pro",
+   "popularity": 9.085,
+   "poster_path": "/tE1NUJqw9gV6AVjQ1GTK78LbWJ9.jpg",
+   "first_air_date": "2019-09-20",
+   "softcore": false,
+   "name": "The Family Man",
+   "vote_average": 7.702,
+   "vote_count": 215
+  },
+  {
+   "adult": false,
+   "genre_ids": [
+    80,
+    18
+   ],
+   "id": 79273,
+   "origin_country": [
+    "IN"
+   ],
+   "original_language": "hi",
+   "original_name": "गंदी बात",
+   "overview": "Unraveling complexed relationships, closet issues, shocking truths, bizarre myths and unexplored space of men and women ",
+   "popularity": 7.0418,
+   "poster_path": "/yF0qYnvZaEflyOlElUcGGLE5FaA.jpg",
+   "first_air_date": "2018-05-03",
+   "softcore": false,
+   "name": "Gandii Baat",
+   "vote_average": 4.4,
+   "vote_count": 15
+  },
+  {
+   "adult": false,
+   "genre_ids": [
+    18,
+    80,
+    10759
+   ],
+   "id": 79352,
+   "origin_country": [
+    "IN"
+   ],
+   "original_language": "hi",
+   "original_name": "Sacred Games",
+   "overview": "A link in their pasts leads an honest cop to a fugitive gang boss, whose cryptic warning spurs the officer on a quest to",
+   "popularity": 5.7839,
+   "poster_path": "/uEbNtFbK4At9WBDGap23lt1qO9n.jpg",
+   "first_air_date": "2018-07-06",
+   "softcore": false,
+   "name": "Sacred Games",
+   "vote_average": 7.769,
+   "vote_count": 268
+  }
+ ]
+}

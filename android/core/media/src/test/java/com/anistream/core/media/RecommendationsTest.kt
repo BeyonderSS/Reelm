@@ -49,4 +49,16 @@ class RecommendationsTest {
         assertTrue(!skips[1].isIntroOrRecap)
         assertEquals(emptyList<Any>(), AniSkip.parse("""{"found":false,"results":[],"statusCode":404}"""))
     }
+
+    /** Fixture: live `GET api.theintrodb.org/v4/media?imdb_id=tt1196946&season=1&episode=2`, plus an empty recap and two previews. */
+    @Test fun theIntroDbMapsNullsAndTypes() {
+        val skips = TheIntroDB.parse(text("theintrodb.json"))
+        assertEquals(listOf("op", "ed", "preview"), skips.map { it.type })
+        assertEquals(0L, skips[0].startMs) // start_ms null = 0
+        assertEquals(14_000L, skips[0].endMs)
+        assertEquals(2_571_992L, skips[1].startMs)
+        assertEquals(Long.MAX_VALUE, skips[1].endMs) // end_ms null = end of video
+        assertEquals(2_600_000L, skips[2].startMs)
+        assertEquals(emptyList<Any>(), TheIntroDB.parse("""{"error":"no submissions for this media","code":"no_submissions"}"""))
+    }
 }

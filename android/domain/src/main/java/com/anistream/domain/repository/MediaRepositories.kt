@@ -32,6 +32,9 @@ interface MoviesRepository {
 
     /** IMDb "tt…" id for a MediaItem.id, or null when there is none (web-player fallback). */
     suspend fun imdbId(mediaId: String): String? = mediaId.takeIf { it.startsWith("tt") }
+
+    /** "More like this" for a title (TMDB recommendations, same filters as Home rows); empty when unknown. */
+    suspend fun similar(id: String): List<MediaItem> = emptyList()
 }
 
 interface AddonRepository {
@@ -60,6 +63,11 @@ interface RecommendationsRepository {
 /** AniSkip intro/recap/credits times; empty when unknown or offline. */
 interface SkipTimesRepository {
     suspend fun skipTimes(malId: Long, episode: Int): List<SkipInterval>
+}
+
+/** TheIntroDB intro / recap / credits / preview for a movie (season 0) or series episode, by IMDb id; empty when unknown. */
+interface MediaSkipTimesRepository {
+    suspend fun skipTimes(imdbId: String, season: Int, episode: Int): List<SkipInterval>
 }
 
 /**

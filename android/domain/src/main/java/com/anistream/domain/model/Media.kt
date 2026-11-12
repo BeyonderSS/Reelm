@@ -146,14 +146,38 @@ data class Recommendation(
     val year: Int? = null,
     val rating: Double? = null,
     val mediaType: MediaType? = null,
-    val because: String? = null
+    val because: String? = null,
+    /** rank of the [because] title among the watched ones by weight (0 = strongest) */
+    val seed: Int = 0
 )
 
-/** Home rows from ranked picks: "Top picks for you" (first 10), then "Because you watched X" for the two strongest seeds. */
+/** [Recommendation.because] of the signed-in "Popular on Reelm" picks (most watched on Reelm this week), also the row title. */
+const val POPULAR_ON_REELM = "Popular on Reelm"
+
+/**
+ * Home rows from ranked picks: "Top picks for you" (first 10), "Popular on Reelm" when there is any, then "Because you watched X"
+ * for the two strongest seeds (by weight) that still have 3+ picks not already in Top picks.
+ */
 fun List<Recommendation>.forYouRows(): List<Pair<String, List<Recommendation>>> {
-    if (isEmpty()) return emptyList()
-    val because = mapNotNull { it.because }.distinct().take(2).map { seed ->
-        "Because you watched $seed" to filter { it.because == seed }
-    }.filter { it.second.size >= 3 }
-    return listOf("Top picks for you" to take(10)) + because
+    val (popular, picks) = partition { it.because == POPULAR_ON_REELM }
+    val top = picks.take(10)
+    val rest = picks.drop(10)
+    val because = rest.filter { it.because != null }.sortedBy { it.seed }.map { it.because!! }.distinct()
+        .map { seed -> "Because you watched $seed" to rest.filter { it.because == seed } }
+        .filter { it.second.size >= 3 }.take(2)
+    return (listOf("Top picks for you" to top, POPULAR_ON_REELM to popular) + because).filter { it.second.isNotEmpty() }
+}
+
+/** Catalog keys of the TMDB-backed Indian rows (MoviesRepository.home). */
+fun MediaRow.isIndian() = catalogKey?.startsWith("tmdb/in-") == true
+
+/**
+ * Hero items: the first non-Indian row, with up to 2 items of the first row spliced in at slots 2 and 4 when that row is
+ * Indian (Indian rows lead Home for users in India), so the hero stays mixed instead of all one row.
+ */
+fun List<MediaRow>.heroItems(n: Int): List<MediaItem> {
+    val main = firstOrNull { !it.isIndian() }?.items.orEmpty().distinctBy { it.id }
+    val local = firstOrNull()?.takeIf { it.isIndian() }?.items.orEmpty().distinctBy { it.id }.take(2)
+    if (local.isEmpty()) return (main.ifEmpty { firstOrNull()?.items.orEmpty() }).take(n)
+    return (main.take(1) + local.take(1) + main.drop(1).take(1) + local.drop(1) + main.drop(2)).distinctBy { it.id }.take(n)
 }

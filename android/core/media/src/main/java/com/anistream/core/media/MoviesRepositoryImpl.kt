@@ -1,6 +1,11 @@
 package com.anistream.core.media
 
+import android.content.Context
+import android.telephony.TelephonyManager
 import android.util.Log
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.Locale
+import kotlinx.coroutines.delay
 import com.anistream.core.common.Result
 import com.anistream.core.common.safeApiCall
 import com.anistream.core.database.dao.AddonDao
@@ -53,7 +58,8 @@ class MoviesRepositoryImpl @Inject constructor(
     private val addonDao: AddonDao,
     fourKHdHub: FourKHdHubSource,
     dramachi: DramachiSource,
-    vega: VegaSources
+    vega: VegaSources,
+    @ApplicationContext private val context: Context
 ) : MoviesRepository {
 
     /** Title-searched sites, tried after MovieBox and before addons, in this order. */
@@ -67,13 +73,16 @@ class MoviesRepositoryImpl @Inject constructor(
     private val dubsOf = ConcurrentHashMap<String, List<AudioVariant>>()  // subjectId → its MovieBox audio variants
 
     override suspend fun home(): Result<List<MediaRow>> = safeApiCall {
-        val rows = listOf(
+        val global = listOf(
             "Popular movies" to "movie/top",
             "Popular series" to "series/top",
             "Top rated movies" to "movie/imdbRating",
             "Top rated series" to "series/imdbRating"
         ) + (if (KidsPolicy.active) listOf("Animation", "Family", "Comedy", "Adventure") else listOf("Action", "Comedy", "Sci-Fi", "Horror", "Animation"))
             .map { "$it movies" to "movie/top/genre=$it" }
+        // Cinemeta's charts are US IMDb charts with no Indian titles; Indian rows come from TMDB, first for users in India
+        val indian = if (BuildConfig.TMDB_API_KEY.isBlank()) emptyList() else TMDB_ROWS.map { (key, row) -> row.first to key }
+        val rows = if (inIndia()) indian + global else global + indian
         val loaded = coroutineScope {
             rows.map { (title, key) ->
                 async { runCatching { MediaRow(title, fetchCatalog(key, 0).filter { !KidsPolicy.active || KidsPolicy.media(it.genres) }, key) }.getOrNull() }
@@ -87,11 +96,41 @@ class MoviesRepositoryImpl @Inject constructor(
         safeApiCall { fetchCatalog(catalogKey, skip) }
 
     private suspend fun fetchCatalog(key: String, skip: Int): List<MediaItem> {
+        TMDB_ROWS[key]?.let { return tmdbRow(it.second, skip) }
         val parts = key.split("/", limit = 3)
         require(parts.size >= 2) { "Bad catalog key: $key" }
         val extras = listOfNotNull(parts.getOrNull(2), if (skip > 0) "skip=$skip" else null)
         val extra = if (extras.isEmpty()) "" else "/" + extras.joinToString("&")
         return cinemetaList("${Stremio.CINEMETA_BASE}/catalog/${parts[0]}/${parts[1]}$extra.json")
+    }
+
+    /** India by network (SIM) country, else locale; or an Indian preferred audio language. */
+    private fun inIndia(): Boolean {
+        val country = runCatching { (context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager)?.networkCountryIso }.getOrNull()
+            ?.takeIf { it.isNotBlank() } ?: Locale.getDefault().country
+        return country.equals("IN", true) || AudioLanguage.preferred.value in RecommendationsRepositoryImpl.INDIAN
+    }
+
+    /**
+     * A TMDB list page as items ("tmdb:<kind>:<id>" ids, open via [tmdbDetail]): TMDB pages are 20, so [skip] maps to a page.
+     * Adult, mature (when the profile hides it) and, on a kids profile, non-family titles are dropped.
+     * ponytail: skip counts kept items, so a page with drops can repeat a few on "See all"; the grid dedupes by id.
+     */
+    private suspend fun tmdbRow(path: String, skip: Int): List<MediaItem> {
+        val url = "$path${if ("?" in path) "&" else "?"}page=${skip / 20 + 1}"
+        val root = runCatching { tmdb(url) }.getOrElse { delay(1500); tmdb(url) } // TMDB drops the odd connection
+        val kind = if (path.startsWith("/discover/tv") || path.startsWith("/tv/")) "tv" else "movie"
+        return RecommendationsRepositoryImpl.parseTmdbList(root["results"], kind)
+            .filter { t ->
+                t.posterPath != null && !t.adult && (!MaturePolicy.active || !MaturePolicy.hides(t.genres, t.title)) &&
+                    (!KidsPolicy.active || KidsPolicy.media(t.genres))
+            }
+            .map { t ->
+                MediaItem(
+                    id = "tmdb:${t.type}:${t.id}", type = if (t.type == "tv") MediaType.SERIES else MediaType.MOVIE, title = t.title,
+                    posterUrl = "https://image.tmdb.org/t/p/w342${t.posterPath}", year = t.year, rating = t.rating, genres = t.genres
+                )
+            }
     }
 
     private suspend fun cinemetaList(url: String): List<MediaItem> =
@@ -171,7 +210,7 @@ class MoviesRepositoryImpl @Inject constructor(
     }
 
     private suspend fun rawDetail(id: String): Result<MediaDetail> = safeApiCall {
-        if (id.startsWith("mb:")) return@safeApiCall movieBox.detail(id.removePrefix("mb:")).also { dubsOf[it.id.removePrefix("mb:")] = it.audioVariants }
+        if (id.startsWith("mb:")) return@safeApiCall movieBox.detail(id.removePrefix("mb:")).also { dubsOf[it.id.removePrefix("mb:")] = it.audioVariants }.copy(playable = true) // as below
         if (id.startsWith("tmdb:")) return@safeApiCall tmdbDetail(id)
         val meta = cinemetaMeta(id)
         val cine = meta.detail
@@ -186,7 +225,8 @@ class MoviesRepositoryImpl @Inject constructor(
                 seasons = mb.seasons.ifEmpty { cine.seasons },
                 genres = mb.genres.ifEmpty { cine.genres },
                 runtime = mb.runtime ?: cine.runtime,
-                rating = mb.rating ?: cine.rating
+                rating = mb.rating ?: cine.rating,
+                playable = true // MovieBox having no copy (hasResource=false) says nothing about Vega/4KHDHub/addons; streams() decides
             )
         }
         // No MovieBox match: 4KHDHub/Dramachi/addons may still carry it; streams() comes back empty if none do.
@@ -240,6 +280,17 @@ class MoviesRepositoryImpl @Inject constructor(
         }.getOrNull()
         else -> null
     }
+
+    override suspend fun similar(id: String): List<MediaItem> = runCatching {
+        if (BuildConfig.TMDB_API_KEY.isBlank()) return emptyList()
+        val tmdbId = if (id.startsWith("tmdb:")) id.substringAfter(':').replace(':', '/') else {
+            val tt = imdbId(id) ?: return emptyList()
+            val found = tmdb("/find/$tt?external_source=imdb_id")
+            (found["movie_results"] as? JsonArray)?.firstOrNull()?.let { "movie/${(it as JsonObject).int("id")}" }
+                ?: (found["tv_results"] as? JsonArray)?.firstOrNull()?.let { "tv/${(it as JsonObject).int("id")}" } ?: return emptyList()
+        }
+        tmdbRow("/$tmdbId/recommendations", 0).filter { it.id != id }
+    }.getOrDefault(emptyList())
 
     override suspend fun streams(id: String, season: Int, episode: Int): Result<List<MediaStream>> = safeApiCall {
         val sid: String?
@@ -335,5 +386,15 @@ class MoviesRepositoryImpl @Inject constructor(
         const val GRACE_MS = 4_000L // after the first source with streams, how long the others get before playback starts
         const val SEARCH_TIMEOUT_MS = 6_000L
         const val MAX_DUBS = 6
+
+        /** Indian Home rows, catalogKey → (title, TMDB path), in Home order. trending?region=IN ignores the region, so "New" = now playing. */
+        val TMDB_ROWS = linkedMapOf(
+            "tmdb/in-hindi" to ("Bollywood" to "/discover/movie?with_original_language=hi&region=IN&sort_by=popularity.desc&vote_count.gte=50"),
+            "tmdb/in-south" to ("South Indian hits" to "/discover/movie?with_original_language=te|ta|ml|kn&sort_by=popularity.desc&vote_count.gte=50"),
+            // drama/crime/action/mystery, no soaps/talk/reality, 2016+, rated 6+ (the low-rated tail is where erotic web series sit)
+            "tmdb/in-series" to ("Indian series" to "/discover/tv?with_origin_country=IN&with_genres=18|80|10759|9648&without_genres=10766|10767|10764" +
+                "&first_air_date.gte=2016-01-01&sort_by=popularity.desc&vote_count.gte=15&vote_average.gte=6"),
+            "tmdb/in-new" to ("New in India" to "/movie/now_playing?region=IN")
+        )
     }
 }

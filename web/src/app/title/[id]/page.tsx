@@ -3,9 +3,11 @@ import { Suspense, use, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Play } from "lucide-react";
-import { Chips, FavButton, mediaCard, Notice, pill, timeLeft } from "@/components/app";
+import { Chips, FavButton, mediaCard, Notice, pill, Row, timeLeft } from "@/components/app";
 import { EpisodeStrip, EpisodeStripSkeleton, type EpInfo } from "@/components/episode-cards";
 import { DetailHero, DetailSkeleton, SeasonNumerals } from "@/components/detail";
+import { PlayOnTv } from "@/components/play-on-tv";
+import { histMs } from "@/lib/hub";
 import { getHistory, playKey, kids, KIDS_BLOCKED, epProgress, syncHistory, watchHref, type Entry, type Play as P } from "@/lib/core";
 import { useApi, useSession } from "@/lib/session";
 
@@ -69,6 +71,7 @@ function Title({ id }: { id: string }) {
               {left && <small className="text-xs font-medium opacity-75">{left.join(" ")}</small>}
             </Link>
           )}
+          {primary && m.playable !== false && <PlayOnTv className={pill.secondary} get={() => ({ payload: resume ? play(last!.payload.season, last!.payload.episode) : series ? play(cur?.season ?? 1, 1) : play(), positionMs: resume ? histMs(last) : 0 })} />}
           <FavButton c={mediaCard(m)} />
           {audio.length > 1 && (
             <nav aria-label="Audio language" className="seg">
@@ -82,6 +85,7 @@ function Title({ id }: { id: string }) {
           seasons={<SeasonNumerals onPick={(k) => setSeason(Number(k))} cur={`Season ${cur.season}, ${cur.episodes} episode${cur.episodes === 1 ? "" : "s"}`}
             items={m.seasons.map((x: any) => ({ key: x.season, label: x.season, name: `Season ${x.season}`, on: x.season === cur.season }))} />} />
       )}
+      <Row title="More like this" path={`movies/similar?id=${encodeURIComponent(id)}&type=${m.type}&title=${encodeURIComponent(m.title)}&year=${m.year ?? ""}`} map={(d) => d.map(mediaCard)} />
     </main>
   );
 }
