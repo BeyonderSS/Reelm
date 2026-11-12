@@ -57,3 +57,15 @@ export async function channels(url = IPTV) {
 export async function aniskip(mal: string, ep: string) {
   return j(`https://api.aniskip.com/v2/skip-times/${mal}/${ep}?types[]=op&types[]=recap&types[]=ed&types[]=mixed-op&episodeLength=0`).catch(() => ({ results: [] }));
 }
+
+/** TheIntroDB (movies and series) in AniSkip's shape; endTime null = end of video. id: "tt…" or a TMDB number. */
+const INTRODB_TYPES = { intro: "op", recap: "recap", credits: "ed", preview: "preview" } as const;
+export async function introdb(id: string, season: string | null, episode: string | null) {
+  const q = new URLSearchParams(/^tt\d+$/.test(id) ? { imdb_id: id } : { tmdb_id: id });
+  if (Number(season) && Number(episode)) { q.set("season", season!); q.set("episode", episode!); }
+  const r = await fetch(`https://api.theintrodb.org/v4/media?${q}`, { headers: { "User-Agent": "Mozilla/5.0 Reelm" } });
+  if (r.status === 404) return { results: [] };
+  if (!r.ok) throw new Error(`HTTP ${r.status} from theintrodb`);
+  const d = await r.json() as Record<string, { start_ms: number | null; end_ms: number | null }[]>;
+  return { results: Object.entries(INTRODB_TYPES).flatMap(([k, skipType]) => (d[k] ?? []).map((x) => ({ skipType, interval: { startTime: (x.start_ms ?? 0) / 1000, endTime: x.end_ms == null ? null : x.end_ms / 1000 } }))) };
+}

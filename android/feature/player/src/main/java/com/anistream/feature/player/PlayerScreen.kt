@@ -171,9 +171,18 @@ fun PlayerScreen(
             onSettings = { showSettings = true },
             onRetry = viewModel::retry,
             tweaks = tweaks,
-            episodic = true,
             pip = pip,
             skips = ui.skips,
+            topAction = {
+                com.anistream.core.account.ui.PlayOnTvButton(
+                    item = { com.anistream.domain.model.WatchHistory(ui.animeSlug, ui.animeTitle, posterUrl = ui.posterUrl, lastEpisodeWatched = ui.episodeNumber, watchProgress = viewModel.player.progressFraction(), durationMs = viewModel.player.duration.coerceAtLeast(0)) },
+                    positionMs = { viewModel.player.currentPosition }, onSent = viewModel.player::pause,
+                    onPlayHere = { viewModel.player.seekTo(it); viewModel.player.play() }
+                )
+            },
+            creditsNext = ui.episodeNumbers.firstOrNull { it > ui.episodeNumber }?.let { n ->
+                { cancel -> NextEpisodeCard(ui.posterUrl, "Episode $n", ui.animeTitle, viewModel::nextEpisode, cancel, "Watch credits", CREDITS_NEXT_MS) }
+            },
             endOverlay = if (!ui.ended) null else {
                 {
                     val next = ui.episodeNumbers.firstOrNull { it > ui.episodeNumber }
@@ -226,11 +235,6 @@ fun PlayerScreen(
                 SubDubToggle(ui.language, viewModel::setLanguage)
                 PlayerTweaksSection(viewModel.player, tweaks, live = false, autoSkipToggle = true)
                 WatchTogetherSection(animePayload(ui.animeSlug, ui.animeTitle, ui.episodeNumber, ui.posterUrl))
-                com.anistream.core.account.ui.ContinueOnTvSection(
-                    history = { com.anistream.domain.model.WatchHistory(ui.animeSlug, ui.animeTitle, posterUrl = ui.posterUrl, lastEpisodeWatched = ui.episodeNumber, watchProgress = viewModel.player.progressFraction(), durationMs = viewModel.player.duration.coerceAtLeast(0)) },
-                    positionMs = { viewModel.player.currentPosition },
-                    onSent = { showSettings = false }
-                )
             }
         }
     }
@@ -325,15 +329,17 @@ internal fun VideoPlayer(
     modifier: Modifier,
     tweaks: PlayerTweaks,
     live: Boolean = false,
-    /** episodes get the "Skip intro" button in their first 5 minutes */
-    episodic: Boolean = false,
     /** picture-in-picture: video only */
     pip: Boolean = false,
     /** non-null: the error state also offers "Try web player" */
     onWebPlayer: (() -> Unit)? = null,
-    /** AniSkip intervals; non-empty replaces the fixed +85 s intro button */
+    /** AniSkip / TheIntroDB intervals: a skip button inside each; none = no button */
     skips: List<SkipInterval> = emptyList(),
-    endOverlay: (@Composable () -> Unit)? = null
+    /** a next episode exists: at credits this card (with a countdown) replaces "Skip credits"; its arg cancels it */
+    creditsNext: (@Composable (onCancel: () -> Unit) -> Unit)? = null,
+    endOverlay: (@Composable () -> Unit)? = null,
+    /** top-bar action left of Lock: "Play on TV" */
+    topAction: (@Composable () -> Unit)? = null
 ) {
     var controlsVisible by remember { mutableStateOf(true) }
     var isPlaying by remember { mutableStateOf(player.isPlaying) }
@@ -350,7 +356,7 @@ internal fun VideoPlayer(
     var showUnlock by remember { mutableStateOf(false) }
     var boosting by remember { mutableStateOf(false) }
     var hint by remember { mutableStateOf<Pair<ImageVector, String>?>(null) }
-    var introSkippedFor by remember { mutableStateOf<String?>(null) }
+    var creditsDismissed by remember { mutableStateOf<SkipInterval?>(null) }
     var skipToast by remember { mutableStateOf<String?>(null) }
     val autoSkipped = remember(title) { mutableSetOf<SkipInterval>() }
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
@@ -403,10 +409,13 @@ internal fun VideoPlayer(
 
     val showSpinner = isLoading || buffering
     val blocked = error != null || endOverlay != null
-    val showIntro = skips.isEmpty() && episodic && !live && !blocked && !locked && !pip && introSkippedFor != title &&
-        duration > INTRO_WINDOW_MS && position < INTRO_WINDOW_MS
-    // AniSkip: a button exactly inside each known interval; auto-skip jumps intro/recap once per interval
-    val skipNow = if (episodic && !live && !blocked) activeSkip(skips, position) else null
+    // a button exactly inside each known interval; auto-skip jumps intro/recap once per interval
+    val skipNow = if (!live && !blocked) activeSkip(skips, position) else null
+    val skipFresh = rememberSkipFresh(skipNow)
+    // credits: the "Next episode" card; without a next episode (movies, last episode) no button at all
+    val creditsCard = skipNow != null && skipNow.isCredits && creditsNext != null && creditsDismissed != skipNow && !isLoading && !locked && !pip
+    val showSkip = skipNow != null && !creditsCard && !locked && !pip && (skipFresh || controlsVisible) &&
+        !(skipNow.isCredits && creditsNext == null)
     LaunchedEffect(skipNow, tweaks.autoSkip) {
         val s = skipNow ?: return@LaunchedEffect
         if (tweaks.autoSkip && s.isIntroOrRecap && autoSkipped.add(s)) {
@@ -578,6 +587,7 @@ internal fun VideoPlayer(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
+                    topAction?.invoke()
                     IconButton(onClick = { locked = true; controlsVisible = false; showUnlock = true; unlockTick++ }) {
                         Icon(Icons.Rounded.Lock, contentDescription = "Lock controls", tint = Ink.high)
                     }
@@ -686,28 +696,28 @@ internal fun VideoPlayer(
             }
         }
 
-        if (showIntro || (skipNow != null && !locked && !pip)) {
+        if (showSkip && skipNow != null) {
             Text(
-                skipNow?.let { skipLabel(it.type) } ?: "Skip intro",
+                skipLabel(skipNow.type),
                 style = AppType.label.copy(color = Ink.high),
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(end = Space.lg, bottom = if (controlsVisible) 88.dp else Space.lg)
                     .clip(Radius.pill)
                     .background(Bg.overlay.copy(alpha = 0.92f))
-                    .clickable {
-                        val s = skipNow
-                        if (s != null) {
-                            player.seekTo(s.endMs)
-                            position = s.endMs
-                            interactions++
-                        } else {
-                            seekBy(INTRO_SKIP_MS)
-                            introSkippedFor = title
-                        }
-                    }
+                    .clickable { seekBy(skipNow.endMs - player.currentPosition) }
                     .padding(horizontal = Space.lg, vertical = Space.md)
             )
+        }
+
+        if (creditsCard && creditsNext != null) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = Space.lg, bottom = if (controlsVisible) 88.dp else Space.lg)
+                    .clip(Radius.lg)
+                    .background(Bg.overlay.copy(alpha = 0.92f))
+            ) { creditsNext { creditsDismissed = skipNow } }
         }
 
         val h = hint
@@ -755,7 +765,7 @@ private enum class DragMode { NONE, IGNORE, SEEK, BRIGHTNESS, VOLUME, PINCH }
  * The ring is the countdown: it runs [onNext] when it fills.
  */
 @Composable
-internal fun NextEpisodeCard(imageUrl: String?, episodeLabel: String, title: String, onNext: () -> Unit, onCancel: () -> Unit) {
+internal fun NextEpisodeCard(imageUrl: String?, episodeLabel: String, title: String, onNext: () -> Unit, onCancel: () -> Unit, cancelLabel: String = "Cancel", countdownMs: Long = UP_NEXT_MS) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(Space.lg)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(contentAlignment = Alignment.Center) {
@@ -766,7 +776,7 @@ internal fun NextEpisodeCard(imageUrl: String?, episodeLabel: String, title: Str
                     modifier = Modifier.width(112.dp).aspectRatio(16f / 9f).clip(Radius.md).background(Bg.overlay)
                 )
                 Box(Modifier.matchParentSize().clip(Radius.md).background(Scrim))
-                CountdownRing(onDone = onNext, size = 40.dp)
+                CountdownRing(onDone = onNext, size = 40.dp, durationMs = countdownMs)
             }
             Spacer(Modifier.width(Space.md))
             Column(Modifier.weight(1f, fill = false)) {
@@ -777,7 +787,7 @@ internal fun NextEpisodeCard(imageUrl: String?, episodeLabel: String, title: Str
         }
         Spacer(Modifier.height(Space.md))
         Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
-            SecondaryButton(text = "Cancel", onClick = onCancel)
+            SecondaryButton(text = cancelLabel, onClick = onCancel)
             PrimaryButton(text = "Play now", onClick = onNext)
         }
     }

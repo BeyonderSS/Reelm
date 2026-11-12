@@ -102,8 +102,18 @@ fun MediaPlayerScreen(
             onRetry = if (request == null) onBack else viewModel::retry,
             live = ui.isLive,
             tweaks = tweaks,
-            episodic = (request?.episode ?: 0) > 0,
             pip = pip,
+            skips = ui.skips,
+            topAction = request?.takeIf { !it.isLive && it.historyKey != null }?.let { r -> {
+                com.anistream.core.account.ui.PlayOnTvButton(
+                    item = { com.anistream.domain.model.WatchHistory(r.historyKey ?: "", r.title, posterUrl = r.posterUrl, totalEpisodes = r.seasonEpisodeCount, lastEpisodeWatched = r.episode, watchProgress = viewModel.player.progressFraction(), kind = "media", season = r.season, mediaId = r.mediaId, subtitle = r.subtitle, durationMs = viewModel.player.duration.coerceAtLeast(0)) },
+                    positionMs = { viewModel.player.currentPosition }, source = { ui.stream?.label() }, onSent = viewModel.player::pause,
+                    onPlayHere = { viewModel.player.seekTo(it); viewModel.player.play() }
+                )
+            } },
+            creditsNext = if (!ui.hasNextEpisode || request == null) null else { cancel ->
+                NextEpisodeCard(request.posterUrl, "Episode ${request.episode + 1}", "${request.title}, season ${request.season}", viewModel::nextEpisode, cancel, "Watch credits", CREDITS_NEXT_MS)
+            },
             onWebPlayer = if (ui.canWebPlay) viewModel::openWebPlayer else null,
             endOverlay = if (!ui.ended || request == null) null else {
                 {
@@ -192,17 +202,8 @@ fun MediaPlayerScreen(
                     .padding(horizontal = Space.lg)
                     .padding(bottom = Space.xl)
             ) {
-                Text("Source", style = AppType.heading)
-                request.streams.withIndex().groupBy { it.value.sourceName }.forEach { (source, streams) ->
-                    Spacer(Modifier.height(Space.md))
-                    Text(source, style = AppType.label.copy(color = Ink.muted), modifier = Modifier.padding(horizontal = Space.sm))
-                    streams.forEach { (i, s) ->
-                        SheetOption(s.detailLabel().ifBlank { source }, selected = i == ui.streamIndex, caption = ui.autoNote.takeIf { i == ui.autoIndex }) {
-                            viewModel.selectStream(i)
-                            showSettings = false
-                        }
-                    }
-                }
+                Text("Watch", style = AppType.heading)
+                WatchSourcesSection(viewModel) { showSettings = false }
                 if (ui.canWebPlay) {
                     Spacer(Modifier.height(Space.md))
                     SheetOption("Web player", selected = false, caption = "Last resort · opens the title in a browser player") {
@@ -222,15 +223,8 @@ fun MediaPlayerScreen(
                         }
                     }
                 }
-                PlayerTweaksSection(viewModel.player, tweaks, live = ui.isLive, streams = request.streams, onAudioLanguage = viewModel::selectAudioLanguage)
+                PlayerTweaksSection(viewModel.player, tweaks, live = ui.isLive, autoSkipToggle = !ui.isLive)
                 if (!ui.isLive) WatchTogetherSection(mediaPayload(request))
-                ui.request?.takeIf { !it.isLive && it.historyKey != null }?.let { r ->
-                    com.anistream.core.account.ui.ContinueOnTvSection(
-                        history = { com.anistream.domain.model.WatchHistory(r.historyKey ?: "", r.title, posterUrl = r.posterUrl, totalEpisodes = r.seasonEpisodeCount, lastEpisodeWatched = r.episode, watchProgress = viewModel.player.progressFraction(), kind = "media", season = r.season, mediaId = r.mediaId, subtitle = r.subtitle, durationMs = viewModel.player.duration.coerceAtLeast(0)) },
-                        positionMs = { viewModel.player.currentPosition },
-                        onSent = { showSettings = false }
-                    )
-                }
             }
         }
     }

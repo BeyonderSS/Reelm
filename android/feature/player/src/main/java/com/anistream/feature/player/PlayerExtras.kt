@@ -65,7 +65,6 @@ import com.anistream.core.ui.theme.Accent
 import com.anistream.domain.AudioLanguage
 import com.anistream.domain.model.MediaStream
 import com.anistream.domain.model.SkipInterval
-import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -125,14 +124,26 @@ const val SLEEP_END_OF_EPISODE = -1
 val SleepOptions = listOf(0, 15, 30, 60, SLEEP_END_OF_EPISODE)
 fun sleepLabel(m: Int) = when (m) { 0 -> "Off"; SLEEP_END_OF_EPISODE -> "End of episode"; else -> "$m min" }
 
-const val INTRO_WINDOW_MS = 5 * 60_000L
-const val INTRO_SKIP_MS = 85_000L
-
-/** Button label for an AniSkip interval type. */
+/** Button label for a skip interval type (AniSkip / TheIntroDB). */
 fun skipLabel(type: String) = when (type) {
     "recap" -> "Skip recap"
     "ed", "mixed-ed" -> "Skip credits"
+    "preview" -> "Skip preview"
     else -> "Skip intro"
+}
+
+/** Credits: with a next episode, the "Next episode" countdown replaces the skip button. */
+val SkipInterval.isCredits: Boolean get() = type == "ed" || type == "mixed-ed"
+
+const val CREDITS_NEXT_MS = 10_000L
+private const val SKIP_SHOW_MS = 8_000L
+
+/** True for 8 s after [skip] starts; after that the skip button only shows with the player controls. */
+@Composable
+fun rememberSkipFresh(skip: SkipInterval?): Boolean {
+    var fresh by remember(skip) { mutableStateOf(skip != null) }
+    LaunchedEffect(skip) { if (skip != null) { delay(SKIP_SHOW_MS); fresh = false } }
+    return fresh
 }
 
 /** The AniSkip interval playing at [positionMs], if any. */
@@ -435,11 +446,9 @@ internal fun Player.progressFraction(): Float = if (duration > 0) (currentPositi
 /** Phone settings-sheet section: speed, audio track, subtitle options, sleep timer. */
 @Composable
 internal fun PlayerTweaksSection(
-    player: Player, tweaks: PlayerTweaks, live: Boolean, autoSkipToggle: Boolean = false,
-    streams: List<MediaStream> = emptyList(), onAudioLanguage: ((String?) -> Unit)? = null
+    player: Player, tweaks: PlayerTweaks, live: Boolean, autoSkipToggle: Boolean = false
 ) {
     val tracks = rememberTracks(player)
-    val preferredLanguage by AudioLanguage.preferred.collectAsState()
     if (autoSkipToggle) {
         SheetHeading("Auto-skip intro and recap")
         ChoiceRow(listOf(true, false), tweaks.autoSkip, { if (it) "On" else "Off" }, tweaks::updateAutoSkip)
@@ -450,11 +459,6 @@ internal fun PlayerTweaksSection(
     }
     SheetHeading("Picture")
     ChoiceRow(Resize.entries, tweaks.resize, { it.label }, tweaks::updateResize)
-    val languages = if (onAudioLanguage == null) emptyList() else audioLanguages(streams, tracks)
-    if (onAudioLanguage != null && languages.size > 1) {
-        SheetHeading("Audio language")
-        ChoiceRow(listOf<String?>(null) + languages, preferredLanguage, { it?.let(AudioLanguage::name) ?: "Any" }, onAudioLanguage)
-    }
     val audio = audioOptions(tracks)
     if (audio.size > 1) {
         SheetHeading("Audio track")
@@ -481,7 +485,7 @@ internal fun PlayerTweaksSection(
 }
 
 @Composable
-private fun SheetHeading(text: String) {
+internal fun SheetHeading(text: String) {
     Spacer(Modifier.height(Space.xl))
     Text(text, style = AppType.heading)
     Spacer(Modifier.height(Space.sm))
@@ -489,7 +493,7 @@ private fun SheetHeading(text: String) {
 
 /** Horizontally scrolling pills; the selected one sits on haze in full mist. */
 @Composable
-private fun <T> ChoiceRow(options: List<T>, selected: T, label: (T) -> String, onPick: (T) -> Unit) {
+internal fun <T> ChoiceRow(options: List<T>, selected: T, label: (T) -> String, onPick: (T) -> Unit) {
     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
         options.forEach { o ->
             val on = o == selected

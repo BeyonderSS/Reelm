@@ -31,5 +31,8 @@ object MediaModule {
     fun provideSkipTimesRepository(impl: com.anistream.core.media.AniSkip): com.anistream.domain.repository.SkipTimesRepository = impl
 
     @Provides
+    fun provideMediaSkipTimesRepository(impl: com.anistream.core.media.TheIntroDB): com.anistream.domain.repository.MediaSkipTimesRepository = impl
+
+    @Provides
     fun provideMovieBoxSource(client: com.anistream.core.media.moviebox.MovieBoxClient): MovieBoxSource = client
 }
