@@ -1,6 +1,14 @@
 package com.anistream.feature.tv
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -90,7 +98,7 @@ fun TvMoreScreen(onOpen: (PartyDestination) -> Unit, party: PartyViewModel = hil
             error?.let { Text(it, style = TvType.body.copy(color = Accent.danger), modifier = Modifier.padding(top = 12.dp)) }
         }
         Spacer(Modifier.width(48.dp))
-        Column {
+        Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(bottom = 40.dp)) {
             Text("Reelm", style = TvType.headline)
             Text("Version ${updates.updates.versionName}", style = TvType.body.copy(color = Ink.muted))
             Spacer(Modifier.height(14.dp))
@@ -110,7 +118,30 @@ fun TvMoreScreen(onOpen: (PartyDestination) -> Unit, party: PartyViewModel = hil
                     }, selected = on)
                 }
             } } }
+            if (acct.repo.enabled) DeviceName(acct)
         }
+    }
+}
+
+/** The name phones list this TV by in "Play on TV". */
+@Composable
+private fun DeviceName(acct: TvAccountViewModel) {
+    var saved by remember { mutableStateOf(acct.repo.deviceName) }
+    var name by remember { mutableStateOf(saved) }
+    var focused by remember { mutableStateOf(false) }
+    val save = { acct.hub.rename(name); saved = acct.repo.deviceName; name = saved }
+    Spacer(Modifier.height(28.dp))
+    Text("Device name", style = TvType.headline)
+    Text("The name phones see in Play on TV.", style = TvType.body.copy(color = Ink.muted))
+    Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        BasicTextField(
+            name, { name = it.take(40) }, singleLine = true, textStyle = TvType.title, cursorBrush = SolidColor(Accent.main),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { save() }),
+            modifier = Modifier.width(320.dp).onFocusChanged { focused = it.isFocused }
+                .border(2.dp, if (focused) Accent.main else Ink.hairline, Radius.md).background(Bg.raised, Radius.md)
+                .padding(horizontal = 18.dp, vertical = 12.dp)
+        )
+        TvPill("Save", { save() }, enabled = name.isNotBlank() && name.trim() != saved)
     }
 }
 

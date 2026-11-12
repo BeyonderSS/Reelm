@@ -158,8 +158,11 @@ class HistorySync @Inject constructor(
         return h
     }
 
-    suspend fun applyHandoff(h: Handoff): WatchHistory? =
-        account.session.value?.activeProfile?.id?.let { applyPayload(it, h.payload) }
+    /** Stores the sender's row; with its length known, the progress comes from the exact [Handoff.positionMs]. */
+    suspend fun applyHandoff(h: Handoff): WatchHistory? = account.session.value?.activeProfile?.id?.let { p ->
+        val durMs = (h.payload["duration"]?.jsonPrimitive?.longOrNull ?: 0L) * 1000
+        applyPayload(p, h.payload, if (durMs > 0 && h.positionMs > 0) (h.positionMs.toFloat() / durMs).coerceIn(0f, 1f) else null)
+    }
 
     private suspend fun localRow(profile: String, key: String) = key.substringAfter(':').let { dao.getRaw(it, profile) }
 

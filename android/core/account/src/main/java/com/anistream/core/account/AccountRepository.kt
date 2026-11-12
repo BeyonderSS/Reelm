@@ -68,6 +68,14 @@ class AccountRepository @Inject constructor(
     val token: String? get() = _session.value?.token
     /** one id per install, shown to the user's other devices in the hub */
     val deviceId: String = prefs.getString("deviceId", null) ?: java.util.UUID.randomUUID().toString().also { prefs.edit().putString("deviceId", it).apply() }
+    /** TV: the name phones see in "Play on TV" (More → Device name). Survives sign out. */
+    var deviceName: String
+        get() = prefs.getString("deviceName", null)?.takeIf { it.isNotBlank() } ?: android.os.Build.MODEL ?: "Android TV"
+        set(v) { prefs.edit().putString("deviceName", v.trim().take(40)).apply() }
+    /** Phone: the TV last sent to, listed first in the picker. */
+    var lastTv: String?
+        get() = prefs.getString("lastTv", null)
+        set(v) { prefs.edit().putString("lastTv", v).apply() }
 
     init {
         val token = prefs.getString("token", null)
@@ -125,7 +133,7 @@ class AccountRepository @Inject constructor(
 
     suspend fun logout() {
         token?.let { runCatching { api.call("POST", "/v1/auth/logout", token = it) } }
-        prefs.edit().clear().putString("deviceId", deviceId).apply()
+        prefs.edit().clear().putString("deviceId", deviceId).putString("deviceName", prefs.getString("deviceName", null)).putString("lastTv", prefs.getString("lastTv", null)).apply()
         _profiles.value = emptyList()
         _session.value = null
         _isAdmin.value = false

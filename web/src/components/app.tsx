@@ -7,6 +7,7 @@ import { X, Search, Tv, Library, CalendarDays, Home, Play, Heart, ChevronLeft, C
 import { Switch } from "@/components/ui/switch";
 import { BlurFade } from "@/components/ui/blur-fade";
 import { ReelMark } from "@/components/reel";
+import { TvBar } from "@/components/play-on-tv";
 import { frac } from "@/lib/eps";
 import { avatarUrl, cardShown, continueWatching, KINDS, kindOf, shows, type Kind, type Profile, EMOJI_GROUPS, entryHref, entrySub, getFavs, kids, syncFavs, recSeeds, removeHistory, syncHistory, toggleFav, type CardData, type Entry } from "@/lib/core";
 import { useApi, useSession } from "@/lib/session";
@@ -136,9 +137,10 @@ export function Nav() {
 /** Mobile bottom tab bar (and the spacer that keeps content above it). */
 export function TabBar() {
   const { path, s, show } = useChrome();
-  if (!show) return null;
+  if (!show) return <TvBar />;
   return (
     <>
+      <TvBar raised />
       <div className="h-24 md:hidden" />
       <nav aria-label="Tabs" className="fixed inset-x-0 bottom-0 z-40 border-t border-white/6 bg-dusk/85 pb-[max(env(safe-area-inset-bottom),6px)] backdrop-blur-2xl backdrop-saturate-150 md:hidden">
         <div className="mx-auto flex max-w-lg justify-around px-1">
@@ -327,24 +329,6 @@ export function ContinueStrip({ items, onRemove }: { items: Entry[]; onRemove: (
       <ol>{items.map((e) => <Stub key={e.key} e={e} onRemove={() => onRemove(e)} />)}</ol>
     </section>
   );
-}
-
-/** "Recommended for you": TMDB + hianime picks ranked server-side (/api/recs) from this profile's history; kids profiles only see kid-safe picks. */
-export function RecommendedRow() {
-  const { s } = useSession();
-  const [items, setItems] = useState<CardData[]>([]);
-  useEffect(() => {
-    if (!s.profile) return;
-    const body = recSeeds(s.profile.id);
-    if (!body.seeds.length) return setItems([]);
-    let live = true;
-    fetch("/api/recs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, kids: !!s.profile.kids }) })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((d: CardData[]) => live && setItems(d.filter((c) => allowed(c, s.profile?.kids, s.profile))))
-      .catch(() => {});
-    return () => { live = false; };
-  }, [s.profile]);
-  return <Rail title="Recommended for you" items={items} />;
 }
 
 export function FavButton({ c }: { c: CardData }) {

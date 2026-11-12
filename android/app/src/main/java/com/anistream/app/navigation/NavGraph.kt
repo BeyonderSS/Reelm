@@ -129,6 +129,13 @@ fun AniStreamNavGraph() {
     val showBottomBar = currentRoute in bottomBarRoutes
     var showMenu by rememberSaveable { mutableStateOf(false) }
     UpdateHost()
+    // Play on TV remote; "Play here" with no player open reopens the item this phone sent
+    // (from an open player when the TV moved on to another episode: that player is replaced)
+    com.anistream.core.account.ui.TvRemoteHost(onPlayHere = { h ->
+        navController.navigate(if (h.kind == "media") Routes.movieDetail(h.detailId) else Routes.player(h.animeSlug, h.lastEpisodeWatched.coerceAtLeast(1))) {
+            if (currentRoute == Routes.PLAYER || currentRoute == Routes.MEDIA_PLAYER) navController.currentDestination?.id?.let { popUpTo(it) { inclusive = true } }
+        }
+    })
     // another member switched media: swap the player for the new one, staying in the party
     val party: PartyViewModel = hiltViewModel()
     androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -178,7 +185,8 @@ fun AniStreamNavGraph() {
         containerColor = Bg.base,
         contentWindowInsets = WindowInsets(0),
         bottomBar = {
-            if (showBottomBar) {
+            if (showBottomBar) androidx.compose.foundation.layout.Column {
+                com.anistream.core.account.ui.PlayingOnTvBar()
                 BottomNavBar(
                     currentRoute = currentRoute,
                     onNavigate = navigateToTab
@@ -316,7 +324,8 @@ fun AniStreamNavGraph() {
                 MovieDetailScreen(
                     onBack = { navController.popBackStack() },
                     onOpenPlayer = { navController.navigate(Routes.MEDIA_PLAYER) },
-                    onWebPlayer = { tt, s, e -> navController.navigate(Routes.webPlayer(tt, s, e)) }
+                    onWebPlayer = { tt, s, e -> navController.navigate(Routes.webPlayer(tt, s, e)) },
+                    onOpen = { navController.navigate(Routes.movieDetail(it)) }
                 )
             }
 

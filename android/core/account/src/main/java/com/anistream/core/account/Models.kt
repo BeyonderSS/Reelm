@@ -13,7 +13,24 @@ data class User(val id: String, val username: String)
 data class Profile(val id: String, val name: String, val avatar: String, val kids: Boolean = false, val mature: Boolean = false, val hide: Set<String> = emptySet())
 /** [activeProfile] is null until a profile is picked. */
 data class Session(val token: String, val user: User, val activeProfile: Profile?)
-data class Device(val id: String, val name: String, val kind: String)
+data class Device(val id: String, val name: String, val kind: String, val now: Now? = null)
+
+/** What a TV is playing (hub "state"). [at] = when it was reported; the position runs on from there while [playing]. */
+data class Now(
+    val title: String, val subtitle: String?, val poster: String?, val playing: Boolean,
+    val positionMs: Long, val durationMs: Long, val hasNext: Boolean, val hasPrev: Boolean, val at: Long
+) {
+    fun positionAt(t: Long) = (positionMs + if (playing) (t - at).coerceAtLeast(0) else 0).let { if (durationMs > 0) it.coerceAtMost(durationMs) else it }
+}
+
+/** A remote command for this TV's player: play, pause, toggle, seekTo / seekBy ([value] ms), next, prev, stop. */
+data class Control(val action: String, val value: Long?)
+
+/** "Living room", or "Living room · 3f9a" when two TVs share the name. */
+fun deviceLabel(d: Device, all: List<Device>): String {
+    val name = d.name.ifBlank { "TV" }
+    return if (all.count { it.name.ifBlank { "TV" } == name } > 1) "$name · ${d.id.takeLast(4)}" else name
+}
 
 internal fun str(o: JsonObject, k: String) = o[k]?.jsonPrimitive?.contentOrNull.orEmpty()
 

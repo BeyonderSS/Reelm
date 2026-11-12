@@ -250,7 +250,12 @@ fun AnimeDetailScreen(
                 enabled = uiState.episodes.isNotEmpty() || resume != null,
                 isFavorite = uiState.isFavorite,
                 onPlay = { onPlayEpisode(viewModel.slug, resume ?: firstEpisode) },
-                onFavorite = viewModel::toggleFavorite
+                onFavorite = viewModel::toggleFavorite,
+                playOnTv = {
+                    if (anime != null && uiState.episodes.isNotEmpty()) com.anistream.core.account.ui.PlayOnTvButton(
+                        item = { com.anistream.domain.model.WatchHistory(viewModel.slug, anime.title, posterUrl = anime.posterUrl, lastEpisodeWatched = resume ?: firstEpisode) }, circle = true
+                    )
+                }
             )
         }
     }
@@ -640,7 +645,8 @@ private fun BoxScope.ActionBar(
     enabled: Boolean,
     isFavorite: Boolean,
     onPlay: () -> Unit,
-    onFavorite: () -> Unit
+    onFavorite: () -> Unit,
+    playOnTv: @Composable () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     val heartScale = remember { Animatable(1f) }
@@ -669,6 +675,7 @@ private fun BoxScope.ActionBar(
             trailing = downloadTrailing,
             modifier = Modifier.weight(1f)
         ) else Spacer(Modifier.weight(1f))
+        playOnTv()
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier

@@ -172,7 +172,7 @@ export async function syncFavs(pid: string, token: string) {
 const hKey = (pid: string) => `reelm.hist.${pid}`;
 const rawHist = (pid: string) => ls.get<Record<string, Entry>>(hKey(pid), {});
 /** The payload an entry carries: the web `Play` plus the fields Android's HistoryPayload.decode reads (`secs` = real length, for "N min left"). */
-const wire = (p: Play, position: number, duration: number, eps?: Eps, secs?: number): Play => ({
+export const wire = (p: Play, position: number, duration: number, eps?: Eps, secs?: number): Play => ({
   ...p, slug: p.kind === "anime" ? p.id : playKey(p).slice(6), mediaId: p.id, kind: p.kind === "anime" ? "anime" : "media", episode: p.kind === "anime" ? p.ep : p.episode,
   progress: frac(position, duration), subtitle: entrySub(p), ...(secs ? { duration: Math.round(secs) } : {}), ...(eps && Object.keys(eps).length ? { eps } : {}),
 } as any);

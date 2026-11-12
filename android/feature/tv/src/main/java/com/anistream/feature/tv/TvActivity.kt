@@ -67,6 +67,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
+import com.anistream.core.account.HandoffHint
 import com.anistream.domain.ContentPrefs
 import com.anistream.feature.home.HomeViewModel
 import com.anistream.feature.movies.MoviesHomeViewModel
@@ -144,12 +145,20 @@ private fun TvApp() {
     val session by acct.session.collectAsStateWithLifecycle()
     val profileId = session?.activeProfile?.id
 
-    // Continue on TV: same destination a Continue Watching tap opens, resuming at the phone's progress
+    // Play on TV: autoplay goes straight into the player at the phone's position (movies/series via their detail
+    // page, which resolves the streams); a player already open is replaced. Without autoplay: the Continue Watching destination.
     LaunchedEffect(Unit) {
         acct.hub.handoffs.collect { h ->
             val row = acct.applyHandoff(h) ?: return@collect
-            if (row.kind == "media") nav.navigate(TvRoutes.movie(row.detailId))
-            else nav.navigate(TvRoutes.player(row.animeSlug, row.lastEpisodeWatched.coerceAtLeast(1)))
+            HandoffHint.positionMs = h.positionMs.takeIf { h.autoplay }
+            HandoffHint.source = h.source.takeIf { h.autoplay }
+            HandoffHint.autoplay = (row.season to row.lastEpisodeWatched).takeIf { h.autoplay && row.kind == "media" }
+            val inPlayer = nav.currentDestination?.route.let { it == TvRoutes.MEDIA_PLAYER || it?.startsWith("player/") == true }
+            nav.navigate(if (row.kind == "media") TvRoutes.movie(row.detailId) else TvRoutes.player(row.animeSlug, row.lastEpisodeWatched.coerceAtLeast(1))) {
+                if (inPlayer) nav.currentDestination?.id?.let { popUpTo(it) { inclusive = true } }
+            }
+            // a detail page opened only to resolve the autoplay: its player replaces it, so Stop returns to where the TV was
+            if (h.autoplay && row.kind == "media") nav.currentBackStackEntry?.savedStateHandle?.set("handoff", true)
         }
     }
     // a profile switch or a history pull changes Continue Watching
@@ -192,8 +201,10 @@ private fun TvApp() {
                     onOpen = { nav.navigate(TvRoutes.anime(it)) }
                 )
             }
-            composable("movie/{id}") {
-                TvMovieDetailScreen(onPlayer = { nav.navigate(TvRoutes.MEDIA_PLAYER) }, onWebPlayer = { tt, s, e -> nav.navigate(TvRoutes.web(tt, s, e)) })
+            composable("movie/{id}") { entry ->
+                TvMovieDetailScreen(onPlayer = {
+                    nav.navigate(TvRoutes.MEDIA_PLAYER) { if (entry.savedStateHandle.remove<Boolean>("handoff") == true) popUpTo(entry.destination.id) { inclusive = true } }
+                }, onWebPlayer = { tt, s, e -> nav.navigate(TvRoutes.web(tt, s, e)) }, onOpen = { nav.navigate(TvRoutes.movie(it)) })
             }
             composable("player/{slug}/{episode}") { TvAnimePlayerScreen(onExit = { nav.popBackStack() }) }
             composable(TvRoutes.MEDIA_PLAYER) {
