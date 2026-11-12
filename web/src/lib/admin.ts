@@ -14,7 +14,8 @@ export function fixtureMode() {
 }
 
 export async function adminGet<T>(path: string, token?: string): Promise<T> {
-  if (process.env.NODE_ENV !== "production" && fixtureMode()) return (await import("./admin-fixtures")).fixture(path) as T;
+  if (process.env.NODE_ENV !== "production" && fixtureMode())
+    return (path.startsWith("providers") ? (await import("./admin-provider-fixtures")).providerFixture(path) : (await import("./admin-fixtures")).fixture(path)) as T;
   return reelm<T>(`/v1/admin/${path}`, { token });
 }
 
@@ -44,6 +45,9 @@ export function adminAct<T = any>(token: string | undefined, path: string, metho
   return reelm<T>(`/v1/admin/${path}`, { method, token, json: method === "POST" ? {} : undefined });
 }
 
+export type ProviderDiff = { from: string; to: string; provider: string; files: { filename: string; status: string; additions: number; deletions: number; patch?: string }[]; commits: { sha: string; message: string; date: string | null; author: string | null }[] };
+/** GET /v1/admin/providers/diff?provider=: readable `providers/<slug>/*.ts` diffs (dist/ listed without patch) and the commits between pinned and upstream. */
+export const adminProviderDiff = (token: string | undefined, provider: string) => adminGet<ProviderDiff>(`providers/diff?provider=${encodeURIComponent(provider)}`, token);
 /** POST /v1/admin/providers {commit?, enabled?}: approve the pinned provider commit and/or the enabled list. */
 export const adminPin = (token: string | undefined, json: { commit?: string; enabled?: string[] }) =>
   reelm<{ commit: string; enabled: string[]; approvedBy: string; approvedAt: number }>("/v1/admin/providers", { method: "POST", token, json });

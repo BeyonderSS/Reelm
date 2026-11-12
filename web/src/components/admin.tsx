@@ -25,6 +25,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { adminAct, adminCreate, adminGet, adminPin, useAdmin } from "@/lib/admin";
+import { HelperMissing, ProviderReview, UpdateTest, Verdict, helperReady, startTest, stopTest, testRun, useUpdateTests, verdict } from "@/components/admin-provider-review";
 import { useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
@@ -815,15 +816,19 @@ const REPO = "https://github.com/Zenda-Cross/vega-providers";
 function Providers() {
   const { s } = useSession();
   const [busy, setBusy] = useState(false), [sel, setSel] = useState<string[] | null>(null), [ask, setAsk] = useState(false), [hideOff, setHideOff] = useState(true);
+  const [view, setView] = useState<string | null>(null), [noHelper, setNoHelper] = useState(false), [anyway, setAnyway] = useState(false);
+  useUpdateTests();
   const run = async (reload: () => void, json: { commit?: string; enabled?: string[] }, ok: string) => {
     setBusy(true);
-    try { await adminPin(s.token, json); toast.success(ok); setSel(null); setAsk(false); reload(); } catch (e: any) { toast.error(e.message ?? "Couldn't save"); } finally { setBusy(false); }
+    try { await adminPin(s.token, json); toast.success(ok); setSel(null); setAsk(false); setAnyway(false); reload(); } catch (e: any) { toast.error(e.message ?? "Couldn't save"); } finally { setBusy(false); }
   };
   return (
     <Section path="providers" title="Providers" desc="Apps only run provider code from the commit approved here. Review upstream changes, then approve the update.">
       {(d: any, reload) => {
         const p = d.pinned, up = d.upstream, enabled: string[] = sel ?? p.enabled, behind = d.behind ?? 0;
         const toggle = (v: string) => setSel(enabled.includes(v) ? enabled.filter((x) => x !== v) : [...enabled, v]);
+        const test = up ? testRun(up.commit) : null, v = test && verdict(test);
+        const runTest = () => { if (!helperReady()) return setNoHelper(true); setNoHelper(false); startTest(p.commit, up.commit, p.enabled, (d.changed ?? []).map((c: any) => c.provider)); };
         return (
           <div className="grid gap-4 lg:grid-cols-2">
             {d.error && <Panel title="GitHub unavailable" className="lg:col-span-2"><Empty>{d.error}. The pinned version below is still served to apps.</Empty></Panel>}
@@ -832,27 +837,39 @@ function Providers() {
               <p className="mt-1 text-sm text-foreground/64">Approved by {p.approvedBy ?? "unknown"}, {ago(p.approvedAt)}</p>
             </Panel>
             {up && (
-              <Panel title="Upstream" hint="latest on main" action={<a href={d.compareUrl} target="_blank" rel="noreferrer" className="text-sm text-primary hover:underline">View changes</a>}>
+              <Panel title="Upstream" hint="latest on main" action={<span className="flex items-center gap-3 text-sm">{behind > 0 && <button onClick={() => setView("all")} className="beam h-8 rounded-full bg-white/8 px-3.5 font-medium hover:bg-white/12">Review changes</button>}
+                <a href={d.compareUrl} target="_blank" rel="noreferrer" className="text-xs text-foreground/56 hover:text-primary hover:underline">Open on GitHub</a></span>}>
                 <a href={`${REPO}/commit/${up.commit}`} target="_blank" rel="noreferrer" className="font-mono text-lg font-semibold hover:underline">{up.commit.slice(0, 7)}</a>
                 <p className="mt-1 truncate text-sm text-foreground/64">{up.message}</p>
                 <p className="mt-1 text-xs text-foreground/48">{up.date ? ago(up.date) : ""}{behind ? `, ${behind} commit${behind === 1 ? "" : "s"} behind` : ", up to date"}</p>
-                {behind > 0 && <button onClick={() => setAsk(true)} disabled={busy} className="beam mt-4 h-10 rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground disabled:opacity-60">Approve update</button>}
+                {behind > 0 && <div className="mt-4 flex flex-wrap gap-2">
+                  <button onClick={() => setAsk(true)} disabled={busy} className="beam h-10 rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground disabled:opacity-60">Approve update</button>
+                  {test?.running ? <button onClick={stopTest} className="beam h-10 rounded-full bg-white/8 px-5 text-sm font-medium hover:bg-white/12">Stop test</button>
+                    : <button onClick={runTest} className="beam h-10 rounded-full bg-white/8 px-5 text-sm font-medium hover:bg-white/12">{test ? "Test again" : "Test update"}</button>}
+                </div>}
+                {noHelper && <div className="mt-3"><HelperMissing /></div>}
                 <Dialog open={ask} onOpenChange={(o) => !busy && setAsk(o)}>
                   <DialogContent className="rounded-[24px] border-white/8 bg-haze">
                     <DialogHeader><DialogTitle className="font-display text-xl">Approve update</DialogTitle>
                       <DialogDescription>Apps will start running provider code from {up.commit.slice(0, 7)}. Review the changes first. Approve?</DialogDescription></DialogHeader>
+                    {test ? <Verdict run={test} /> : <p className="rounded-xl bg-white/4 px-4 py-3 text-sm text-foreground/60">Not tested yet. &ldquo;Test update&rdquo; runs the providers at both commits from this browser first.</p>}
+                    {!!v?.broke.length && <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={anyway} onChange={(e) => setAnyway(e.target.checked)} className="mt-0.5 size-4 accent-[#F2B45A]" />
+                      I understand {v.broke.length} provider{v.broke.length === 1 ? "" : "s"} stopped working in this update and want to approve anyway.</label>}
                     <DialogFooter>
                       <button onClick={() => setAsk(false)} disabled={busy} className="beam h-10 rounded-full px-5 text-sm hover:bg-white/8">Cancel</button>
-                      <button onClick={() => run(reload, { commit: up.commit }, `Pinned ${up.commit.slice(0, 7)}`)} disabled={busy} className="beam h-10 rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground disabled:opacity-60">{busy ? "Approving" : "Approve"}</button>
+                      <button onClick={() => run(reload, { commit: up.commit }, `Pinned ${up.commit.slice(0, 7)}`)} disabled={busy || (!!v?.broke.length && !anyway)} className="beam h-10 rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground disabled:opacity-60">{busy ? "Approving" : "Approve"}</button>
                     </DialogFooter>
                   </DialogContent>
                 </Dialog>
               </Panel>
             )}
+            {up && test && <Panel title="Update test" hint="each provider at the pinned and upstream commit, from this browser" className="lg:col-span-2"><UpdateTest run={test} /></Panel>}
+            {up && <ProviderReview view={view} setView={setView} d={d} />}
             {up && (
-              <Panel title="Changed providers" hint="dist/ files between pinned and upstream" className="lg:col-span-2">
+              <Panel title="Changed providers" hint="dist/ files between pinned and upstream. Click one to review its changes" className="lg:col-span-2">
                 {d.changed?.length ? <ul className="divide-y divide-white/6">{d.changed.map((c: any) => (
-                  <li key={c.provider} className="flex items-center gap-3 py-2.5 text-sm">
+                  <li key={c.provider} onClick={() => setView(c.provider)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), setView(c.provider))} role="button" tabIndex={0}
+                    className="-mx-2 flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2.5 text-sm hover:bg-white/4">
                     <span className={cn("size-2 shrink-0 rounded-full", p.enabled.includes(c.provider) ? "bg-primary" : "bg-white/20")} />
                     <span className={cn("font-medium", p.enabled.includes(c.provider) && "text-primary")}>{c.provider}</span>
                     <span className="text-xs text-foreground/48">{c.status}, {c.files.length} file{c.files.length === 1 ? "" : "s"}</span>
