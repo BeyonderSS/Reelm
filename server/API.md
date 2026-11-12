@@ -46,6 +46,11 @@ Entry: `{key, payload, updatedAt, deleted}`. `key` is the canonical title key, s
 Hello on connect: `{type:"hello", deviceId, deviceName, kind:"phone"|"tv"}` → server broadcasts `{type:"devices", devices:[…]}`.
 - Continue on TV: `{type:"handoff", to:deviceId, profileId, playback:{payload, position}}` → delivered to that device,
   which opens the player at `position`.
+  `playback` may also carry `positionMs` (ms; receivers fall back to legacy `position`), `autoplay:true` (go straight into the player) and `source` (label hint, e.g. "Vega · VegaMovies 1080p").
+- Remote: `{type:"control", to:deviceId, action:"play"|"pause"|"toggle"|"seekTo"|"seekBy"|"next"|"prev"|"stop", value?:ms}` → relayed to that device with `from` added.
+  Unknown `action` or a non-finite `value` is dropped. Not logged.
+- Now playing: a TV sends `{type:"state", now:null | {title≤120, subtitle?≤120, poster?, playing, positionMs, durationMs, hasNext, hasPrev, at}}`.
+  The server sanitizes it, keeps it in that socket's attachment (so `devices` entries carry `now`) and broadcasts `{type:"state", from:deviceId, now}` to the other sockets. Not logged.
 - `{type:"history", profileId}` is broadcast after a history PUT so other devices pull immediately.
 
 ## Watch together (Durable Object `Room`, keyed by room code; no account needed)
@@ -66,6 +71,25 @@ Hello on connect: `{type:"hello", deviceId, deviceName, kind:"phone"|"tv"}` → 
   At most 20 events per call and 30 per user per minute (`429` beyond). Clients batch and flush every 60 s; `heartbeat` = one per minute of playback.
 - The server also logs its own events (register, login, login_failed, logout, active (once a day), profile_*, history_push {count},
   pair_start/claim, room_create/join/load, hub_connect, handoff, admin_*) into the D1 `events` table.
+
+## Recommendations (Reelm's own collaborative filtering)
+- `GET /v1/recs?profile=<id>&limit=30` (Bearer; profile must be the caller's, else `404`; `limit` 1–100) →
+  ```
+  { items:   [{ item, score, because, becauseTitle, payload }],   // best first, at most `limit`
+    popular: [{ item, score, viewers, payload }],                  // ≤20, only titles with ≥3 viewers this week (else [])
+    coverage:{ seeds, related_items }, confidence }                // confidence = min(1, related_items/50)
+  ```
+  `item` is the canonical history key (`anime:<slug>` / `media:<movie|series>:<normtitle>`), `because` the seed key that
+  contributed most and `becauseTitle` its title. `payload` = `{kind, id, slug, mediaId, title, poster, type, year}` (any may be null;
+  same field names as history payloads, so `toPlay`/HistoryPayload parsing opens it; no per-viewer progress). Anything in the profile's
+  history (tombstones too) is excluded; `hide` kinds are dropped; kids profiles only get titles a kids profile has watched; profiles
+  without `mature` lose titles matching the MaturePolicy adult-title list. `Cache-Control: private, max-age=300`.
+  Clients blend by `confidence` (few co-viewers → lean on their own rows / popular).
+- Model, rebuilt nightly (cron `17 3 * * *`) and by `POST /v1/admin/recs/rebuild` (admin) → `{items, related, popular, ms}` (logs `recs_rebuild`):
+  history rows (non-deleted, canonical keys, last 365 days, each profile's latest 200), weight `0.3 + 0.7·completion`;
+  `related(item, other)` = `Σ_p w_pi·w_pj / sqrt(n_i·n_j)` over profiles that watched both, needs ≥2 co-viewers, top 30 per item;
+  `popular` = viewers in the last 7 days, each weighted `0.5^(age/2 days)`. Per-request seeds: the profile's top 30 rows by
+  `completion · 0.5^(days/30)`; candidate score = `Σ seed weight · related.score`.
 
 ## Admin (Bearer token of a user with `users.is_admin = 1`, else `403`)
 - `GET /v1/admin/overview` → `{totals:{users, profiles, devices, history, activeRooms, watchingNow, onlineNow}, daily:[{day, signups, dau, wau}]×30, topTitles, sources, codecs}`
@@ -89,6 +113,8 @@ Hello on connect: `{type:"hello", deviceId, deviceName, kind:"phone"|"tv"}` → 
 - `GET /v1/sources` (public, `Cache-Control: public, max-age=300`) → `{vega:{commit, enabled:[slug], base:"https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@<commit>/dist"}}`. Files load from `<base>/<provider>/<file>.js`.
 - `GET /v1/admin/providers` (admin; `/v1/admin/sources` is already the playback-stats route) → `{pinned:{commit, enabled, approvedBy, approvedAt}, upstream:{commit, date, message}, behind, changed:[{provider, files, status}], compareUrl, manifest:[{value, name, type, version, disabled}]}`.
   `upstream` is GitHub main (cached 5 min), `changed` = dist/ providers differing from the pin, `manifest` is read at the pinned commit. If GitHub fails: `{pinned, error}` (still `200`).
+- `GET /v1/admin/providers/diff?provider=<slug>` (admin) → `{from, to, provider, files:[{filename, status, additions, deletions, patch?}], commits:[{sha, message, date, author}]}`: pin..upstream main for one provider.
+  `providers/<slug>/` files (readable source) carry `patch`; `dist/<slug>/` (minified) are listed without it. Bad slug `400`; GitHub failure `{error}` (still `200`).
 - `POST /v1/admin/providers` `{commit?, enabled?}` (admin) → the new `pinned`. `commit` must be a 40-hex sha, `enabled` up to 80 slugs `[a-zA-Z0-9_-]{1,40}` (else `400`). Logs `admin_sources`.
 
 ## App updates

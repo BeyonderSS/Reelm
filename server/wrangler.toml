@@ -27,3 +27,7 @@ new_sqlite_classes = ["UserHub", "Room"]
 ASSET_LINKS = ""
 # Cloudflare account for the admin Ops page (not a secret). Pair with `wrangler secret put CF_ANALYTICS_TOKEN`.
 CF_ACCOUNT_ID = "9a6eaa08a8e3639bdda2ac99eb374ab5"
+
+# Nightly collaborative-filtering rebuild (scheduled() in src/index.ts).
+[triggers]
+crons = ["17 3 * * *"]

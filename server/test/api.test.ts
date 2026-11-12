@@ -110,6 +110,32 @@ describe("history", () => {
   });
 });
 
+describe("hub remote", () => {
+  it("relays control with from, drops bad actions, and carries state.now in devices", async () => {
+    const u = await signup();
+    const open = (id: string, kind: string) => {
+      const ws = ({} as any); const msgs: any[] = [];
+      return call(`/v1/hub?token=${u.token}`, { headers: { Upgrade: "websocket" } }).then((r) => {
+        const w = r.webSocket!; w.accept(); w.addEventListener("message", (m: MessageEvent) => msgs.push(JSON.parse(m.data as string)));
+        w.send(JSON.stringify({ type: "hello", deviceId: id, deviceName: id, kind })); return Object.assign(ws, { w, msgs });
+      });
+    };
+    const tv = await open("tv1", "tv"), ph = await open("ph1", "phone");
+    const wait = () => new Promise((r) => setTimeout(r, 50));
+    await wait();
+    ph.w.send(JSON.stringify({ type: "control", to: "tv1", action: "seekBy", value: -10000 }));
+    ph.w.send(JSON.stringify({ type: "control", to: "tv1", action: "explode" }));
+    tv.w.send(JSON.stringify({ type: "state", now: { title: "x".repeat(500), playing: true, positionMs: 5, durationMs: 9, hasNext: true, hasPrev: false, at: 1 } }));
+    await wait();
+    expect(tv.msgs.filter((m: any) => m.type === "control")).toEqual([{ type: "control", to: "tv1", action: "seekBy", value: -10000, from: "ph1" }]);
+    const st = ph.msgs.find((m: any) => m.type === "state");
+    expect(st.from).toBe("tv1");
+    expect(st.now.title).toHaveLength(120);
+    const ph2 = await open("ph2", "phone"); await wait();
+    expect(ph2.msgs.find((m: any) => m.type === "devices").devices.find((d: any) => d.deviceId === "tv1").now.playing).toBe(true);
+  });
+});
+
 describe("favorites", () => {
   it("is last-write-wins with tombstones, since, and owner-only", async () => {
     const u = await signup(), other = await signup();

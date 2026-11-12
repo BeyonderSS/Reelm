@@ -119,7 +119,7 @@ const KINDS = ["anime", "movies", "series", "live"];
 // hide: kinds of content this profile doesn't want to see; at least one kind must stay on
 const hideList = (v: unknown): string[] => {
   if (!Array.isArray(v) || v.some((k) => !KINDS.includes(k))) fail(400, "invalid hide");
-  const out = KINDS.filter((k) => v.includes(k));
+  const out = KINDS.filter((k) => (v as string[]).includes(k));
   return out.length < KINDS.length ? out : fail(400, "Keep at least one kind of content");
 };
 const str = (v: unknown, max: number, what: string) =>
@@ -748,6 +748,34 @@ async function adminProviders(c: Ctx) {
     return json({ pinned, manifest, error: String(e?.message ?? e) });
   }
 }
+const diffCache = new Map<string, any>(); // ponytail: per-isolate, keyed by (from,to) shas which are immutable; cleared when large
+/** GET /v1/admin/providers/diff?provider=slug: readable source changes (providers/<slug>/) between the pin and upstream main. */
+async function adminProviderDiff(c: Ctx) {
+  await admin(c);
+  const provider = new URL(c.req.url).searchParams.get("provider") ?? "";
+  if (!/^[a-zA-Z0-9_-]{1,40}$/.test(provider)) return fail(400, "provider required");
+  const pinned = await getPin(c.env.DB), tok = c.env.GITHUB_TOKEN;
+  try {
+    let to = upstreamCache && now() - upstreamCache.at <= 5 * 60_000 ? upstreamCache.v.commit : null;
+    if (!to) to = (await gh(`https://api.github.com/repos/${VEGA}/commits/main`, tok)).sha;
+    const key = `${pinned.commit}...${to}`;
+    let cmp = diffCache.get(key);
+    if (!cmp) {
+      cmp = await gh(`https://api.github.com/repos/${VEGA}/compare/${key}`, tok);
+      if (diffCache.size > 20) diffCache.clear();
+      diffCache.set(key, cmp);
+    }
+    const files = (cmp.files ?? []).filter((f: any) => f.filename.startsWith(`providers/${provider}/`) || f.filename.startsWith(`dist/${provider}/`))
+      .map((f: any) => {
+        const src = f.filename.startsWith("providers/");
+        return { filename: f.filename, status: f.status, additions: f.additions, deletions: f.deletions, ...(src && f.patch ? { patch: f.patch } : {}) };
+      });
+    const commits = (cmp.commits ?? []).map((k: any) => ({ sha: k.sha, message: String(k.commit?.message ?? "").split("\n")[0], date: k.commit?.committer?.date ?? null, author: k.commit?.author?.name ?? k.author?.login ?? null }));
+    return json({ from: pinned.commit, to, provider, files, commits });
+  } catch (e: any) {
+    return json({ error: String(e?.message ?? e) });
+  }
+}
 /** POST /v1/admin/providers {commit?, enabled?}: approve a pinned commit and/or the enabled provider list. */
 async function adminSetProviders(c: Ctx) {
   const me = await admin(c), b = await body(c.req), cur = await getPin(c.env.DB);
@@ -759,6 +787,79 @@ async function adminSetProviders(c: Ctx) {
     .bind(commit, JSON.stringify(enabled), me.username, t).run();
   await logEvent(c.env, c.req, "admin_sources", me.id, { commit, enabled, was: cur.commit });
   return json({ commit, enabled, approvedBy: me.username, approvedAt: t });
+}
+
+// ---- recommendations: item-item collaborative filtering over synced history ----
+// Only canonical title keys (`anime:<slug>`, `media:<movie|series>:<normtitle>`); legacy per-episode keys are skipped.
+const REC_KEYS = `deleted = 0 AND json_valid(payload) AND ((key GLOB 'anime:?*' AND key NOT GLOB 'anime:*:*') OR key GLOB 'media:movie:?*' OR key GLOB 'media:series:?*')`;
+const COMPLETION = "MIN(1.0, MAX(0.0, CASE WHEN duration > 0 THEN position * 1.0 / duration ELSE 0 END))";
+const pj = (f: string) => `json_extract(payload, '$.${f}')`;
+const CARD = `json_object('kind', ${pj("kind")}, 'id', ${pj("id")}, 'slug', ${pj("slug")}, 'mediaId', ${pj("mediaId")},
+  'title', COALESCE(${pj("title")}, ${pj("animeTitle")}), 'poster', COALESCE(${pj("poster")}, ${pj("posterUrl")}), 'type', ${pj("type")}, 'year', ${pj("year")})`;
+
+/** Nightly (cron) and POST /v1/admin/recs/rebuild: recompute related, popular and item_meta in one transaction. */
+export async function rebuildRecs(env: Env) {
+  const t = now(), db = env.DB;
+  // ponytail: one SQL statement does the whole pair self-join; split by item hash ranges if it nears D1's per-query time limit.
+  const res = await db.batch([
+    db.prepare("DELETE FROM item_meta"),
+    db.prepare(`INSERT INTO item_meta (item, kind, payload, updated_at, kids)
+      SELECT key, CASE WHEN key GLOB 'anime:*' THEN 'anime' WHEN key GLOB 'media:series:*' THEN 'series' ELSE 'movies' END, card, updated_at, kids
+      FROM (SELECT key, ${CARD} card, updated_at, MAX(pr.kids) OVER (PARTITION BY key) kids, ROW_NUMBER() OVER (PARTITION BY key ORDER BY updated_at DESC) rn
+        FROM history JOIN profiles pr ON pr.id = profile_id WHERE ${REC_KEYS} AND updated_at > ?) WHERE rn = 1`).bind(t - 365 * DAY),
+    db.prepare("DELETE FROM related"),
+    db.prepare(`WITH h AS (SELECT profile_id p, key item, 0.3 + 0.7 * ${COMPLETION} w, ROW_NUMBER() OVER (PARTITION BY profile_id ORDER BY updated_at DESC) rn
+          FROM history WHERE ${REC_KEYS} AND updated_at > ?),
+        cnt AS (SELECT item, COUNT(*) n FROM h WHERE rn <= 200 GROUP BY item HAVING COUNT(*) >= 2),
+        v AS (SELECT p, item, w FROM h JOIN cnt USING (item) WHERE rn <= 200),
+        pairs AS (SELECT a.item i, b.item j, SUM(a.w * b.w) s, COUNT(*) n FROM v a JOIN v b ON a.p = b.p AND a.item <> b.item
+          GROUP BY a.item, b.item HAVING COUNT(*) >= 2),
+        scored AS (SELECT i, j, pairs.s / sqrt(ci.n * cj.n) score, pairs.n n FROM pairs JOIN cnt ci ON ci.item = i JOIN cnt cj ON cj.item = j),
+        ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY i ORDER BY score DESC) r FROM scored)
+      INSERT INTO related (item, other, score, n) SELECT i, j, score, n FROM ranked WHERE r <= 30`).bind(t - 365 * DAY),
+    db.prepare("DELETE FROM popular"),
+    // each viewer in the last 7 days counts 1, halving every 2 days of age
+    db.prepare(`INSERT INTO popular (item, score, viewers, meta)
+      SELECT key, SUM(pow(0.5, (? - MIN(updated_at, ?)) / ?)), COUNT(*), (SELECT payload FROM item_meta WHERE item = key)
+      FROM history WHERE ${REC_KEYS} AND updated_at > ? GROUP BY key`).bind(t, t, 2 * DAY, t - 7 * DAY),
+  ]);
+  const out = { items: res[1].meta.changes, related: res[3].meta.changes, popular: res[5].meta.changes, ms: now() - t };
+  await logEvent(env, null, "recs_rebuild", null, out);
+  return out;
+}
+
+async function adminRebuildRecs(c: Ctx) {
+  await admin(c);
+  return json(await rebuildRecs(c.env));
+}
+
+// Mirrors android MaturePolicy's title lists: payloads carry no genres, so a title is all the server can check.
+const ADULT_TITLE = /\b(rape|porn|porno|xxx|nude|erotic|hentai|orgy|gang ?bang)\b|\b(gand+i+ baat|charmsukh|palang ?tod|kavita bhabhi|mastram|rasbhari)/i;
+const SEEDS = `WITH s AS (SELECT key, ${COMPLETION} * pow(0.5, (? - MIN(updated_at, ?)) / ?) w FROM history
+  WHERE profile_id = ? AND deleted = 0 AND duration > 0 AND position > 0 ORDER BY w DESC LIMIT 30)`;
+
+/** GET /v1/recs?profile=<id>&limit=30: "because you watched" picks for one profile, plus popular this week. */
+async function getRecs(c: Ctx) {
+  const u = await auth(c);
+  const p: any = await ownProfile(c, u, c.url.searchParams.get("profile") ?? "");
+  const limit = clampInt(c.url.searchParams.get("limit"), 30, 100) || 30, db = c.env.DB, t = now();
+  const seeds = [t, t, 30 * DAY, p.id];
+  const [cand, pop, [cov]] = await rows(db,
+    q(db, `${SEEDS} SELECT r.other item, SUM(s.w * r.score) score, MAX(s.w * r.score) top, s.key because, sm.payload because_payload, m.kind, m.kids, m.payload
+      FROM s JOIN related r ON r.item = s.key JOIN item_meta m ON m.item = r.other LEFT JOIN item_meta sm ON sm.item = s.key
+      WHERE r.other NOT IN (SELECT key FROM history WHERE profile_id = ?) GROUP BY r.other ORDER BY score DESC LIMIT 300`, ...seeds, p.id),
+    q(db, `SELECT p.item, p.score, p.viewers, m.kind, m.kids, m.payload FROM popular p JOIN item_meta m ON m.item = p.item
+      WHERE p.viewers >= 3 AND p.item NOT IN (SELECT key FROM history WHERE profile_id = ?) ORDER BY p.score DESC LIMIT 200`, p.id),
+    q(db, `${SEEDS} SELECT (SELECT COUNT(*) FROM s WHERE w > 0) seeds, COUNT(DISTINCT r.other) related_items
+      FROM s JOIN related r ON r.item = s.key WHERE r.other NOT IN (SELECT key FROM history WHERE profile_id = ?)`, ...seeds, p.id));
+  const hide: string[] = JSON.parse(p.hide || "[]");
+  const ok = (r: any) => !hide.includes(r.kind) && (!p.kids || r.kids) && (p.mature && !p.kids || !ADULT_TITLE.test(JSON.parse(r.payload).title ?? ""));
+  const items = cand.filter((r: any) => r.score > 0 && ok(r)).slice(0, limit).map((r: any) => ({
+    item: r.item, score: r.score, because: r.because, becauseTitle: r.because_payload ? JSON.parse(r.because_payload).title ?? null : null, payload: JSON.parse(r.payload),
+  }));
+  const popular = pop.filter(ok).slice(0, 20).map((r: any) => ({ item: r.item, score: r.score, viewers: r.viewers, payload: JSON.parse(r.payload) }));
+  return json({ items, popular, coverage: { seeds: cov.seeds, related_items: cov.related_items }, confidence: Math.min(1, cov.related_items / 50) },
+    200, { "Cache-Control": "private, max-age=300" });
 }
 
 // ---- router -------------------------------------------------------------
@@ -785,7 +886,10 @@ const routes: [string, RegExp, (c: Ctx) => Response | Promise<Response>][] = [
   ["GET", /^\/v1\/admin\/ops$/, adminOps],
   ["GET", /^\/v1\/sources$/, publicSources],
   ["GET", /^\/v1\/admin\/providers$/, adminProviders],
+  ["GET", /^\/v1\/admin\/providers\/diff$/, adminProviderDiff],
   ["POST", /^\/v1\/admin\/providers$/, adminSetProviders],
+  ["POST", /^\/v1\/admin\/recs\/rebuild$/, adminRebuildRecs],
+  ["GET", /^\/v1\/recs$/, getRecs],
   ["DELETE", /^\/v1\/admin\/sessions\/([0-9a-f]{64})$/, adminRevokeSession],
   ["GET", /^\/v1\/profiles$/, listProfiles],
   ["POST", /^\/v1\/profiles$/, createProfile],
@@ -876,6 +980,9 @@ export default {
     for (const [k, v] of Object.entries(CORS)) res.headers.set(k, v);
     return res;
   },
+  async scheduled(_e: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(rebuildRecs(env));
+  },
 };
 
 // ---- Durable Objects ----------------------------------------------------
@@ -887,7 +994,19 @@ function upgrade(state: DurableObjectState) {
   return { client, server };
 }
 
-type Device = { deviceId: string; deviceName: string; kind: string };
+type Now = { title: string; subtitle?: string; poster?: string; playing: boolean; positionMs: number; durationMs: number; hasNext: boolean; hasPrev: boolean; at: number };
+type Device = { deviceId: string; deviceName: string; kind: string; now?: Now | null };
+const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+/** Clamp a TV's "now playing" report; attachments max 2 KB so every string is capped. */
+export function sanitizeNow(n: any): Now | null {
+  if (!n || typeof n !== "object") return null;
+  const o: Now = { title: String(n.title ?? "").slice(0, 120), playing: n.playing === true, positionMs: num(n.positionMs),
+    durationMs: num(n.durationMs), hasNext: n.hasNext === true, hasPrev: n.hasPrev === true, at: num(n.at) || now() };
+  if (typeof n.subtitle === "string") o.subtitle = n.subtitle.slice(0, 120);
+  if (typeof n.poster === "string") o.poster = n.poster.slice(0, 300);
+  return o;
+}
+const ACTIONS = ["play", "pause", "toggle", "seekTo", "seekBy", "next", "prev", "stop"];
 
 /** One per account: device presence, handoff, and "history changed" pushes. */
 export class UserHub extends DurableObject<Env> {
@@ -917,6 +1036,17 @@ export class UserHub extends DurableObject<Env> {
       ws.serializeAttachment({ deviceId: m.deviceId, deviceName: String(m.deviceName ?? "").slice(0, 64),
         kind: m.kind === "tv" ? "tv" : "phone" } satisfies Device);
       this.broadcastDevices();
+    } else if (m.type === "control") {
+      const from = ws.deserializeAttachment() as Device | null;
+      if (!from || !ACTIONS.includes(m.action) || (m.value !== undefined && !(typeof m.value === "number" && Number.isFinite(m.value)))) return;
+      const out = { type: "control", to: m.to, action: m.action, ...(m.value !== undefined ? { value: m.value } : {}), from: from.deviceId };
+      for (const t of this.ctx.getWebSockets()) if ((t.deserializeAttachment() as Device | null)?.deviceId === m.to) send(t, out);
+    } else if (m.type === "state") {
+      const d = ws.deserializeAttachment() as Device | null;
+      if (!d) return;
+      const n = sanitizeNow(m.now);
+      ws.serializeAttachment({ ...d, now: n } satisfies Device);
+      for (const t of this.ctx.getWebSockets()) if (t !== ws) send(t, { type: "state", from: d.deviceId, now: n });
     } else if (m.type === "handoff") {
       const from = ws.deserializeAttachment() as Device | null;
       this.ctx.waitUntil(logEvent(this.env, null, "handoff", this.ctx.id.name ?? null, { from: from?.deviceName, to: m.to, title: m.playback?.payload?.title }));
