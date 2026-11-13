@@ -22,11 +22,16 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import java.io.File
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -40,18 +45,24 @@ import kotlin.coroutines.resumeWithException
 class VegaEngine(
     private val client: OkHttpClient,
     private val runtimeJs: () -> String,
-    private val log: (String) -> Unit = {}
+    private val log: (String) -> Unit = {},
+    /** kvStore + cookie jar survive restarts here (NetMirror's session token costs a ~35 s ad-verify poll, valid 12 h). */
+    private val stateFile: File? = null
 ) {
     @Volatile private var runtimeBytecode: ByteArray? = null
     private val urlsLock = Mutex()
     @Volatile private var urlsJson: Pair<Long, String>? = null
+    private val state by lazy { State.load(stateFile) }
 
-    /** Fresh runtime with [modules] (name → CommonJS source) loaded as globals; closed after [block]. */
-    suspend fun <T> session(modules: Map<String, String>, block: suspend Session.() -> T): T {
+    /**
+     * Fresh runtime with [modules] (name → CommonJS source) loaded as globals; closed after [block].
+     * [provider] scopes ctx.kvStore, which (as in the Vega app) outlives the runtime.
+     */
+    suspend fun <T> session(modules: Map<String, String>, provider: String = "", block: suspend Session.() -> T): T {
         val js = Runtimes.create()
         val host = Host()
         try {
-            bind(js, host)
+            bind(js, host, state.kv.getOrPut(provider) { ConcurrentHashMap() })
             // Parsing the 400 KB bundle is the slow part on a Fire TV stick; compile once, reuse the bytecode.
             val bytecode = runtimeBytecode ?: js.compile(runtimeJs(), "vega-runtime.js").also { runtimeBytecode = it }
             js.evaluate<Any?>(bytecode)
@@ -71,6 +82,7 @@ class VegaEngine(
                 val idle = withTimeoutOrNull(DRAIN_MS) { runCatching { js.evaluate<Any?>("0", "drain.js") }; true } == true
                 if (!idle) log("runtime still busy after ${DRAIN_MS} ms; leaking it rather than crashing")
                 Runtimes.release(js, close = idle)
+                state.save(stateFile)
             }
         }
     }
@@ -121,8 +133,19 @@ class VegaEngine(
         }
     }
 
-    private fun bind(js: QuickJs, host: Host) {
+    private fun bind(js: QuickJs, host: Host, kv: MutableMap<String, String>) {
         js.function("__host_log") { args -> log(args.getOrNull(1)?.toString().orEmpty()); null }
+        // kvStore values go in and out as JSON text: get(k) -> json or null, set(k, json), delete(k), keys -> json array
+        js.function("__host_kv") { args ->
+            val k = args.getOrNull(1)?.toString().orEmpty()
+            when (args[0]) {
+                "get" -> kv[k]
+                "set" -> { kv[k] = args[2] as String; state.dirty = true; null }
+                "delete" -> { state.dirty = kv.remove(k) != null || state.dirty; null }
+                "clear" -> { kv.clear(); state.dirty = true; null }
+                else -> JsonArray(kv.keys.map(::JsonPrimitive)).toString()
+            }
+        }
         // setTimeout/clearTimeout: evaluate() waits for every pending host call, so an uncleared timer would stall each call.
         js.asyncFunction("__host_sleep") { args ->
             val id = (args[1] as Number).toInt()
@@ -168,10 +191,11 @@ class VegaEngine(
             .method(method, if (method == "GET" || method == "HEAD") null else (body ?: "").toRequestBody(type?.toMediaTypeOrNull()))
         headers.forEach { (k, v) ->
             // OkHttp handles gzip itself only when the caller didn't ask for an encoding.
-            if (k !in SKIP_HEADERS) builder.header(k, v.jsonPrimitive.content)
+            if (k !in SKIP_HEADERS && k != "cookie") builder.header(k, v.jsonPrimitive.content)
         }
         if (headers["user-agent"] == null) builder.header("User-Agent", USER_AGENT)
         val c = client.newBuilder().followRedirects(follow).followSslRedirects(follow)
+            .cookieJar(state.jar.forCall(url.toHttpUrl(), headers["cookie"]?.jsonPrimitive?.content))
             .apply { if (timeoutMs > 0) callTimeout(timeoutMs, TimeUnit.MILLISECONDS) }.build()
         val call = c.newCall(builder.build()).also { host.calls += it }
         val response = try { call.await() } finally { host.calls -= call }
@@ -196,6 +220,94 @@ class VegaEngine(
     }
 
     class VegaException(message: String) : Exception(message)
+
+    /**
+     * The Vega app's provider cookie jar (providerCookieJar.ts): one jar for all providers of a source author (we load
+     * one author, Zenda-Cross), written only by server Set-Cookie, never by a provider's own Cookie header. A request
+     * sends the jar's cookies plus the provider's, and the provider's win on a name clash. The NetMirror providers
+     * rely on it: a sibling mirror's verified t_hash_t reaches the others through the jar.
+     */
+    class Jar {
+        private val cookies = mutableListOf<Cookie>()
+
+        @Synchronized fun save(url: HttpUrl, new: List<Cookie>) {
+            val now = System.currentTimeMillis()
+            new.forEach { n -> cookies.removeAll { it.name == n.name && it.domain == n.domain && it.path == n.path } }
+            cookies += new.filter { it.expiresAt > now }
+            cookies.removeAll { it.expiresAt <= now }
+        }
+
+        @Synchronized fun load(url: HttpUrl): List<Cookie> = cookies.filter { it.matches(url) && it.expiresAt > System.currentTimeMillis() }
+
+        @Synchronized fun all(): List<Cookie> = cookies.toList()
+
+        /**
+         * OkHttp's bridge replaces a request's Cookie header with the jar's, so the provider's header is merged in
+         * here. Like the Vega app, it rides along on same-host redirect hops (updated by their Set-Cookie) only.
+         */
+        fun forCall(url: HttpUrl, supplied: String?): CookieJar {
+            val own = linkedMapOf<String, String>()
+            supplied?.split(';')?.forEach { part ->
+                val eq = part.indexOf('=')
+                if (eq > 0) own[part.substring(0, eq).trim()] = part.substring(eq + 1).trim()
+            }
+            return object : CookieJar {
+                override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+                    save(url, cookies)
+                    if (url.host == urlHost) cookies.forEach { if (it.expiresAt > System.currentTimeMillis()) own[it.name] = it.value else own.remove(it.name) }
+                }
+
+                override fun loadForRequest(url: HttpUrl): List<Cookie> {
+                    val jar = load(url)
+                    if (url.host != urlHost) return jar
+                    val mine = own.mapNotNull { (k, v) -> runCatching { Cookie.Builder().name(k).value(v).hostOnlyDomain(url.host).build() }.getOrNull() }
+                    return mine + jar.filter { c -> c.name !in own }
+                }
+
+                private val urlHost = url.host
+            }
+        }
+    }
+
+    /** What outlives a runtime: per-provider kvStore (JSON values) and the cookie jar, saved to [file] when changed. */
+    private class State(val kv: ConcurrentHashMap<String, MutableMap<String, String>>, val jar: Jar) {
+        @Volatile var dirty = false
+        private var savedCookies = jar.all()
+
+        @Synchronized fun save(file: File?) {
+            val cookies = jar.all()
+            if (file == null || (!dirty && cookies == savedCookies)) return
+            dirty = false
+            savedCookies = cookies
+            runCatching {
+                val text = buildJsonObject {
+                    put("kv", JsonObject(kv.mapValues { (_, m) -> JsonObject(m.mapValues { JsonPrimitive(it.value) }) }))
+                    // a persistent cookie's toString() is a Set-Cookie line that Cookie.parse reads back
+                    put("cookies", JsonArray(cookies.filter { it.persistent }.map { JsonPrimitive(it.toString()) }))
+                }.toString()
+                file.parentFile?.mkdirs()
+                File(file.path + ".tmp").apply { writeText(text) }.renameTo(file)
+            }
+        }
+
+        companion object {
+            fun load(file: File?): State {
+                val jar = Jar()
+                val kv = ConcurrentHashMap<String, MutableMap<String, String>>()
+                runCatching {
+                    val o = JSON.parseToJsonElement(file!!.readText()).jsonObject
+                    o["kv"]?.jsonObject?.forEach { (p, m) -> kv[p] = ConcurrentHashMap(m.jsonObject.mapValues { it.value.jsonPrimitive.content }) }
+                    (o["cookies"] as? JsonArray)?.forEach { line ->
+                        val text = line.jsonPrimitive.content
+                        val domain = Regex("domain=([^;]+)").find(text)?.groupValues?.get(1) ?: return@forEach
+                        val url = "https://$domain/".toHttpUrl()
+                        Cookie.parse(url, text)?.let { jar.save(url, listOf(it)) }
+                    }
+                }
+                return State(kv, jar)
+            }
+        }
+    }
 
     companion object {
         /** Desktop Chrome: the providers' sites serve desktop markup to it. */

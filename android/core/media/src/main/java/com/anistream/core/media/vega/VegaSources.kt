@@ -16,11 +16,14 @@ import com.anistream.domain.usecase.canPlayLowEnd
 import com.anistream.domain.usecase.stripTags
 import com.anistream.domain.usecase.titleScore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -48,9 +51,10 @@ class VegaSources @Inject constructor(
     private val api: AccountApi
 ) : StreamSource {
 
-    private val engine = VegaEngine(http.client, { runtimeJs }, { Log.d("Vega", it) })
+    private val engine = VegaEngine(http.client, { runtimeJs }, { Log.d("Vega", it) }, File(context.noBackupFilesDir, "vega-state.json"))
     private val runtimeJs by lazy { context.assets.open("vega-runtime.js").bufferedReader().use { it.readText() } }
     @Volatile private var registry: Registry? = null
+    private val background = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     data class Registry(val commit: String, val enabled: List<String>)
 
@@ -67,7 +71,10 @@ class VegaSources @Inject constructor(
                     // Vega source past the repository's per-source timeout, and every provider's streams were lost
                     withTimeoutOrNull(PROVIDER_TIMEOUT_MS) {
                         runCatching {
-                            val all = provider(reg.commit, p, title, year, type, season, episode, lowEnd)
+                            val all = if (p !in UNLOCKS) provider(reg.commit, p, title, year, type, season, episode, lowEnd)
+                            // NetMirror's first lookup in 12 h spends ~35 s unlocking a session; past our budget it keeps
+                            // going here so the token it earns is saved and the next lookup takes ~2 s
+                            else background.async { withTimeout(UNLOCK_MS) { provider(reg.commit, p, title, year, type, season, episode, lowEnd) } }.await()
                             all.zip(all.map { async { playable(it) } }.awaitAll()).filter { it.second }.map { it.first }
                         }.onFailure { Log.w("Vega", "$p: ${it.message}") }.getOrNull()
                     }.orEmpty().also { Log.d("Vega", "$p: ${it.size} playable") }
@@ -87,8 +94,9 @@ class VegaSources @Inject constructor(
     private suspend fun provider(
         commit: String, p: String, title: String, year: Int?, type: MediaType, season: Int, episode: Int, lowEnd: Boolean
     ): List<MediaStream> {
-        val files = listOfNotNull("posts", "meta", "stream", "episodes".takeIf { type == MediaType.SERIES })
-            .mapNotNull { f -> file(commit, p, f)?.let { f to it } }.toMap()
+        // movies need episodes.js too: NetMirror's meta calls a film with seasons "series" and lists it via episodesLink
+        val files = listOf("posts", "meta", "stream", "episodes")
+            .mapNotNull { f -> file(commit, p, f)?.let { f to patch(it) } }.toMap()
         return engine.streams(files, p, DISPLAY[p] ?: p, title, year, type, season, episode, lowEnd)
     }
 
@@ -134,6 +142,8 @@ class VegaSources @Inject constructor(
         private const val CDN = "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers"
         private const val PROVIDER_TIMEOUT_MS = 40_000L // under MoviesRepositoryImpl's 45 s per-source budget (slow networks)
         private const val REGISTRY_TIMEOUT_MS = 3_000L
+        private const val UNLOCK_MS = 90_000L
+        private val UNLOCKS = setOf("netflixMirror", "primeMirror", "disneyMirror")
         val DEFAULT = Registry("4ecbc98e12da870ffc06b41bd7affe4b1fe316f0", listOf("hdhub4u", "drive", "vega", "mod", "topmovies"))
         /** The manifest's type, corrected where it says "global" for a niche catalog (same table as web vega.ts). */
         private val KIND_FIX = mapOf("dramacool" to "kdrama", "kissKh" to "kdrama", "durbinLive" to "live", "liveTgTv" to "live", "youtube" to "video")
@@ -143,6 +153,14 @@ class VegaSources @Inject constructor(
         private val DISPLAY = mapOf(
             "hdhub4u" to "HdHub4u", "drive" to "MoviesDrive", "vega" to "VMovies", "mod" to "MoviesMod", "topmovies" to "TopMovies"
         )
+
+        /**
+         * NetMirror's search always asks /mobile/search.php, which answers from the Netflix catalog whatever the ott
+         * cookie says; Prime and Disney+ titles are only found at /mobile/pv/ and /mobile/hs/search.php. Without this
+         * primeMirror matched Netflix ids and got playlists with broken audio URIs ("https:///files/…").
+         * ponytail: string patch on the compiled provider; drop it once vega-providers searches the ott's own path.
+         */
+        fun patch(code: String) = code.replace("/mobile/search.php?s=", "/mobile/\${prefix?prefix+\"/\":\"\"}search.php?s=")
 
         /** Only a full commit sha on the official jsDelivr path is accepted; anything else falls back to [DEFAULT]. */
         fun parseRegistry(vega: JsonElement?): Registry? {
@@ -163,7 +181,7 @@ internal suspend fun VegaEngine.streams(
     lowEnd: Boolean
 ): List<MediaStream> {
     val series = type == MediaType.SERIES
-    return session(files) {
+    return session(files, p) {
         val q = JsonPrimitive(Stremio.searchQuery(title))
         val posts = call("posts.getSearchPosts({searchQuery:$q,page:1,providerValue:${JsonPrimitive(p)},signal:new AbortController().signal,providerContext:ctx})")
             .jsonArray.map { it.jsonObject }
@@ -229,12 +247,18 @@ internal object VegaPick {
         .filter { (_, clean) -> clean.isNotEmpty() && minOf(titleScore(title, clean), titleScore(clean, title)) >= 0.6 }
         .filter { (p, _) ->
             val t = p.str("title")
-            val y = YEAR.find(t)?.value?.toInt()
+            val y = postYear(p)
             if (series) seasons(t).let { it.isEmpty() || season in it } else year == null || y == null || kotlin.math.abs(y - year) <= 1
         }
         .maxByOrNull { (p, clean) ->
-            titleScore(title, clean) + titleScore(clean, title) + (if (series && season in seasons(p.str("title"))) 0.5 else 0.0)
+            // NetMirror lists "The Boys" the 2024 film and "The Boys" the 2019 series under one name; its tag has the year
+            val sameYear = year != null && postYear(p)?.let { kotlin.math.abs(it - year) <= 1 } == true
+            titleScore(title, clean) + titleScore(clean, title) + (if (series && season in seasons(p.str("title"))) 0.5 else 0.0) +
+                (if (sameYear) 0.25 else 0.0)
         }?.first
+
+    /** Year in the post's title, else its tag when that is a bare year (NetMirror). */
+    private fun postYear(p: JsonObject) = (YEAR.find(p.str("title")) ?: YEAR.matchEntire(p.str("tag").trim()))?.value?.toInt()
 
     /** linkList entries for [season]; all of them when none says which season it is. */
     fun forSeason(entries: List<JsonObject>, season: Int): List<JsonObject> {

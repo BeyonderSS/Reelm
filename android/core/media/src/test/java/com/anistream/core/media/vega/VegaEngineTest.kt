@@ -12,6 +12,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import com.anistream.domain.model.MediaType
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.junit.Assert.assertEquals
@@ -60,6 +61,35 @@ class VegaEngineTest {
             )
         }.jsonPrimitive.content
         assertEquals("c msg true", out)
+    }
+
+    /** kvStore is per provider and outlives the runtime (and the process, via the state file), as in the Vega app. */
+    @Test
+    fun kvStorePersists() = runBlocking {
+        val file = File.createTempFile("vega-state", ".json").apply { delete(); deleteOnExit() }
+        val a = VegaEngine(client, { File("src/main/assets/vega-runtime.js").readText() }, ::println, file)
+        a.session(emptyMap(), "netflixMirror") { call("ctx.kvStore.set('t', {token: 'x', ts: 1})") }
+        assertEquals("x", a.session(emptyMap(), "netflixMirror") { call("ctx.kvStore.get('t').then(v => v.token)") }.jsonPrimitive.content)
+        assertEquals("none", a.session(emptyMap(), "primeMirror") { call("ctx.kvStore.get('t').then(v => v === undefined ? 'none' : 'leak')") }.jsonPrimitive.content)
+        val b = VegaEngine(client, { File("src/main/assets/vega-runtime.js").readText() }, ::println, file)
+        assertEquals("x", b.session(emptyMap(), "netflixMirror") { call("ctx.kvStore.get('t').then(v => v.token)") }.jsonPrimitive.content)
+    }
+
+    /** Server cookies fill in what the provider's own Cookie header lacks; the provider's win on a clash; other hosts get the jar only. */
+    @Test
+    fun cookieJarMergesWithProviderCookies() {
+        val jar = VegaEngine.Jar()
+        val site = "https://net52.cc/mobile/home".toHttpUrl()
+        jar.save(site, listOfNotNull(
+            okhttp3.Cookie.parse(site, "t_hash_t=server; Max-Age=600; path=/; domain=net52.cc"),
+            okhttp3.Cookie.parse(site, "addhash=old; Max-Age=600; path=/")
+        ))
+        val call = jar.forCall(site, "addhash=mine; hd=on")
+        fun names(u: String) = call.loadForRequest(u.toHttpUrl()).joinToString("; ") { "${it.name}=${it.value}" }
+        assertEquals("addhash=mine; hd=on; t_hash_t=server", names("https://net52.cc/mobile/verify2.php"))
+        assertEquals("t_hash_t=server", names("https://userver.net52.cc/"))
+        call.saveFromResponse(site, listOfNotNull(okhttp3.Cookie.parse(site, "hd=off; Max-Age=60; path=/")))
+        assertEquals("addhash=mine; hd=off; t_hash_t=server", names("https://net52.cc/x"))
     }
 
     /** Live: hdhub4u search → meta → stream for Inception. Run with -Pvega.live. */
@@ -115,6 +145,36 @@ class VegaEngineTest {
             }.awaitAll().flatten()
         }
         println("=== vega ${reg.commit}\n" + results.joinToString("\n"))
+    }
+
+    /** Live: the NetMirror providers unlock a session (~35 s ad-verify poll, then cached) and return HLS. Run with -Pvega.live. */
+    @Test
+    fun netMirrors() = runBlocking {
+        assumeTrue(System.getProperty("vega.live") == "true")
+        val base = "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@988c7b6bfb3a6c8524f03c9dbb4c865a6c0e7168/dist"
+        val cases = listOf(
+            "netflixMirror" to Quad("Red Notice", 2021, 0, 0), "netflixMirror" to Quad("Stranger Things", 2016, 1, 1),
+            "primeMirror" to Quad("The Tomorrow War", 2021, 0, 0), "primeMirror" to Quad("The Boys", 2019, 1, 1),
+            "disneyMirror" to Quad("Loki", 2021, 1, 1)
+        )
+        val results = cases.map { (p, q) ->
+            val files = listOf("posts", "meta", "stream", "episodes").mapNotNull { f ->
+                client.newCall(Request.Builder().url("$base/$p/$f.js").build()).execute().use { r -> if (r.isSuccessful) f to VegaSources.patch(r.body!!.string()) else null }
+            }.toMap()
+            val start = System.currentTimeMillis()
+            val out = runCatching {
+                withTimeout(90_000) { engine.streams(files, p, p, q.a, q.b, if (q.c > 0) MediaType.SERIES else MediaType.MOVIE, q.c, q.d, lowEnd = false) }
+            }
+            val ms = System.currentTimeMillis() - start
+            out.getOrNull()?.firstOrNull()?.let { s ->
+                val code = client.newCall(Request.Builder().url(s.url).apply { s.headers.forEach { (k, v) -> header(k, v) } }.build()).execute()
+                    .use { r -> "${r.code} ${r.body!!.string().lines().take(4)}" }
+                println("$p ${q.a}: playlist -> $code")
+            }
+            "$p ${q.a}: $ms ms " + out.fold({ l -> "${l.size} streams ${l.map { "${it.qualityLabel} ${it.url.take(80)} ${it.headers.keys}" }}" }, { "FAIL $it".take(500) })
+        }
+        println("=== netmirror\n" + results.joinToString("\n"))
+        assertTrue(results.joinToString(), results.all { "FAIL" !in it && !it.contains(" 0 streams") })
     }
 
     private data class Quad(val a: String, val b: Int, val c: Int, val d: Int)

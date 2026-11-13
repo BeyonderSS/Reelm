@@ -34,6 +34,9 @@ class VegaPickTest {
         val movie = listOf(o("""{"title":"Inception (2010) BluRay 4K 1080p","link":"m"}"""))
         assertEquals("m", VegaPick.post("Inception", 2010, false, 0, movie)!!["link"]!!.jsonPrimitive.content)
         assertNull(VegaPick.post("Inception", 1995, false, 0, movie))
+        val boys = listOf(o("""{"title":"The Boys","link":"film","tag":"2024"}"""), o("""{"title":"The Boys","link":"show","tag":"2019"}"""))
+        assertEquals("show", VegaPick.post("The Boys", 2019, true, 1, boys)!!["link"]!!.jsonPrimitive.content)
+        assertEquals("film", VegaPick.post("The Boys", 2024, false, 0, boys)!!["link"]!!.jsonPrimitive.content)
 
         val eps = listOf(o("""{"title":"EPISODE 1","link":"x"}"""), o("""{"title":"Episode 12","link":"y"}"""))
         assertEquals("y", VegaPick.episode(eps, 1, 12)!!["link"]!!.jsonPrimitive.content)

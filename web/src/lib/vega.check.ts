@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { makeAxios, makeFetch, pickSeason, pickQualities, pickEpisode, NOT_MEDIA, kindOf, casesFor } from "./vega.ts";
+import { makeAxios, makeFetch, pickSeason, pickQualities, pickEpisode, NOT_MEDIA, kindOf, casesFor, checkProvider } from "./vega.ts";
 assert.ok(NOT_MEDIA.test("https://x.y/config-ab12.json") && !NOT_MEDIA.test("https://x.y/f.mkv?t=1") && !NOT_MEDIA.test("https://pixeldrain.com/api/file/abc"));
 const R = (status: number, url: string, text = "", headers = {}) => ({ status, url, text, headers });
 const calls: any[] = [];
@@ -51,3 +51,4 @@ const slow = makeAxios(() => new Promise(() => {})); assert.equal((await tx(slow
 // test titles by provider kind
 assert.equal(kindOf("kissKh", "english"), "kdrama"); assert.equal(kindOf("anikoto", "anime"), "anime"); assert.equal(kindOf("x"), "global");
 assert.equal(casesFor("live"), null); assert.equal(casesFor("italy")?.movie.title, "Spider-Man: Into the Spider-Verse"); assert.equal(casesFor("anime")?.series.title, "Jujutsu Kaisen");
+const nm = await checkProvider("x", "primeMirror", "movie", async () => { throw new Error("no network expected"); }); assert.ok(nm.skipped && nm.error?.startsWith("Android only"));

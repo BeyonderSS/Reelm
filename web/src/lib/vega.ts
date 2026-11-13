@@ -205,6 +205,8 @@ const KIND_FIX: Record<string, string> = { dramacool: "kdrama", kissKh: "kdrama"
 export const kindOf = (p: string, type?: string) => KIND_FIX[p] ?? type ?? "global";
 /** Never asked for a movie or series: anime (anime titles have their own sources), live TV and YouTube (no title catalog). */
 const OFF_TITLE = ["anime", "live", "video"];
+/** Need to read Set-Cookie and send Cookie (NetMirror's ad-verify session), which browser fetch can't; they run on Android only. */
+export const WEB_SKIP = ["netflixMirror", "primeMirror", "disneyMirror"];
 const types = new Map<string, Promise<Record<string, string>>>();
 /** provider → manifest type at the commit `base` points at (…/dist). */
 export const manifestTypes = (base: string) => {
@@ -218,7 +220,7 @@ export const manifestTypes = (base: string) => {
 export async function streams(title: string, year: number, type: "movie" | "series", season: number, episode: number, f: F = vf, on: (x: Awaited<ReturnType<typeof resolve>>) => void = () => {}) {
   const reg = await registry(), [ctx, kinds] = await Promise.all([context(f), manifestTypes(reg.base)]), r = { title, year, type, season, episode };
   // ponytail: first 10 title providers run in parallel; a queue with a deadline if admins enable more and want them all
-  const ps = reg.enabled.filter((p) => !OFF_TITLE.includes(kindOf(p, kinds[p]))).slice(0, 10);
+  const ps = reg.enabled.filter((p) => !WEB_SKIP.includes(p) && !OFF_TITLE.includes(kindOf(p, kinds[p]))).slice(0, 10);
   const t0 = Date.now(), all = await Promise.all(ps.map((p) => tmo(resolve(reg.base, p, r, ctx, f), 45000)
     .then((x) => (console.debug(`[vega] ${p}: ${x.length} in ${Date.now() - t0} ms`), x.length && on(x), x), (e) => (console.debug(`[vega] ${p}: ${e?.message} after ${Date.now() - t0} ms`), [] as any[]))));
   return all.flat().sort((a, b) => b.height - a.height);
@@ -240,6 +242,7 @@ const ORDER: Stage[] = ["load", "search", "meta", "episodes", "stream", "done"];
 /** Run ONE provider at an explicit commit (not the registry's pin) through the player's path, on a title of its kind. `files` = playable files found (max one per picked quality). */
 export async function checkProvider(commit: string, provider: string, c: CheckCase, f: F = vf, ms = 30000, kind = "global"): Promise<Check> {
   const t0 = Date.now(), req = casesFor(kind)?.[c];
+  if (WEB_SKIP.includes(provider)) return { ok: false, skipped: true, stage: "load", files: 0, ms: 0, error: "Android only: the browser can't read or send the session cookie this site needs" };
   if (!req) return { ok: false, skipped: true, stage: "load", files: 0, ms: 0, error: kind === "live" ? "Live TV: nothing to search, not testable here" : "Not a movie or series catalog, not testable here" };
   const title = `${req.title}${req.type === "series" ? ` S${req.season}E${req.episode}` : ` (${req.year})`}`;
   let stage = "load" as Stage;

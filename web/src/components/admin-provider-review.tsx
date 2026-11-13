@@ -211,7 +211,7 @@ const sec = (ms: number) => `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`;
 function Cell({ c }: { c?: Check | "run" }) {
   if (!c) return <span className="text-foreground/28">—</span>;
   if (c === "run") return <span className="inline-flex items-center gap-1 text-xs text-foreground/56"><Loader2 className="size-3 animate-spin" />running</span>;
-  if (c.skipped) return <span title={c.error} className="text-xs text-foreground/40">n/a</span>;
+  if (c.skipped) return <span title={c.error} className="text-xs text-foreground/40">{c.error?.startsWith("Android only") ? "Android only" : "n/a"}</span>;
   return (
     <span title={[c.title, c.error].filter(Boolean).join(": ")} className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs whitespace-nowrap", c.ok ? "bg-signal/14 text-signal" : "bg-[#f07c6c]/14 text-[#f07c6c]")}>
       {c.ok ? <CheckIcon className="size-3" /> : <X className="size-3" />}{c.ok ? `${c.files} file${c.files === 1 ? "" : "s"}` : c.stage}<span className="text-foreground/48">{sec(c.ms)}</span>

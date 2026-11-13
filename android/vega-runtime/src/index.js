@@ -222,7 +222,6 @@ axios.request = axiosRequest;
 ["post", "put", "patch"].forEach((m) => { axios[m] = (url, data, config) => axiosRequest(Object.assign({}, config, { url, data, method: m })); });
 axios.isAxiosError = (e) => !!(e && e.isAxiosError);
 
-const store = new Map();
 const URLS = "https://raw.githubusercontent.com/Zenda-Cross/vega-providers/refs/heads/main/urls.json";
 let urls = null;
 g.axios = axios;
@@ -237,12 +236,13 @@ g.__vegaContext = (userAgent) => ({
     const u = (await urls)[v];
     return (u && u.url) || "";
   },
+  // per provider and kept by the host across runtimes, as in the Vega app (NetMirror caches its 12 h session token here)
   kvStore: {
-    get: async (k) => (store.has(k) ? store.get(k) : undefined),
-    set: async (k, v) => { store.set(k, v); },
-    delete: async (k) => store.delete(k),
-    keys: async () => [...store.keys()],
-    clear: async () => { store.clear(); },
+    get: async (k) => { const v = __host_kv("get", String(k)); return v == null ? undefined : JSON.parse(v); },
+    set: async (k, v) => { if (v !== undefined) __host_kv("set", String(k), JSON.stringify(v)); },
+    delete: async (k) => { __host_kv("delete", String(k)); return true; },
+    keys: async () => JSON.parse(__host_kv("keys")),
+    clear: async () => { __host_kv("clear"); },
   },
   openWebView: async () => { throw new Error("unsupported"); },
 });
