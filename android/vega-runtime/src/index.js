@@ -202,7 +202,7 @@ async function axiosRequest(config) {
     else headers[k] = headers[k] ? headers[k] + ", " + v : v;
   });
   let data = res._body;
-  if (config.responseType === "json" || (!config.responseType && data)) {
+  if (config.responseType === "json" || (!config.responseType && !config.transformResponse && data)) { // iqst's identity transformResponse wants the raw text
     try { data = JSON.parse(data); } catch (e) { if (config.responseType === "json") data = res._body; }
   }
   const response = { data, status: res.status, statusText: res.statusText, headers, config, request: { responseURL: res.url, res: { responseUrl: res.url } } };
@@ -223,16 +223,26 @@ axios.request = axiosRequest;
 axios.isAxiosError = (e) => !!(e && e.isAxiosError);
 
 const store = new Map();
+const URLS = "https://raw.githubusercontent.com/Zenda-Cross/vega-providers/refs/heads/main/urls.json";
+let urls = null;
 g.axios = axios;
 g.cheerio = cheerio;
 g.__vegaContext = (userAgent) => ({
   axios,
   cheerio,
   commonHeaders: { "User-Agent": userAgent },
+  // the Vega app's context has it too (dramacool asks it before its own urls.json read); the host shares one urls.json fetch
+  getBaseUrl: async (v) => {
+    urls = urls || fetch(URLS).then((r) => r.json()).catch((e) => { urls = null; throw e; });
+    const u = (await urls)[v];
+    return (u && u.url) || "";
+  },
   kvStore: {
-    get: async (k) => (store.has(k) ? store.get(k) : null),
+    get: async (k) => (store.has(k) ? store.get(k) : undefined),
     set: async (k, v) => { store.set(k, v); },
-    delete: async (k) => { store.delete(k); },
+    delete: async (k) => store.delete(k),
+    keys: async () => [...store.keys()],
+    clear: async () => { store.clear(); },
   },
   openWebView: async () => { throw new Error("unsupported"); },
 });

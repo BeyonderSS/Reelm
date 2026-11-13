@@ -828,7 +828,7 @@ function Providers() {
         const p = d.pinned, up = d.upstream, enabled: string[] = sel ?? p.enabled, behind = d.behind ?? 0;
         const toggle = (v: string) => setSel(enabled.includes(v) ? enabled.filter((x) => x !== v) : [...enabled, v]);
         const test = up ? testRun(up.commit) : null, v = test && verdict(test);
-        const runTest = () => { if (!helperReady()) return setNoHelper(true); setNoHelper(false); startTest(p.commit, up.commit, p.enabled, (d.changed ?? []).map((c: any) => c.provider)); };
+        const runTest = () => { if (!helperReady()) return setNoHelper(true); setNoHelper(false); startTest(p.commit, up.commit, p.enabled, (d.changed ?? []).map((c: any) => c.provider), Object.fromEntries((d.manifest ?? []).map((m: any) => [m.value, m.type]))); };
         return (
           <div className="grid gap-4 lg:grid-cols-2">
             {d.error && <Panel title="GitHub unavailable" className="lg:col-span-2"><Empty>{d.error}. The pinned version below is still served to apps.</Empty></Panel>}

@@ -9,7 +9,7 @@ import { helperVega } from "@/lib/bridge";
 import { parsePatch, scanRisks, type Risk } from "@/lib/diff";
 import { useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
-import { checkProvider, type Check, type CheckCase } from "@/lib/vega";
+import { casesFor, checkProvider, kindOf, type Check, type CheckCase } from "@/lib/vega";
 
 const REPO = "https://github.com/Zenda-Cross/vega-providers";
 const day = (t: string) => new Date(t).toLocaleDateString("en", { month: "short", day: "numeric" });
@@ -135,7 +135,7 @@ function FileDiff({ f, open, toggle, hot }: { f: ProviderDiff["files"][number]; 
 // ---- test update -------------------------------------------------------------
 type Side = "pinned" | "upstream";
 const CASES: CheckCase[] = ["movie", "series"], SIDES: Side[] = ["pinned", "upstream"];
-export type TestRow = { provider: string; enabled: boolean; changed: boolean; r: Partial<Record<string, Check | "run">> }; // r["pinned.movie"]
+export type TestRow = { provider: string; kind?: string; enabled: boolean; changed: boolean; r: Partial<Record<string, Check | "run">> }; // r["pinned.movie"]
 export type TestRun = { pinned: string; upstream: string; at: number; running?: boolean; rows: TestRow[] };
 const runs = new Map<string, TestRun>(), subs = new Set<() => void>(), key = (sha: string) => `reelm.vegaCheck.${sha}`;
 let ver = 0, stop = false;
@@ -152,10 +152,10 @@ export function testRun(sha: string): TestRun | null {
   return runs.get(sha) ?? null;
 }
 export const stopTest = () => { stop = true; };
-/** Every enabled + every changed provider, at both commits, both cases; 3 checks at a time. Changed-and-enabled first: those answers matter most. */
-export async function startTest(pinned: string, upstream: string, enabled: string[], changed: string[]) {
+/** Every enabled + every changed provider, at both commits, both cases on titles of its kind (`types`: manifest type per provider); 3 checks at a time. Changed-and-enabled first: those answers matter most. */
+export async function startTest(pinned: string, upstream: string, enabled: string[], changed: string[], types: Record<string, string> = {}) {
   const order = [...new Set([...changed.filter((p) => enabled.includes(p)), ...enabled, ...changed])];
-  const run: TestRun = { pinned, upstream, at: Date.now(), running: true, rows: order.map((p) => ({ provider: p, enabled: enabled.includes(p), changed: changed.includes(p), r: {} })) };
+  const run: TestRun = { pinned, upstream, at: Date.now(), running: true, rows: order.map((p) => ({ provider: p, kind: kindOf(p, types[p]), enabled: enabled.includes(p), changed: changed.includes(p), r: {} })) };
   runs.set(upstream, run); stop = false; emit();
   const jobs = run.rows.flatMap((row) => SIDES.flatMap((side) => CASES.map((c) => ({ row, side, c }))));
   let i = 0;
@@ -163,7 +163,7 @@ export async function startTest(pinned: string, upstream: string, enabled: strin
     while (i < jobs.length && !stop) {
       const { row, side, c } = jobs[i++], k = `${side}.${c}`;
       row.r[k] = "run"; emit();
-      row.r[k] = await checkProvider(side === "pinned" ? pinned : upstream, row.provider, c);
+      row.r[k] = await checkProvider(side === "pinned" ? pinned : upstream, row.provider, c, undefined, undefined, row.kind);
       save(run); emit();
     }
   }));
@@ -176,16 +176,17 @@ export function verdict(run: TestRun) {
   const broke: string[] = [], fixed: string[] = [], both: string[] = [], added: string[] = [];
   let pass = false, finished = 0;
   for (const row of run.rows) {
-    let reg = false, fix = false, any = false, all = true;
+    let reg = false, fix = false, any = false, all = true, tested = 0;
     for (const c of CASES) {
       const a = row.r[`pinned.${c}`], b = row.r[`upstream.${c}`];
       if (!done(a) || !done(b)) { all = false; continue; }
-      finished++;
+      if (a.skipped || b.skipped) continue; // live TV / YouTube: nothing to search
+      finished++; tested++;
       if (a.ok || b.ok) any = pass = true;
       if (a.ok && !b.ok) reg = true; if (!a.ok && b.ok) fix = true;
     }
     const fresh = CASES.every((c) => { const a = row.r[`pinned.${c}`]; return done(a) && a.stage === "load"; }); // not in the pinned commit at all
-    if (reg) broke.push(row.provider); else if (fresh && fix) added.push(row.provider); else if (fix) fixed.push(row.provider); else if (all && !any) both.push(row.provider);
+    if (reg) broke.push(row.provider); else if (fresh && fix) added.push(row.provider); else if (fix) fixed.push(row.provider); else if (tested && all && !any) both.push(row.provider);
   }
   const text = broke.length ? `${broke.length} provider${broke.length === 1 ? "" : "s"} broke in this update` : !finished ? (run.running ? "Testing…" : "Not tested") : !pass ? "Unreachable from this network"
     : run.running ? "No regressions so far" : "No regressions";
@@ -210,8 +211,9 @@ const sec = (ms: number) => `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`;
 function Cell({ c }: { c?: Check | "run" }) {
   if (!c) return <span className="text-foreground/28">—</span>;
   if (c === "run") return <span className="inline-flex items-center gap-1 text-xs text-foreground/56"><Loader2 className="size-3 animate-spin" />running</span>;
+  if (c.skipped) return <span title={c.error} className="text-xs text-foreground/40">n/a</span>;
   return (
-    <span title={c.error} className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs whitespace-nowrap", c.ok ? "bg-signal/14 text-signal" : "bg-[#f07c6c]/14 text-[#f07c6c]")}>
+    <span title={[c.title, c.error].filter(Boolean).join(": ")} className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs whitespace-nowrap", c.ok ? "bg-signal/14 text-signal" : "bg-[#f07c6c]/14 text-[#f07c6c]")}>
       {c.ok ? <CheckIcon className="size-3" /> : <X className="size-3" />}{c.ok ? `${c.files} file${c.files === 1 ? "" : "s"}` : c.stage}<span className="text-foreground/48">{sec(c.ms)}</span>
     </span>
   );
@@ -230,7 +232,7 @@ export function UpdateTest({ run }: { run: TestRun }) {
   return (
     <div className="space-y-3">
       <Verdict run={run} />
-      <p className="text-xs text-foreground/48">{run.pinned.slice(0, 7)} (pinned) vs {run.upstream.slice(0, 7)} (upstream). Spider-Man: Into the Spider-Verse (2018) and Breaking Bad S1E1. {ran} of {total} checks{run.running ? " so far" : `, ${new Date(run.at).toLocaleString("en", { dateStyle: "medium", timeStyle: "short" })}`}.</p>
+      <p className="text-xs text-foreground/48">{run.pinned.slice(0, 7)} (pinned) vs {run.upstream.slice(0, 7)} (upstream). Titles by provider type: {[...new Set(run.rows.map((r) => r.kind ?? "global"))].map((k) => { const x = casesFor(k); return x ? `${k}: ${x.movie.title}, ${x.series.title} S1E1` : `${k}: not testable`; }).join("; ")}. {ran} of {total} checks{run.running ? " so far" : `, ${new Date(run.at).toLocaleString("en", { dateStyle: "medium", timeStyle: "short" })}`}.</p>
       <div className="overflow-x-auto rounded-xl ring-1 ring-white/6">
         <table className="w-full min-w-[640px] text-sm">
           <thead className="text-xs text-foreground/48"><tr className="border-b border-white/6"><th rowSpan={2} className="px-3 py-2 text-left font-medium">Provider</th><th colSpan={2} className="px-3 pt-2 text-left font-medium">Pinned</th><th colSpan={2} className="px-3 pt-2 text-left font-medium">Upstream</th></tr>
@@ -238,7 +240,7 @@ export function UpdateTest({ run }: { run: TestRun }) {
           <tbody>{run.rows.map((row) => { const t = tag(row.provider); return (
             <tr key={row.provider} className="border-b border-white/6 last:border-0">
               <td className="px-3 py-2"><span className={cn("font-medium", row.enabled && "text-primary")}>{row.provider}</span>
-                {row.changed && <span className="ml-2 text-[11px] text-foreground/48">changed</span>}{t && <span className={cn("ml-2 rounded-full px-2 py-0.5 text-[11px]", t[1])}>{t[0]}</span>}</td>
+                <span className="ml-2 text-[11px] text-foreground/48">{row.kind ?? "global"}</span>{row.changed && <span className="ml-2 text-[11px] text-foreground/48">changed</span>}{t && <span className={cn("ml-2 rounded-full px-2 py-0.5 text-[11px]", t[1])}>{t[0]}</span>}</td>
               {SIDES.flatMap((s) => CASES.map((c) => <td key={s + c} className="px-3 py-2"><Cell c={row.r[`${s}.${c}`]} /></td>))}
             </tr>); })}</tbody>
         </table>

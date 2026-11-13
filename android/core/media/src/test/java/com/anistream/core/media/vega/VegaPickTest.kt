@@ -58,4 +58,16 @@ class VegaPickTest {
         val s = VegaPick.forSeason(listOf(o("""{"title":"Season 4 • 720p"}"""), o("""{"title":"Season 5 • 1080p"}""")), 5)
         assertEquals(listOf("Season 5 • 1080p"), s.map { it.t() })
     }
+
+    /** camelCase provider ids (autoEmbed, movieBoxWeb…) used to be dropped from the registry; kinds keep anime/live out of title lookups. */
+    @Test
+    fun registryAndKinds() {
+        val c = "0123456789abcdef0123456789abcdef01234567"
+        val reg = VegaSources.parseRegistry(Json.parseToJsonElement(
+            """{"commit":"$c","base":"https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@$c/dist","enabled":["vega","autoEmbed","bad/id"]}"""))
+        assertEquals(listOf("vega", "autoEmbed"), reg!!.enabled)
+        assertEquals("kdrama", VegaSources.kindOf("kissKh", "english"))
+        assertEquals("anime", VegaSources.kindOf("anikoto", "anime"))
+        assertEquals("global", VegaSources.kindOf("vega", null))
+    }
 }

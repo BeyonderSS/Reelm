@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { makeAxios, makeFetch, pickSeason, pickQualities, pickEpisode, NOT_MEDIA } from "./vega.ts";
+import { makeAxios, makeFetch, pickSeason, pickQualities, pickEpisode, NOT_MEDIA, kindOf, casesFor } from "./vega.ts";
 assert.ok(NOT_MEDIA.test("https://x.y/config-ab12.json") && !NOT_MEDIA.test("https://x.y/f.mkv?t=1") && !NOT_MEDIA.test("https://pixeldrain.com/api/file/abc"));
 const R = (status: number, url: string, text = "", headers = {}) => ({ status, url, text, headers });
 const calls: any[] = [];
@@ -41,3 +41,13 @@ assert.equal(pickEpisode([{ title: "1. The Desert Rose", link: "a" }, { title: "
 assert.equal(pickEpisode([{ title: "Season Pack", link: "p" }], 1), undefined);
 // a post for another season is skipped (hdhub4u has one post per season)
 assert.equal(pickSeason([L("The Mentalist (Season 4) WEB-DL 1080p")], 6).length, 0); assert.equal(pickSeason([L("The Mentalist (Season 1 – 7)")], 6).length, 1);
+// Vega-app parity: one content-type whatever the provider's casing (kickAssAnime/castle sent "application/json, application/json" → 415/500)
+await ax.post("https://a.x/p", { a: 1 }, { headers: { "Content-Type": "application/json; charset=utf-8" } });
+assert.deepEqual(calls.at(-1)[1].headers, { "content-type": "application/json; charset=utf-8" });
+const rr = await ax.get("https://a.x/json", { responseType: "text" }); assert.equal(rr.data, '{"a":1}'); assert.equal(rr.request.res.responseUrl, "https://a.x/json"); // uhd/mod read res.responseUrl
+assert.equal(new TextDecoder().decode((await ax.get("https://a.x/json", { responseType: "arraybuffer" })).data), '{"a":1}');
+await makeFetch(f)("https://a.x/p", { headers: new Headers({ Referer: "https://r.x/" }) }); assert.equal(calls.at(-1)[1].headers.referer, "https://r.x/");
+const slow = makeAxios(() => new Promise(() => {})); assert.equal((await tx(slow.get("https://a.x/", { timeout: 20 }))).code, "ECONNABORTED");
+// test titles by provider kind
+assert.equal(kindOf("kissKh", "english"), "kdrama"); assert.equal(kindOf("anikoto", "anime"), "anime"); assert.equal(kindOf("x"), "global");
+assert.equal(casesFor("live"), null); assert.equal(casesFor("italy")?.movie.title, "Spider-Man: Into the Spider-Verse"); assert.equal(casesFor("anime")?.series.title, "Jujutsu Kaisen");

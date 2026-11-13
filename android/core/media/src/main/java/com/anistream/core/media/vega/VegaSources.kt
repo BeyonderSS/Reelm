@@ -57,7 +57,9 @@ class VegaSources @Inject constructor(
     override suspend fun streams(title: String, year: Int?, type: MediaType, season: Int, episode: Int): List<MediaStream> {
         val reg = registry()
         val lowEnd = LowEnd.isOn(context)
-        val providers = reg.enabled.take(if (lowEnd) 2 else 10) // ponytail: first 10 in parallel, same cap as web
+        val kinds = runCatching { kinds(reg.commit) }.getOrDefault(emptyMap())
+        // ponytail: first 10 title providers in parallel, same cap as web
+        val providers = reg.enabled.filter { kindOf(it, kinds[it]) !in OFF_TITLE }.take(if (lowEnd) 2 else 10)
         return coroutineScope {
             providers.map { p ->
                 async {
@@ -107,6 +109,18 @@ class VegaSources @Inject constructor(
         text.ifEmpty { null }
     }
 
+    /** provider → manifest type at [commit], disk-cached like the provider files. */
+    private suspend fun kinds(commit: String): Map<String, String> = withContext(Dispatchers.IO) {
+        val cached = File(context.cacheDir, "vega/$commit/manifest.json")
+        val text = if (cached.exists()) cached.readText() else http.client.newCall(Request.Builder().url("$CDN@$commit/manifest.json").build()).execute().use { res ->
+            if (!res.isSuccessful) throw IOException("HTTP ${res.code} for manifest")
+            res.body!!.string().also { cached.parentFile?.mkdirs(); File(cached.path + ".tmp").apply { writeText(it) }.renameTo(cached) }
+        }
+        kotlinx.serialization.json.Json.parseToJsonElement(text).jsonArray.associate {
+            it.jsonObject["value"]!!.jsonPrimitive.content to (it.jsonObject["type"]?.jsonPrimitive?.contentOrNull ?: "global")
+        }
+    }
+
     private suspend fun registry(): Registry {
         registry?.let { return it }
         val remote = if (!api.enabled) null else withTimeoutOrNull(REGISTRY_TIMEOUT_MS) {
@@ -121,6 +135,11 @@ class VegaSources @Inject constructor(
         private const val PROVIDER_TIMEOUT_MS = 40_000L // under MoviesRepositoryImpl's 45 s per-source budget (slow networks)
         private const val REGISTRY_TIMEOUT_MS = 3_000L
         val DEFAULT = Registry("4ecbc98e12da870ffc06b41bd7affe4b1fe316f0", listOf("hdhub4u", "drive", "vega", "mod", "topmovies"))
+        /** The manifest's type, corrected where it says "global" for a niche catalog (same table as web vega.ts). */
+        private val KIND_FIX = mapOf("dramacool" to "kdrama", "kissKh" to "kdrama", "durbinLive" to "live", "liveTgTv" to "live", "youtube" to "video")
+        fun kindOf(p: String, type: String?) = KIND_FIX[p] ?: type ?: "global"
+        /** Never asked for a movie or series: anime (anime titles have their own sources), live TV, YouTube. */
+        val OFF_TITLE = setOf("anime", "live", "video")
         private val DISPLAY = mapOf(
             "hdhub4u" to "HdHub4u", "drive" to "MoviesDrive", "vega" to "VMovies", "mod" to "MoviesMod", "topmovies" to "TopMovies"
         )
@@ -132,7 +151,7 @@ class VegaSources @Inject constructor(
             if (!Regex("[0-9a-f]{40}").matches(commit)) return null
             if (o["base"]?.jsonPrimitive?.contentOrNull?.trimEnd('/') != "$CDN@$commit/dist") return null
             val enabled = (o["enabled"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }
-                ?.filter { Regex("[a-z0-9]+").matches(it) } ?: return null
+                ?.filter { Regex("[A-Za-z0-9]+").matches(it) } ?: return null // camelCase too: autoEmbed, movieBoxWeb, kissKh… were silently dropped
             return Registry(commit, enabled)
         }
     }
@@ -166,7 +185,8 @@ internal suspend fun VegaEngine.streams(
         }
         if (picks.isEmpty()) return@session emptyList()
         // Both qualities resolve concurrently inside the one runtime; a failed one comes back as [].
-        val kind = JsonPrimitive(if (series) "series" else "movie")
+        // the Vega app passes the meta's own type (its player route carries info.type), not ours
+        val kind = (meta["type"] as? JsonPrimitive)?.takeIf { it.isString } ?: JsonPrimitive(if (series) "series" else "movie")
         val links = JsonArray(picks.map { it.second })
         call("Promise.all($links.map(link => stream.getStream({link,type:$kind,signal:new AbortController().signal,providerContext:ctx,isDownload:false}).catch(() => [])))")
             .jsonArray.zip(picks).flatMap { (streams, pick) ->

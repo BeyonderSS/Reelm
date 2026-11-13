@@ -180,7 +180,7 @@ function Player() {
       setMore(true);
       await (await import("@/lib/movies")).streamAll(new URLSearchParams({ id: p.id, type: p.type ?? "movie", title: p.title, year: String(p.year ?? ""), s: String(p.season ?? 0), e: String(p.episode ?? 0) }), (part) => {
         if (!live) return;
-        acc = [...acc, ...part.map((x) => ({ src: x.url, hls: /\.m3u8(\?|$)/.test(x.url), label: x.label, codec: x.codec, dolby: x.dolby, height: x.height, langs: x.langs }))];
+        acc = [...acc, ...part.map((x) => ({ src: x.url, hls: x.hls ?? /\.m3u8(\?|$)/.test(x.url), label: x.label, codec: x.codec, dolby: x.dolby, height: x.height, langs: x.langs }))];
         setSources(acc);
         console.debug(`[stream] +${part.length} = ${acc.length} at ${Date.now() - tl} ms`);
         const sb = part.find((x) => x.subtitles?.length)?.subtitles;
