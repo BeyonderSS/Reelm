@@ -59,8 +59,9 @@ class AnidbHttpClient @Inject constructor(
         response
     }
 
-    suspend fun getHtml(url: String, headers: Map<String, String> = emptyMap()): String {
-        return get(url, headers).use { response ->
+    /** Main-safe: the body is read on IO too (reading it on the caller's thread caused an ANR from Home). */
+    suspend fun getHtml(url: String, headers: Map<String, String> = emptyMap()): String = withContext(Dispatchers.IO) {
+        get(url, headers).use { response ->
             response.body?.string() ?: throw IOException("Empty response from $url")
         }
     }
