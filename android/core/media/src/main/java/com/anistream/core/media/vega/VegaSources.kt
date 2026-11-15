@@ -22,6 +22,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -58,29 +60,91 @@ class VegaSources @Inject constructor(
 
     data class Registry(val commit: String, val enabled: List<String>)
 
-    override suspend fun streams(title: String, year: Int?, type: MediaType, season: Int, episode: Int): List<MediaStream> {
+    /** No one to hand late results to: wait for all providers (40 s at most), never return early. */
+    override suspend fun streams(title: String, year: Int?, type: MediaType, season: Int, episode: Int) = lookup(title, year, type, season, episode, null)
+
+    override suspend fun streams(title: String, year: Int?, type: MediaType, season: Int, episode: Int, late: suspend (List<MediaStream>) -> Unit) =
+        lookup(title, year, type, season, episode, late)
+
+    /**
+     * Every title provider, most reliable on this device first, 4 at a time (2 on a low-end TV). Returns once 3 sources at
+     * 1080p (720p low-end) or 5 of any are in, or after 40 s; the rest keep going 2 at a time (1 low-end) into [late], 60 s at most.
+     */
+    private suspend fun lookup(title: String, year: Int?, type: MediaType, season: Int, episode: Int, late: (suspend (List<MediaStream>) -> Unit)?): List<MediaStream> {
         val reg = registry()
         val lowEnd = LowEnd.isOn(context)
         val kinds = runCatching { kinds(reg.commit) }.getOrDefault(emptyMap())
-        // ponytail: first 10 title providers in parallel, same cap as web
-        val providers = reg.enabled.filter { kindOf(it, kinds[it]) !in OFF_TITLE }.take(if (lowEnd) 2 else 10)
-        return coroutineScope {
-            providers.map { p ->
-                async {
-                    // the probe sits inside the provider's budget: probing after the slowest provider pushed the whole
-                    // Vega source past the repository's per-source timeout, and every provider's streams were lost
-                    withTimeoutOrNull(PROVIDER_TIMEOUT_MS) {
-                        runCatching {
-                            val all = if (p !in UNLOCKS) provider(reg.commit, p, title, year, type, season, episode, lowEnd)
-                            // NetMirror's first lookup in 12 h spends ~35 s unlocking a session; past our budget it keeps
-                            // going here so the token it earns is saved and the next lookup takes ~2 s
-                            else background.async { withTimeout(UNLOCK_MS) { provider(reg.commit, p, title, year, type, season, episode, lowEnd) } }.await()
-                            all.zip(all.map { async { playable(it) } }.awaitAll()).filter { it.second }.map { it.first }
-                        }.onFailure { Log.w("Vega", "$p: ${it.message}") }.getOrNull()
-                    }.orEmpty().also { Log.d("Vega", "$p: ${it.size} playable") }
-                }
-            }.awaitAll().flatten()
+        val now = System.currentTimeMillis()
+        val stats = context.getSharedPreferences("src_stats", Context.MODE_PRIVATE) // SourceRank's, keyed by source name
+        val providers = FanOut.order(reg.enabled.filter { kindOf(it, kinds[it]) !in OFF_TITLE && !FanOut.tripped(breakers.getString(it, null), now) }) {
+            FanOut.reliability(stats.getString(DISPLAY[it] ?: it, null), now)
         }
+        val target = if (lowEnd) 720 else 1080
+        Log.d("Vega", "asking ${providers.size}: ${providers.joinToString(" ")}")
+        return FanOut.run(providers, background, if (lowEnd) 2 else 4, if (lowEnd) 1 else 2, PROVIDER_TIMEOUT_MS, DEADLINE_MS, { late != null && FanOut.enough(it, target, MediaStream::height) }, late ?: {}) { p ->
+            one(reg.commit, p, title, year, type, season, episode, lowEnd)
+        }.also { Log.d("Vega", "returned ${it.size} after ${System.currentTimeMillis() - now} ms") }
+    }
+
+    private val breakers = context.getSharedPreferences("vega_breaker", Context.MODE_PRIVATE)
+
+    private fun breaker(p: String, failed: Boolean) {
+        val old = breakers.getString(p, null)
+        val n = FanOut.nextBreaker(old, failed, System.currentTimeMillis())
+        if (n != old) breakers.edit().apply { if (n == null) remove(p) else putString(p, n) }.apply()
+        if (n != null && FanOut.tripped(n, System.currentTimeMillis())) Log.w("Vega", "$p: search failed $TRIPS times in a row, skipped for 6 h")
+    }
+
+    /** One provider: its playable streams, never throws. */
+    private suspend fun one(commit: String, p: String, title: String, year: Int?, type: MediaType, season: Int, episode: Int, lowEnd: Boolean): List<MediaStream> {
+        var searched = false
+        // the probe sits inside the provider's budget: probing after the slowest provider pushed the whole
+        // Vega source past the repository's per-source timeout, and every provider's streams were lost
+        return withTimeoutOrNull(PROVIDER_TIMEOUT_MS) {
+            runCatching {
+                val all = if (p !in UNLOCKS) provider(commit, p, title, year, type, season, episode, lowEnd) { searched = true }
+                // NetMirror's first lookup in 12 h spends ~35 s unlocking a session; past our budget it keeps
+                // going here so the token it earns is saved and the next lookup takes ~2 s
+                else background.async { withTimeout(UNLOCK_MS) { provider(commit, p, title, year, type, season, episode, lowEnd) { searched = true } } }.await()
+                coroutineScope { all.zip(all.map { async { playable(it) } }.awaitAll()).filter { it.second }.map { it.first } }
+            }.onFailure {
+                Log.w("Vega", "$p: ${it.message}")
+                if (it is VegaEngine.SearchFailed) breaker(p, true)
+            }.getOrNull()
+        }.orEmpty().also {
+            if (searched) breaker(p, false)
+            Log.d("Vega", "$p: ${it.size} playable")
+        }
+    }
+
+    /**
+     * NetMirror's session token (t_hash_t, 12 h) costs a ~35 s ad-verify poll, so the first mirror lookup after a cold
+     * start used to come back empty. Earn it in the background at app start and again before it expires. Not on a
+     * low-end TV: a second QuickJS runtime there competes with the UI for ~1 GB.
+     */
+    fun prewarm() {
+        if (LowEnd.isOn(context)) return
+        background.launch { while (true) delay(runCatching { warm() }.onFailure { Log.w("Vega", "pre-warm: ${it.message}") }.getOrDefault(RETRY_MS)) }
+    }
+
+    /** Unlocks when the token is missing or near expiry; returns how long until the next check. */
+    private suspend fun warm(): Long {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        @Suppress("DEPRECATION") if (cm.activeNetworkInfo?.isConnected != true) return RETRY_MS
+        val reg = registry()
+        val p = UNLOCKS.firstOrNull { it in reg.enabled } ?: return REFRESH_MS
+        fun age() = System.currentTimeMillis() - (engine.kv(p, "t_hash_t_data")?.let {
+            runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it).jsonObject["ts"]?.jsonPrimitive?.content?.toLong() }.getOrNull()
+        } ?: 0L)
+        if (age() < REFRESH_MS) return REFRESH_MS - age()
+        val t0 = System.currentTimeMillis()
+        val files = listOf("posts").mapNotNull { f -> file(reg.commit, p, f)?.let { f to patch(it) } }.toMap()
+        withTimeout(UNLOCK_MS) {
+            engine.session(files, p) { call("posts.getSearchPosts({searchQuery:'Red Notice',page:1,providerValue:${JsonPrimitive(p)},signal:new AbortController().signal,providerContext:ctx})") }
+        }
+        val ok = age() < REFRESH_MS
+        Log.d("Vega", "pre-warm: $p ${if (ok) "unlocked" else "still locked"} in ${System.currentTimeMillis() - t0} ms")
+        return if (ok) REFRESH_MS else RETRY_MS
     }
 
     /** Ask the way ExoPlayer does (open range): some hosts only serve bounded ranges and answer players with a 403 page. */
@@ -92,12 +156,12 @@ class VegaSources @Inject constructor(
     }
 
     private suspend fun provider(
-        commit: String, p: String, title: String, year: Int?, type: MediaType, season: Int, episode: Int, lowEnd: Boolean
+        commit: String, p: String, title: String, year: Int?, type: MediaType, season: Int, episode: Int, lowEnd: Boolean, searched: () -> Unit
     ): List<MediaStream> {
         // movies need episodes.js too: NetMirror's meta calls a film with seasons "series" and lists it via episodesLink
         val files = listOf("posts", "meta", "stream", "episodes")
             .mapNotNull { f -> file(commit, p, f)?.let { f to patch(it) } }.toMap()
-        return engine.streams(files, p, DISPLAY[p] ?: p, title, year, type, season, episode, lowEnd)
+        return engine.streams(files, p, DISPLAY[p] ?: p, title, year, type, season, episode, lowEnd, searched)
     }
 
     /** Provider file from the pinned commit, disk-cached; null when that provider doesn't ship it (404). */
@@ -143,6 +207,10 @@ class VegaSources @Inject constructor(
         private const val PROVIDER_TIMEOUT_MS = 40_000L // under MoviesRepositoryImpl's 45 s per-source budget (slow networks)
         private const val REGISTRY_TIMEOUT_MS = 3_000L
         private const val UNLOCK_MS = 90_000L
+        private const val DEADLINE_MS = 60_000L // nothing of one lookup runs longer (but a NetMirror unlock, which is saved)
+        private const val REFRESH_MS = 11 * 3_600_000L // re-unlock an hour before the 12 h token expires
+        private const val RETRY_MS = 15 * 60_000L
+        private const val TRIPS = 3
         private val UNLOCKS = setOf("netflixMirror", "primeMirror", "disneyMirror")
         val DEFAULT = Registry("4ecbc98e12da870ffc06b41bd7affe4b1fe316f0", listOf("hdhub4u", "drive", "vega", "mod", "topmovies"))
         /** The manifest's type, corrected where it says "global" for a niche catalog (same table as web vega.ts). */
@@ -178,13 +246,17 @@ class VegaSources @Inject constructor(
 /** One provider's pipeline: search → best post → meta → season/episode → up to two qualities → streams. */
 internal suspend fun VegaEngine.streams(
     files: Map<String, String>, p: String, name: String, title: String, year: Int?, type: MediaType, season: Int, episode: Int,
-    lowEnd: Boolean
+    lowEnd: Boolean, searched: () -> Unit = {}
 ): List<MediaStream> {
     val series = type == MediaType.SERIES
-    return session(files, p) {
+    return session(files, p, if (lowEnd) LOW_END_HEAP else 0) {
         val q = JsonPrimitive(Stremio.searchQuery(title))
-        val posts = call("posts.getSearchPosts({searchQuery:$q,page:1,providerValue:${JsonPrimitive(p)},signal:new AbortController().signal,providerContext:ctx})")
-            .jsonArray.map { it.jsonObject }
+        val posts = try {
+            call("posts.getSearchPosts({searchQuery:$q,page:1,providerValue:${JsonPrimitive(p)},signal:new AbortController().signal,providerContext:ctx})")
+                .jsonArray.map { it.jsonObject }
+        } catch (e: VegaEngine.VegaException) { throw VegaEngine.SearchFailed(e.message) }
+        if (posts.isEmpty() && httpFails > 0) throw VegaEngine.SearchFailed("$httpFails search requests failed")
+        searched()
         val post = VegaPick.post(title, year, series, season, posts) ?: return@session emptyList()
         val meta = call("meta.getMeta({link:${post["link"]},provider:${JsonPrimitive(p)},providerContext:ctx})").jsonObject
         val entries = (meta["linkList"] as? JsonArray).orEmpty().map { it.jsonObject }
@@ -213,6 +285,9 @@ internal suspend fun VegaEngine.streams(
             }
     }
 }
+
+/** QuickJS heap per provider runtime on low-end TVs (2 run at once): pages are capped at 8 MB, cheerio's DOM of one stays well under. */
+private const val LOW_END_HEAP = 96L * 1024 * 1024
 
 /** Pure choices over provider JSON: which post, season entries, qualities and episode. */
 internal object VegaPick {

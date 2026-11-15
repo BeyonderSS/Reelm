@@ -21,6 +21,7 @@ class AniStreamApp : Application(), Configuration.Provider, ImageLoaderFactory {
     @Inject lateinit var workerFactory: HiltWorkerFactory
     @Inject lateinit var updates: com.anistream.feature.party.UpdateManager
     @Inject lateinit var accountRuntime: com.anistream.core.account.AccountRuntime
+    @Inject lateinit var vega: com.anistream.core.media.vega.VegaSources
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder().setWorkerFactory(workerFactory).build()
@@ -33,6 +34,7 @@ class AniStreamApp : Application(), Configuration.Provider, ImageLoaderFactory {
         schedulePeriodicWork(this)
         com.anistream.app.work.notifyUpdates(this, updates, kotlinx.coroutines.MainScope())
         accountRuntime.start(this, if (BuildConfig.FLAVOR == "tv") "tv" else "phone")
+        vega.prewarm()
     }
 
     /** Phone: Coil defaults. Low-end TV: memory cache ≤ 15 % of heap, RGB_565, every decode ≤ 300 px wide. */

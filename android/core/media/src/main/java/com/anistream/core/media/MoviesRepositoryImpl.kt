@@ -326,7 +326,7 @@ class MoviesRepositoryImpl @Inject constructor(
             sources += { movieBoxStreams(sid, season, episode, dub = true) } // its own source, so dubs never delay the original
         }
         if (detail != null) titleSources.forEach { src ->
-            sources += { src.streams(detail.title, years?.first, type, season, episode) }
+            sources += { src.streams(detail.title, years?.first, type, season, episode) { NowPlaying.late.emit(LateStreams(NowPlaying.lateKey(id, season, episode), it)) } }
         }
         if (tt != null) {
             val videoId = if (type == MediaType.SERIES) "$tt:$season:$episode" else tt

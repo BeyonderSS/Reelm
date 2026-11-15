@@ -3,6 +3,7 @@
 import { score } from "./search-rank.ts";
 import { bridge, helperCors, setHeaders } from "./bridge.ts";
 import { langs } from "./langs.ts";
+import { loadStats, score as reliability } from "./src-rank.ts";
 export type F = (url: string, o?: { headers?: Record<string, string>; probe?: boolean; method?: string; body?: string; vega?: boolean }) => Promise<{ status: number; url: string; headers: Record<string, string>; text: string }>;
 const vf: F = (u, o) => bridge(u, { ...o, vega: true }, 20000);
 const DEFAULT = { commit: "4ecbc98e12da870ffc06b41bd7affe4b1fe316f0", enabled: ["hdhub4u", "drive", "vega", "mod", "topmovies"], base: "" };
@@ -216,14 +217,54 @@ export const manifestTypes = (base: string) => {
   return types.get(base)!;
 };
 
-/** `on` gets each provider's files as soon as it has them; slow ones (VegaMovies, autoEmbed: 15-25 s for a series) get up to 45 s. */
+// ---- asking many providers ----
+/** Most reliable here first (src-rank stats, keyed by the label's provider name); the admin order breaks ties. */
+export const order = (ps: string[], rel: (p: string) => number) => ps.map((p, i) => ({ p, i, s: rel(p) })).sort((a, b) => b.s - a.s || a.i - b.i).map((x) => x.p);
+/** Enough to stop asking at full speed: 3 sources at the target height or better, or 5 of any. */
+export const enough = (got: { height: number }[], target = 1080) => got.filter((x) => x.height >= target).length >= 3 || got.length >= 5;
+/** Circuit breaker, one entry "fails,until" per provider: 3 failed searches in a row (network, DNS, 4xx) skip it for 6 h; a working search resets it. */
+const TRIP = 3, COOL = 6 * 36e5, BKEY = "reelm.vegaBreaker";
+export const tripped = (e: string | undefined, now: number) => +(e?.split(",")[1] ?? 0) > now;
+export const nextBreaker = (e: string | undefined, failed: boolean, now: number) => { if (!failed) return undefined; const n = +(e?.split(",")[0] ?? 0) + 1; return `${n},${n >= TRIP ? now + COOL : 0}`; };
+const breakers = (): Record<string, string> => { try { return JSON.parse(localStorage.getItem(BKEY) ?? "{}") ?? {}; } catch { return {}; } };
+const breaker = (p: string, failed: boolean) => { try { const b = breakers(), n = nextBreaker(b[p], failed, Date.now()); if (n === b[p]) return; if (n) b[p] = n; else delete b[p]; localStorage.setItem(BKEY, JSON.stringify(b)); } catch {} };
+/** Runs `ps` at most `limit` at a time until all are done or `deadline` ms pass; once `enough` holds for what's in, only `after` keep going. Each result goes to `on` as it lands. */
+export async function fanOut<T>(ps: string[], one: (p: string) => Promise<T[]>, o: { limit: number; after: number; deadline: number; enough: (got: T[]) => boolean; on: (x: T[]) => void }) {
+  const q = [...ps], got: T[] = [], t0 = Date.now();
+  let stop = false;
+  const worker = async (w: number) => {
+    for (let p; !(stop && w >= o.after) && (p = q.shift()) !== undefined;) {
+      let t: ReturnType<typeof setTimeout> | undefined;
+      const x = await Promise.race([one(p), new Promise<T[]>((ok) => (t = setTimeout(() => ok([]), o.deadline - (Date.now() - t0))))]).finally(() => clearTimeout(t));
+      if (Date.now() - t0 >= o.deadline) return;
+      if (x.length) { got.push(...x); o.on(x); }
+      stop ||= o.enough(got);
+    }
+  };
+  await Promise.all(Array.from({ length: o.limit }, (_, w) => worker(w)));
+  return got;
+}
+
+/** Every title provider, most reliable first, 5 at a time (2 once there's enough), each up to 45 s, all within 60 s. `on` gets each provider's files as soon as it has them. */
 export async function streams(title: string, year: number, type: "movie" | "series", season: number, episode: number, f: F = vf, on: (x: Awaited<ReturnType<typeof resolve>>) => void = () => {}) {
-  const reg = await registry(), [ctx, kinds] = await Promise.all([context(f), manifestTypes(reg.base)]), r = { title, year, type, season, episode };
-  // ponytail: first 10 title providers run in parallel; a queue with a deadline if admins enable more and want them all
-  const ps = reg.enabled.filter((p) => !WEB_SKIP.includes(p) && !OFF_TITLE.includes(kindOf(p, kinds[p]))).slice(0, 10);
-  const t0 = Date.now(), all = await Promise.all(ps.map((p) => tmo(resolve(reg.base, p, r, ctx, f), 45000)
-    .then((x) => (console.debug(`[vega] ${p}: ${x.length} in ${Date.now() - t0} ms`), x.length && on(x), x), (e) => (console.debug(`[vega] ${p}: ${e?.message} after ${Date.now() - t0} ms`), [] as any[]))));
-  return all.flat().sort((a, b) => b.height - a.height);
+  const reg = await registry(), kinds = await manifestTypes(reg.base), r = { title, year, type, season, episode }, stats = loadStats(), br = breakers(), now = Date.now();
+  const ps = order(reg.enabled.filter((p) => !WEB_SKIP.includes(p) && !OFF_TITLE.includes(kindOf(p, kinds[p])) && !tripped(br[p], now)), (p) => reliability(stats[NAMES[p] ?? p], now));
+  const t0 = Date.now(), one = async (p: string) => {
+    // the provider's own fetches, so a search whose requests failed can be told from one that found nothing
+    let stage = "load" as Stage, fails = 0;
+    const g: F = (u, o) => stage !== "search" ? f(u, o) : f(u, o).then((x) => { if (x.status >= 400) fails++; return x; }, (e) => { fails++; throw e; });
+    try {
+      const x = await tmo(resolve(reg.base, p, r, await context(g), g, (s) => { stage = s; }), 45000);
+      console.debug(`[vega] ${p}: ${x.length} in ${Date.now() - t0} ms`);
+      if (stage !== "load") breaker(p, stage === "search" && !x.length && fails > 0);
+      return x;
+    } catch (e: any) {
+      console.debug(`[vega] ${p}: ${e?.message} after ${Date.now() - t0} ms`);
+      if (stage === "search" && e?.message !== "timeout") breaker(p, true); else if (stage !== "load" && stage !== "search") breaker(p, false);
+      return [];
+    }
+  };
+  return (await fanOut(ps, one, { limit: 5, after: 2, deadline: 60000, enough, on })).sort((a, b) => b.height - a.height);
 }
 
 // ---- admin "Test update" ----

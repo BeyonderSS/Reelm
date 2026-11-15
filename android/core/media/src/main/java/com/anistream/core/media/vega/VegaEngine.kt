@@ -49,6 +49,9 @@ class VegaEngine(
     /** kvStore + cookie jar survive restarts here (NetMirror's session token costs a ~35 s ad-verify poll, valid 12 h). */
     private val stateFile: File? = null
 ) {
+    /** A provider's kvStore value (JSON text), e.g. NetMirror's "t_hash_t_data". */
+    fun kv(provider: String, key: String): String? = state.kv[provider]?.get(key)
+
     @Volatile private var runtimeBytecode: ByteArray? = null
     private val urlsLock = Mutex()
     @Volatile private var urlsJson: Pair<Long, String>? = null
@@ -56,12 +59,14 @@ class VegaEngine(
 
     /**
      * Fresh runtime with [modules] (name → CommonJS source) loaded as globals; closed after [block].
-     * [provider] scopes ctx.kvStore, which (as in the Vega app) outlives the runtime.
+     * [provider] scopes ctx.kvStore, which (as in the Vega app) outlives the runtime. [memoryLimit] (bytes, 0 = none) caps
+     * the runtime's heap: on a 1 GB TV stick a provider parsing a huge page fails alone instead of the app being killed.
      */
-    suspend fun <T> session(modules: Map<String, String>, provider: String = "", block: suspend Session.() -> T): T {
+    suspend fun <T> session(modules: Map<String, String>, provider: String = "", memoryLimit: Long = 0, block: suspend Session.() -> T): T {
         val js = Runtimes.create()
         val host = Host()
         try {
+            if (memoryLimit > 0) js.memoryLimit = memoryLimit
             bind(js, host, state.kv.getOrPut(provider) { ConcurrentHashMap() })
             // Parsing the 400 KB bundle is the slow part on a Fire TV stick; compile once, reuse the bytecode.
             val bytecode = runtimeBytecode ?: js.compile(runtimeJs(), "vega-runtime.js").also { runtimeBytecode = it }
@@ -73,7 +78,7 @@ class VegaEngine(
                     "$name.js"
                 )
             }
-            return Session(js).block()
+            return Session(js) { host.fails.get() }.block()
         } finally {
             // quickjs-kt's close() cancels in-flight host calls, whose completion then touches the freed context.
             // So first fail every host call fast, let the JS settle, and only close an idle runtime.
@@ -110,6 +115,8 @@ class VegaEngine(
     /** Per-session host state: open calls and timers, so a session can be wound down before close. */
     private class Host {
         @Volatile var closed = false
+        /** requests that failed or answered >= 400 */
+        val fails = java.util.concurrent.atomic.AtomicInteger()
         val calls: MutableSet<Call> = ConcurrentHashMap.newKeySet()
         val timers = ConcurrentHashMap<Int, CompletableDeferred<Unit>>()
         fun shutdown() {
@@ -119,7 +126,10 @@ class VegaEngine(
         }
     }
 
-    class Session(private val js: QuickJs) {
+    class Session(private val js: QuickJs, private val fails: () -> Int = { 0 }) {
+        /** The provider's requests so far that failed (network, DNS) or answered 4xx/5xx. */
+        val httpFails get() = fails()
+
         /** Awaits the JS expression [expr] and returns its value as JSON. */
         suspend fun call(expr: String): JsonElement {
             // evaluate() runs the event loop to idle but hands back the promise itself, so park the outcome in globals.
@@ -172,7 +182,7 @@ class VegaEngine(
                     )
                 }
                 if (args[0] == "GET" && args[1] == URLS_JSON) sharedUrlsJson(get) else get()
-            }.getOrElse { e -> buildJsonObject { put("error", "${e.message ?: e::class.simpleName} (${args[1]})") }.toString() }
+            }.getOrElse { e -> host.fails.incrementAndGet(); buildJsonObject { put("error", "${e.message ?: e::class.simpleName} (${args[1]})") }.toString() }
         }
     }
 
@@ -200,6 +210,7 @@ class VegaEngine(
         val call = c.newCall(builder.build()).also { host.calls += it }
         val response = try { call.await() } finally { host.calls -= call }
         return response.use { res ->
+            if (res.code >= 400) host.fails.incrementAndGet()
             buildJsonObject {
                 put("status", res.code)
                 put("url", res.request.url.toString())
@@ -220,6 +231,9 @@ class VegaEngine(
     }
 
     class VegaException(message: String) : Exception(message)
+
+    /** The provider's search itself failed (threw, or its requests failed and it found nothing): what the circuit breaker counts. */
+    class SearchFailed(message: String?) : Exception(message)
 
     /**
      * The Vega app's provider cookie jar (providerCookieJar.ts): one jar for all providers of a source author (we load

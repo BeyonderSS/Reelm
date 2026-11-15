@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { makeAxios, makeFetch, pickSeason, pickQualities, pickEpisode, NOT_MEDIA, kindOf, casesFor, checkProvider } from "./vega.ts";
+import { makeAxios, makeFetch, pickSeason, pickQualities, pickEpisode, NOT_MEDIA, kindOf, casesFor, checkProvider, order, enough, tripped, nextBreaker, fanOut } from "./vega.ts";
 assert.ok(NOT_MEDIA.test("https://x.y/config-ab12.json") && !NOT_MEDIA.test("https://x.y/f.mkv?t=1") && !NOT_MEDIA.test("https://pixeldrain.com/api/file/abc"));
 const R = (status: number, url: string, text = "", headers = {}) => ({ status, url, text, headers });
 const calls: any[] = [];
@@ -52,3 +52,22 @@ const slow = makeAxios(() => new Promise(() => {})); assert.equal((await tx(slow
 assert.equal(kindOf("kissKh", "english"), "kdrama"); assert.equal(kindOf("anikoto", "anime"), "anime"); assert.equal(kindOf("x"), "global");
 assert.equal(casesFor("live"), null); assert.equal(casesFor("italy")?.movie.title, "Spider-Man: Into the Spider-Verse"); assert.equal(casesFor("anime")?.series.title, "Jujutsu Kaisen");
 const nm = await checkProvider("x", "primeMirror", "movie", async () => { throw new Error("no network expected"); }); assert.ok(nm.skipped && nm.error?.startsWith("Android only"));
+// fan-out: reliability first, admin order on ties; early stop; breaker
+assert.deepEqual(order(["a", "b", "c", "d"], (p) => ({ c: 0.9, d: 0.2 } as any)[p] ?? 0.5), ["c", "a", "b", "d"]);
+const H = (...hs: number[]) => hs.map((height) => ({ height }));
+assert.ok(enough(H(1080, 2160, 1080)) && enough(H(480, 480, 480, 480, 480)) && !enough(H(1080, 1080, 720, 720)));
+const hr = 36e5; let e: string | undefined;
+for (let i = 0; i < 2; i++) e = nextBreaker(e, true, 0);
+assert.ok(!tripped(e, 0)); e = nextBreaker(e, true, 0); assert.ok(tripped(e, 5 * hr) && !tripped(e, 6 * hr + 1));
+assert.ok(tripped(nextBreaker(e, true, 7 * hr), 8 * hr)); // a failed retry after the cool-off trips it again
+assert.equal(nextBreaker(e, false, 0), undefined); // a working search resets it
+{ // limit 3; once 3 sources at 1080p are in, only 1 worker keeps going, and every result still lands
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms)); let live = 0, found = 0, liveAfter = 0, peakAfter = 0, peak = 0; const seen: string[] = [];
+  const got = await fanOut(["a", "b", "c", "d", "e", "f", "g"], async (p) => { // in-flight ones finish; only new starts are limited
+    const after = found >= 3; seen.push(p); live++; peak = Math.max(peak, live); if (after) peakAfter = Math.max(peakAfter, ++liveAfter);
+    await wait(10 + seen.length); live--; if (after) liveAfter--; found++; return [{ height: 1080 }]; },
+    { limit: 3, after: 1, deadline: 5000, enough, on: () => {} });
+  assert.equal(got.length, 7); assert.equal(peak, 3); assert.equal(peakAfter, 1); assert.deepEqual(seen, ["a", "b", "c", "d", "e", "f", "g"]);
+  const t = Date.now(), cut = await fanOut(["slow", "x"], async (p) => (p === "slow" ? new Promise<any[]>(() => {}) : [{ height: 720 }]), { limit: 1, after: 1, deadline: 50, enough, on: () => {} });
+  assert.equal(cut.length, 0); assert.ok(Date.now() - t < 500); // nothing outlives the deadline
+}
