@@ -961,7 +961,7 @@ fun TvMediaPlayerScreen(
         onExit = onExit,
         settings = listOf(
             SettingGroup("Quality", quals.takeIf { it.isNotEmpty() }?.let { listOf(0) + it.map { q -> q.first } }.orEmpty(),
-                { h -> qualityChip(h, quals, s.stream?.height) }, { it == s.quality }, vm::selectQuality),
+                { h -> qualityChip(h, quals, s.stream?.height, vm.unsupportedHeights(), "TV") }, { it == s.quality }, vm::selectQuality),
             // WEB_SOURCE = last-resort web player, after the real sources; without "Show all sources" just the playing one
             SettingGroup(
                 if (s.showAllSources || streams.size < 2) "Source" else "Playing from",

@@ -120,6 +120,7 @@ internal object Stremio {
             val path = url.substringBefore('?').lowercase()
             MediaStream(
                 url = url,
+                codec = com.anistream.core.media.fourkhdhub.FourKHdHubParser.codecDepth(listOfNotNull(o.str("name"), o.str("title"), o.str("description")).joinToString(" ")),
                 qualityLabel = if (height > 0) "${height}p" else "AUTO",
                 height = height,
                 sizeBytes = hints?.str("videoSize")?.toLongOrNull(),

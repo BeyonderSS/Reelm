@@ -26,9 +26,10 @@ internal fun WatchSourcesSection(vm: MediaPlayerViewModel, onPicked: () -> Unit)
         ChoiceRow(listOf<String?>(null) + languages, preferred, { it?.let(AudioLanguage::name) ?: "Any" }, vm::selectAudioLanguage)
     }
     val quals = vm.qualities()
+    val unsupported = vm.unsupportedHeights()
     if (quals.isNotEmpty()) {
         SheetHeading("Quality")
-        ChoiceRow(listOf(0) + quals.map { it.first }, ui.quality, { h -> qualityChip(h, quals, ui.stream?.height) }) { vm.selectQuality(it); onPicked() }
+        ChoiceRow(listOf(0) + quals.map { it.first }, ui.quality, { h -> qualityChip(h, quals, ui.stream?.height, unsupported, "phone") }) { vm.selectQuality(it); onPicked() }
     }
     if (ui.note.isNotBlank()) Text(ui.note, style = AppType.numeric, modifier = Modifier.padding(top = Space.sm))
     val stream = ui.stream
@@ -50,7 +51,8 @@ internal fun WatchSourcesSection(vm: MediaPlayerViewModel, onPicked: () -> Unit)
     Spacer(Modifier.height(Space.sm))
 }
 
-/** "Auto", "1080p · 3", "720p · Playing" */
-fun qualityChip(h: Int, quals: List<Pair<Int, Int>>, playingHeight: Int?): String =
-    if (h == 0) "Auto" else listOfNotNull("${h}p", quals.firstOrNull { it.first == h }?.second?.takeIf { it > 1 }?.toString(), "Playing".takeIf { h == playingHeight })
+/** "Auto", "1080p · 3", "720p · Playing", "1080p · Not supported on this TV" (every source of it is 10-bit HEVC without Main10) */
+fun qualityChip(h: Int, quals: List<Pair<Int, Int>>, playingHeight: Int?, unsupported: Set<Int> = emptySet(), device: String = "device"): String =
+    if (h == 0) "Auto" else if (h in unsupported && h != playingHeight) "${h}p · Not supported on this $device"
+    else listOfNotNull("${h}p", quals.firstOrNull { it.first == h }?.second?.takeIf { it > 1 }?.toString(), "Playing".takeIf { h == playingHeight })
         .joinToString(" · ")

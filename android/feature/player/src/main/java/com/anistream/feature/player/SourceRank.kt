@@ -1,6 +1,7 @@
 package com.anistream.feature.player
 
 import android.content.Context
+import com.anistream.core.common.LowEnd
 import com.anistream.domain.model.MediaStream
 import kotlin.math.pow
 
@@ -34,14 +35,31 @@ internal object SourceRank {
         )
     }
 
+    /** Providers whose HEVC is x265 10-bit even when the release name doesn't say so. */
+    private val TEN_BIT_HEVC = setOf("4khdhub") // native "4KHDHub" and Vega's "4khdhub · GDrive"
+
+    /** Before loading: without HEVC Main10 ([main10]), 10-bit/HDR/DV by label, or HEVC from a 10-bit provider, most likely won't decode. */
+    fun likelyUndecodable(s: MediaStream, main10: Boolean): Boolean {
+        if (main10) return false
+        val t = listOfNotNull(s.codec, s.qualityLabel).joinToString(" ")
+        return LowEnd.isHighBitDepth(t) || (LowEnd.isHevc(t) && provider(s).lowercase() in TEN_BIT_HEVC)
+    }
+
+    private val MAIN10 = Regex("""^(hvc1|hev1)\.[ABC]?2\.|^(dvh1|dvhe)\b""", RegexOption.IGNORE_CASE)
+
+    /** After loading: the selected video format is 10-bit (HEVC Main10 "hvc1.2.4.L120", Dolby Vision, or an HDR transfer). */
+    fun isMain10(codecs: String?, mime: String?, hdr: Boolean): Boolean =
+        hdr || mime == "video/dolby-vision" || (codecs != null && MAIN10.containsMatchIn(codecs))
+
     /**
-     * Indexes of [list] to try, in order: [lang]'s sources first; [height] itself, then each lower height (nearest first), then higher;
+     * Indexes of [list] to try, in order: [lang]'s sources first; within them what this device can decode at all ([undecodable] last, whatever its height); [height] itself, then each lower height (nearest first), then higher;
      * within a height: what this device can decode, then provider reliability, then list order.
      */
-    fun fallbackOrder(list: List<MediaStream>, lang: String?, height: Int, stats: Map<String, SrcStat>, now: Long, canPlay: (MediaStream) -> Boolean = { true }): List<Int> {
+    fun fallbackOrder(list: List<MediaStream>, lang: String?, height: Int, stats: Map<String, SrcStat>, now: Long, canPlay: (MediaStream) -> Boolean = { true }, undecodable: (MediaStream) -> Boolean = { false }): List<Int> {
         val anyLang = lang != null && list.any { lang in it.languages }
         return list.indices.sortedWith(compareBy(
             { if (anyLang && lang !in list[it].languages) 1 else 0 },
+            { if (undecodable(list[it])) 1 else 0 },
             { list[it].height.let { h -> if (h == height) 0 else if (h < height) 1 else 2 } },
             { list[it].height.let { h -> if (h < height) -h else h } },
             { if (canPlay(list[it])) 0 else 1 },
@@ -49,10 +67,35 @@ internal object SourceRank {
         ))
     }
 
+    /** "45 min", "2h 10m", "1h", "130", or seconds ("5400") → minutes; null when unknown. */
+    fun runtimeMinutes(s: String?): Int? {
+        if (s.isNullOrBlank()) return null
+        val h = Regex("""(\d+)\s*h""", RegexOption.IGNORE_CASE).find(s)?.groupValues?.get(1)?.toInt()
+        val m = Regex("""(\d+)\s*m""", RegexOption.IGNORE_CASE).find(s)?.groupValues?.get(1)?.toInt()
+        if (h != null || m != null) return (h ?: 0) * 60 + (m ?: 0)
+        return s.trim().toIntOrNull()?.let { if (it > 600) it / 60 else it }?.takeIf { it > 0 }
+    }
+
+    /**
+     * NetMirror's "Too Many Requests – STOP Abuse" clip (~10 min) plays fine instead of the film: a file under 11 min when the
+     * title is known to run 20+ min ([expectedMin]: TMDB/Cinemeta runtime or an earlier play's duration), or is a movie.
+     */
+    fun isPlaceholder(durationMs: Long, expectedMin: Int?, movie: Boolean): Boolean =
+        durationMs in 1 until 11 * 60_000L && (if (expectedMin != null) expectedMin >= 20 else movie)
+
+    /** First of [order] whose url hasn't failed yet; null when every source has. */
+    fun nextUntried(list: List<MediaStream>, order: List<Int>, tried: Set<String>): Int? = order.firstOrNull { list[it].url !in tried }
+
     /** Quality chips: (height, count) best first, among the sources carrying [lang] (all of them when none do). */
     fun qualities(list: List<MediaStream>, lang: String?): List<Pair<Int, Int>> =
-        list.filter { lang == null || lang in it.languages }.ifEmpty { list }
-            .filter { it.height > 0 }.groupingBy { it.height }.eachCount().toList().sortedByDescending { it.first }
+        inLang(list, lang).groupingBy { it.height }.eachCount().toList().sortedByDescending { it.first }
+
+    /** Heights (among the chips) whose every source is [undecodable]. */
+    fun undecodableHeights(list: List<MediaStream>, lang: String?, undecodable: (MediaStream) -> Boolean): Set<Int> =
+        inLang(list, lang).groupBy { it.height }.filterValues { it.all(undecodable) }.keys
+
+    private fun inLang(list: List<MediaStream>, lang: String?) =
+        list.filter { lang == null || lang in it.languages }.ifEmpty { list }.filter { it.height > 0 }
 
     private fun prefs(c: Context) = c.getSharedPreferences("src_stats", Context.MODE_PRIVATE)
 

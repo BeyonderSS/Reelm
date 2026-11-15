@@ -12,6 +12,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -46,6 +47,11 @@ import java.util.Locale
 import javax.inject.Inject
 
 private const val START_TIMEOUT_MS = 40_000L
+/** data is arriving (this much buffered) but no frame after [DECODE_TIMEOUT_MS]: the decoder, not the network */
+private const val DECODE_TIMEOUT_MS = 12_000L
+private const val DECODE_BUFFERED_MS = 5_000L
+/** a provider's stand-in clip (NetMirror's "Too Many Requests") instead of the title: its fault, recorded as a failure */
+private const val ERROR_PLACEHOLDER = 1_000_001 // PlaybackException custom range (≥ 1 000 000)
 private const val DEFAULT_USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
@@ -168,20 +174,27 @@ class MediaPlayerViewModel @Inject constructor(
     private val canPlay: (MediaStream) -> Boolean = if (lowEnd) ::canPlayLowEnd else { s ->
         canPlayPhone(s) && (LowEnd.hasHevcMain10 || listOfNotNull(s.codec, s.qualityLabel).joinToString(" ").let { !LowEnd.isHevc(it) && !LowEnd.isHighBitDepth(it) })
     }
-    /** fallback target height and the sources tried for it (a pick starts a fresh chain) */
+    /** 10-bit HEVC on a device without Main10 (Fire TV Stick 2, emulators): after every decodable source of any height */
+    private val undecodable: (MediaStream) -> Boolean = { SourceRank.likelyUndecodable(it, LowEnd.hasHevcMain10) }
+    private val device = if (LowEnd.eligible) "TV" else "device"
+    /**
+     * Fallback target height, and the urls of the sources that failed this episode. Keyed by url, not index, and kept across
+     * picks and late merges, so a chain never loops back to a source that already failed (a Fire TV once alternated two dead
+     * 1080p sources for 5 minutes); only Retry or an explicit source pick gives a failed source another go.
+     */
     private var target = 0
-    private val tried = mutableSetOf<Int>()
+    private val tried = mutableSetOf<String>()
+    private fun isTried(i: Int) = _uiState.value.request?.streams?.getOrNull(i)?.url in tried
     private fun order(r: PlaybackRequest, height: Int) =
-        SourceRank.fallbackOrder(r.streams, prefLang(r), height, SourceRank.load(appContext), System.currentTimeMillis(), canPlay)
-    /** best-ranked source of [height]; fallbacks start over from there */
+        SourceRank.fallbackOrder(r.streams, prefLang(r), height, SourceRank.load(appContext), System.currentTimeMillis(), canPlay, undecodable)
+    /** best-ranked untried source of [height] (or below); fallbacks continue from there */
     private fun choose(r: PlaybackRequest, height: Int): Int {
         target = height
-        tried.clear()
         _uiState.update { it.copy(note = "") }
-        return order(r, height).first()
+        return order(r, height).let { SourceRank.nextUntried(r.streams, it, tried) ?: it.first() }
     }
     /** next untried source in fallback order (late sources count too) */
-    private fun nextUntried(r: PlaybackRequest) = order(r, target).firstOrNull { it !in tried }
+    private fun nextUntried(r: PlaybackRequest) = SourceRank.nextUntried(r.streams, order(r, target), tried)
 
     /** Quality chip (0 = Auto): remembered like a picked source, plays the best-ranked source of that height. */
     fun selectQuality(height: Int) {
@@ -189,16 +202,23 @@ class MediaPlayerViewModel @Inject constructor(
         val r = s.request?.takeIf { !it.isLive && it.streams.isNotEmpty() } ?: return
         QualityPick.pin(appContext, pinKey(r), height)
         val i = choose(r, if (height > 0) height else autoHeight(r, null))
-        _uiState.update { it.copy(quality = height) }
+        val h = r.streams[i].height
+        // every source of that height is 10-bit HEVC: say so and play the best one this device decodes
+        val note = if (height <= 0 || h == height) "" else if (height in unsupportedHeights()) "${height}p here is 10-bit HEVC, which this $device can't play — playing ${h}p"
+            else "${height}p didn't load — playing ${h}p" // every source of it already failed
+        _uiState.update { it.copy(quality = height, note = note, message = note.ifEmpty { null }) }
         if (i != s.streamIndex || s.error != null) play(i, player.currentPosition)
     }
 
     /** Quality chips, (height, count) best first, for the preferred language; none for live. */
     fun qualities(): List<Pair<Int, Int>> = _uiState.value.request?.takeIf { !it.isLive }?.let { SourceRank.qualities(it.streams, prefLang(it)) }.orEmpty()
 
+    /** Chip heights whose every source is likely undecodable here ("Not supported on this TV"). */
+    fun unsupportedHeights(): Set<Int> = _uiState.value.request?.takeIf { !it.isLive }?.let { SourceRank.undecodableHeights(it.streams, prefLang(it), undecodable) }.orEmpty()
+
     /** "Show all sources": every source, best height first, ranked within it. */
     fun allSourcesOrder(): List<Int> = _uiState.value.request
-        ?.let { SourceRank.fallbackOrder(it.streams, null, Int.MAX_VALUE, SourceRank.load(appContext), System.currentTimeMillis(), canPlay) }.orEmpty()
+        ?.let { SourceRank.fallbackOrder(it.streams, null, Int.MAX_VALUE, SourceRank.load(appContext), System.currentTimeMillis(), canPlay, undecodable) }.orEmpty()
 
     fun setShowAllSources(on: Boolean) {
         SourceRank.setShowAll(appContext, on)
@@ -206,7 +226,7 @@ class MediaPlayerViewModel @Inject constructor(
     }
 
     private fun bestOf(r: PlaybackRequest, indices: List<Int>, pin: Int?): Int =
-        indices[pickStream(indices.map { r.streams[it] }, QualityPick.bandwidth(appContext), pin, if (lowEnd) ::canPlayLowEnd else ::canPlayPhone)]
+        indices[pickStream(indices.map { r.streams[it] }, QualityPick.bandwidth(appContext), pin) { (if (lowEnd) canPlayLowEnd(it) else canPlayPhone(it)) && !undecodable(it) }]
 
     /**
      * "Audio language" pick (null = Any), saved as the device preference. The playing file's own track is used when it
@@ -231,6 +251,10 @@ class MediaPlayerViewModel @Inject constructor(
     val uiState: StateFlow<MediaPlayerUiState> = _uiState.asStateFlow()
 
     private var pendingResume: Float? = null
+    /** 10-bit video formats skipped as undecodable here (see onTracksChanged) */
+    private val skipped = mutableSetOf<androidx.media3.common.Format>()
+    /** the title's runtime in minutes (an earlier play's duration, else TMDB/Cinemeta) for the placeholder-clip check */
+    private var expectedMin: Int? = null
     /** a stall right after a seek is the seek's own buffering, not the host's */
     private var lastSeekAt = 0L
     private var stalledIndex = -1
@@ -254,6 +278,11 @@ class MediaPlayerViewModel @Inject constructor(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {
                     Player.STATE_READY -> {
+                        val s = _uiState.value
+                        val dur = player.duration.takeIf { it != C.TIME_UNSET } ?: 0
+                        // before isLoading clears, so no progress is saved from it
+                        if (startedAt > 0 && !s.isLive && SourceRank.isPlaceholder(dur, expectedMin, s.request?.season == 0))
+                            return handleError(PlaybackException("Provider served a placeholder clip (${dur / 60_000} min, expected ${expectedMin ?: "a movie"})", null, ERROR_PLACEHOLDER))
                         _uiState.update { it.copy(isLoading = false) }
                         if (startedAt > 0) {
                             track("play")
@@ -276,7 +305,30 @@ class MediaPlayerViewModel @Inject constructor(
                 }
             }
 
-            override fun onPlayerError(error: PlaybackException) = handleError(error)
+            override fun onPlayerError(error: PlaybackException) {
+                // the skipped 10-bit file's own decoder error can land after the next source started: not that source's fault
+                val f = (error as? androidx.media3.exoplayer.ExoPlaybackException)?.rendererFormat
+                if (f != null && skipped.any { it.codecs == f.codecs && it.sampleMimeType == f.sampleMimeType && it.width == f.width }) return
+                handleError(error)
+            }
+
+            // a 10-bit video track this device can't output (no Main10, or the renderer says unsupported): next source now, not after the watchdog
+            override fun onTracksChanged(tracks: Tracks) {
+                val index = _uiState.value.streamIndex
+                if (_uiState.value.isLive || startedAt == 0L || isTried(index)) return
+                val g = tracks.groups.firstOrNull { it.type == C.TRACK_TYPE_VIDEO && it.isSelected } ?: return
+                val t = (0 until g.length).first(g::isTrackSelected)
+                val f = g.getTrackFormat(t)
+                val hdr = f.colorInfo?.colorTransfer.let { it == C.COLOR_TRANSFER_ST2084 || it == C.COLOR_TRANSFER_HLG }
+                if (SourceRank.isMain10(f.codecs, f.sampleMimeType, hdr) && (!g.isTrackSupported(t) || (lowEnd && !LowEnd.hasHevcMain10)))
+                    viewModelScope.launch {
+                        skipped += f
+                        if (_uiState.value.streamIndex != index || isTried(index)) return@launch
+                        player.stop() // releases the stuck decoder here, where a failure to disable it is only logged, not blamed on the next source
+                        handleError(PlaybackException(
+                            "${f.codecs ?: f.sampleMimeType} (10-bit) can't be decoded here", null, PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES))
+                    }
+            }
 
             override fun onPositionDiscontinuity(old: Player.PositionInfo, new: Player.PositionInfo, reason: Int) {
                 if (reason == Player.DISCONTINUITY_REASON_SEEK) lastSeekAt = System.currentTimeMillis()
@@ -366,15 +418,22 @@ class MediaPlayerViewModel @Inject constructor(
         // without a first frame, fall back as if it had failed. startedAt is cleared on the first READY.
         startWatch?.cancel()
         if (!request.isLive) startWatch = viewModelScope.launch {
-            delay(START_TIMEOUT_MS)
-            val r = _uiState.value.request
-            if (startedAt > 0 && _uiState.value.streamIndex == index && index !in tried && r != null && order(r, target).any { it != index && it !in tried })
-                handleError(PlaybackException("No first frame in ${START_TIMEOUT_MS / 1000} s", null, PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT))
+            fun waiting() = _uiState.value.request.let { r ->
+                startedAt > 0 && _uiState.value.streamIndex == index && !isTried(index) && r != null && order(r, target).any { it != index && !isTried(it) }
+            }
+            // the Fire TV Stick's MTK decoder takes 10-bit HEVC, buffers it and never outputs a frame
+            delay(DECODE_TIMEOUT_MS)
+            if (waiting() && player.totalBufferedDuration >= DECODE_BUFFERED_MS) return@launch handleError(PlaybackException(
+                "No first frame in ${DECODE_TIMEOUT_MS / 1000} s with ${player.totalBufferedDuration / 1000} s buffered", null, PlaybackException.ERROR_CODE_DECODING_FAILED))
+            delay(START_TIMEOUT_MS - DECODE_TIMEOUT_MS)
+            if (waiting()) handleError(PlaybackException("No first frame in ${START_TIMEOUT_MS / 1000} s", null, PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT))
         }
     }
 
     private fun handleError(error: PlaybackException) {
-        track("play_error", "error" to "${error.errorCodeName}: ${error.cause?.message ?: error.message}")
+        val decoder = error.errorCode / 1000 == 4 // a decoder this device lacks: not the provider's fault
+        track("play_error", "error" to "${error.errorCodeName}: ${error.cause?.message ?: error.message}",
+            "detail" to if (decoder) "decoder" else if (error.errorCode == ERROR_PLACEHOLDER) "placeholder" else if (error.errorCode / 1000 == 2) "network" else "other")
         val s = _uiState.value
         val request = s.request ?: return
         if (s.isLive && error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
@@ -382,18 +441,19 @@ class MediaPlayerViewModel @Inject constructor(
             player.prepare()
             return
         }
-        // a decoder this device lacks (4xxx) isn't the provider's fault
-        if (!s.isLive && error.errorCode / 1000 != 4) SourceRank.record(appContext, s.stream, fail = true)
-        tried += s.streamIndex
+        if (!s.isLive && !decoder) SourceRank.record(appContext, s.stream, fail = true)
+        s.stream?.url?.let { tried += it }
         val next = nextUntried(request)
         if (next != null) {
             val h = request.streams[next].height
-            val note = if (target > 0 && h < target && (s.stream?.height ?: 0) >= target) "${target}p didn't load — playing ${if (h > 0) "${h}p" else "another source"}" else null
+            val note = if (target > 0 && h < target && (s.stream?.height ?: 0) >= target) "${target}p ${if (decoder) "won't decode on this $device" else "didn't load"} — playing ${if (h > 0) "${h}p" else "another source"}" else null
             play(next, if (s.isLive) null else player.currentPosition)
-            _uiState.update { it.copy(message = note ?: "Switched to ${request.streams[next].label()}", note = note ?: it.note) }
+            val switched = (if (decoder) "This $device couldn't decode this file — playing " else if (error.errorCode == ERROR_PLACEHOLDER)
+                "The provider served a placeholder clip — playing " else "Switched to ") + request.streams[next].label()
+            _uiState.update { it.copy(message = note ?: switched, note = note ?: it.note) }
             return
         }
-        _uiState.update { it.copy(isLoading = false, error = "Playback failed (${error.errorCodeName})") }
+        _uiState.update { it.copy(isLoading = false, error = "Playback failed (${error.errorCodeName}): every source was tried") }
     }
 
     /** Source sheet pick. VOD keeps its position. */
@@ -401,7 +461,8 @@ class MediaPlayerViewModel @Inject constructor(
         if (index == _uiState.value.streamIndex && _uiState.value.error == null) return
         _uiState.value.request?.let { r -> r.streams.getOrNull(index)?.let {
             if (!r.isLive) QualityPick.pin(appContext, pinKey(r), it.height)
-            choose(r, it.height) // a pick starts a fresh fallback chain from its height
+            tried -= it.url // an explicit pick gets another go
+            choose(r, it.height) // the fallback chain continues from its height
             _uiState.update { u -> u.copy(quality = it.height) }
         } }
         play(index, if (_uiState.value.isLive) null else player.currentPosition)
@@ -412,8 +473,15 @@ class MediaPlayerViewModel @Inject constructor(
     /** Upsert the history row so Continue Watching sees it; resume when it's the same season/episode. */
     private suspend fun recordStart(request: PlaybackRequest) {
         val key = request.historyKey
+        expectedMin = null
+        if (!request.isLive) request.mediaId?.let { id -> viewModelScope.launch {
+            val m = SourceRank.runtimeMinutes(movies.detail(id).getOrNull()?.runtime)
+            if (expectedMin == null && _uiState.value.request?.episode == request.episode) expectedMin = m
+        } }
         if (request.isLive || key == null) return
         val existing = history.getBySlug(key).getOrNull()
+        existing?.takeIf { it.season == request.season && it.lastEpisodeWatched == request.episode && it.durationMs >= 20 * 60_000L }
+            ?.let { expectedMin = (it.durationMs / 60_000).toInt() }
         val progress = existing?.watchProgress ?: 0f
         pendingResume = if (
             existing != null && existing.season == request.season &&
@@ -464,6 +532,7 @@ class MediaPlayerViewModel @Inject constructor(
                     }
                     val next = ordered(r.copy(streams = res.data, episode = episode, subtitle = "S${r.season} · E$episode"))
                     NowPlaying.request = next
+                    tried.clear()
                     _uiState.update { it.copy(request = next, downloadStarted = false, skips = emptyList()) }
                     loadSkips(next)
                     recordStart(next)

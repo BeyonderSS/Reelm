@@ -56,7 +56,7 @@ class FourKHdHubSource @Inject constructor(private val http: MediaHttp) : Stream
             url = best.first,
             qualityLabel = if (release.height > 0) "${release.height}p" else "AUTO",
             height = release.height,
-            codec = FourKHdHubParser.codec(release.title),
+            codec = FourKHdHubParser.codecDepth(release.title),
             sizeBytes = release.sizeBytes,
             headers = HEADERS,
             sourceName = "4KHDHub",
@@ -157,6 +157,9 @@ internal object FourKHdHubParser {
         val n = m.groupValues[1].toDouble()
         return (n * if (m.groupValues[2] == "GB") 1024.0 * 1024 * 1024 else 1024.0 * 1024).toLong()
     }
+
+    /** "HEVC 10bit" when the release name says 10-bit/HDR/DV, so the player can rank it for devices without HEVC Main10. */
+    fun codecDepth(title: String): String? = codec(title)?.let { if (com.anistream.core.common.LowEnd.isHighBitDepth(title)) "$it 10bit" else it }
 
     fun codec(title: String): String? {
         val t = title.lowercase()

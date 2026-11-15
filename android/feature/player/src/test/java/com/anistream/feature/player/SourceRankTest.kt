@@ -50,4 +50,68 @@ class SourceRankTest {
         assertEquals(listOf(720 to 1), SourceRank.qualities(l, "hi"))
         assertEquals(SourceRank.qualities(l, null), SourceRank.qualities(l, "ta"))
     }
+
+    /** The Mentalist S6E22 on a Fire TV Stick 2: 1080p and 720p only as 4KHDHub HEVC, H.264 at 540p/480p. */
+    private val m = listOf(
+        s(1080, "4KHDHub", codec = "HEVC"), // 0: 4KHDHub HEVC is 10-bit
+        s(720, "4KHDHub", codec = "HEVC"), // 1
+        s(1080, "VegaMovies · VCloud", codec = "HEVC 10bit"), // 2: labelled 10-bit
+        s(540, "Drive · GDrive", codec = "H.264"), // 3
+        s(480, "MovieBox"), // 4
+        s(720, "VegaMovies · VCloud", codec = "HEVC"), // 5: plain HEVC from a provider that also ships 8-bit
+    )
+
+    @Test
+    fun noMain10() {
+        val bad = { x: com.anistream.domain.model.MediaStream -> SourceRank.likelyUndecodable(x, main10 = false) }
+        assertEquals(listOf(true, true, true, false, false, false), m.map(bad))
+        assertTrue(m.none { SourceRank.likelyUndecodable(it, main10 = true) })
+        // asking for 1080p: every decodable source of any height before the 10-bit ones
+        assertEquals(listOf(5, 3, 4, 0, 2, 1), SourceRank.fallbackOrder(m, null, 1080, emptyMap(), now, undecodable = bad))
+        // "show all" still lists them, last
+        assertEquals(listOf(5, 3, 4, 0, 2, 1), SourceRank.fallbackOrder(m, null, Int.MAX_VALUE, emptyMap(), now, undecodable = bad))
+        // chips: 1080p has only 10-bit sources; 720p has the plain-HEVC Vega one
+        assertEquals(setOf(1080), SourceRank.undecodableHeights(m, null, bad))
+        assertEquals(emptySet<Int>(), SourceRank.undecodableHeights(m, null) { false })
+    }
+
+    @Test
+    fun codecsString() {
+        assertTrue(SourceRank.isMain10("hvc1.2.4.L120.B0", "video/hevc", false))
+        assertTrue(SourceRank.isMain10("hev1.2.6.L153.90", "video/hevc", false))
+        assertTrue(SourceRank.isMain10("dvh1.05.06", "video/dolby-vision", false))
+        assertTrue(SourceRank.isMain10("hvc1.1.6.L120.90", "video/hevc", hdr = true))
+        assertTrue(!SourceRank.isMain10("hvc1.1.6.L120.90", "video/hevc", false)) // Main (8-bit)
+        assertTrue(!SourceRank.isMain10("avc1.64001F", "video/avc", false))
+        assertTrue(!SourceRank.isMain10(null, "video/hevc", false))
+    }
+
+    @Test
+    fun placeholderClip() {
+        assertEquals(listOf(45, 130, 60, 130, 90, null), listOf("45 min", "2h 10m", "1h", "130", "5400", "").map(SourceRank::runtimeMinutes))
+        val tenMin = 10 * 60_000L
+        assertTrue(SourceRank.isPlaceholder(tenMin, 45, movie = false)) // episode known to run 45 min
+        assertTrue(SourceRank.isPlaceholder(tenMin, null, movie = true)) // a movie
+        assertTrue(!SourceRank.isPlaceholder(tenMin, 11, movie = false)) // a short-form episode
+        assertTrue(!SourceRank.isPlaceholder(tenMin, null, movie = false)) // episode, runtime unknown
+        assertTrue(!SourceRank.isPlaceholder(42 * 60_000L, 45, movie = false))
+        assertTrue(!SourceRank.isPlaceholder(0, 45, movie = true)) // duration not known yet
+    }
+
+    @Test
+    fun fallbackNeverLoops() {
+        var list = listOf(s(1080, "4KHDHub", codec = "HEVC"), s(1080, "4KHDHub", codec = "H.264").copy(url = "4KHDHub1080b"), s(540, "Dramachi"))
+        val good = "Dramachi540"
+        val tried = mutableSetOf<String>()
+        val played = mutableListOf<String>()
+        while (true) {
+            val i = SourceRank.nextUntried(list, SourceRank.fallbackOrder(list, null, 1080, emptyMap(), now), tried) ?: break
+            played += list[i].url
+            if (list[i].url == good) break
+            tried += list[i].url
+            // a late merge after the first failure adds a source and the list comes back in a new order: indexes shift
+            if (played.size == 1) list = lowEndOrder(list + s(480, "Late"), hardwareHevc = false, main10 = false, maxHeight = 1080).reversed()
+        }
+        assertEquals(listOf("4KHDHub1080", "4KHDHub1080b", good), played)
+    }
 }
