@@ -12,7 +12,7 @@ One open-source streaming hub with a soft dusk UI. It hosts nothing: it finds wh
 ![Android TV / Fire TV](https://img.shields.io/badge/TV-Android%205.1%2B%20%C2%B7%20Fire%20TV-3ddc84?logo=androidtv&logoColor=white)
 ![Web](https://img.shields.io/badge/web-Next.js-000?logo=nextdotjs&logoColor=white)
 
-[**Download the APK**](../../releases/latest) · [**Open the web app**](https://reelm-tv.vercel.app) · [Screenshots](#screenshots) · [How it works](#how-it-works) · [Build it](#build-from-source) · [Contribute](#contributing)
+[**Download the APK**](https://reelm-api.ssbeyonder.workers.dev/dl/Reelm.apk) ([TV](https://reelm-api.ssbeyonder.workers.dev/dl/Reelm-TV.apk)) · [**Open the web app**](https://reelm-tv.vercel.app) · [Screenshots](#screenshots) · [How it works](#how-it-works) · [Build it](#build-from-source) · [Contribute](#contributing)
 
 <br>
 
@@ -37,8 +37,8 @@ One open-source streaming hub with a soft dusk UI. It hosts nothing: it finds wh
 
 | Platform | How |
 |---|---|
-| **Phone** (Android 8.0+) | Download `Reelm-v*.apk` from [Releases](../../releases/latest) and open it (allow "install unknown apps"). New versions install over the old one, and the app tells you when an update is out. |
-| **Android TV / Fire TV** (Android 5.1+) | Download `Reelm-TV-v*.apk` from the same release. On Fire TV, install the *Downloader* app, allow it to install unknown apps, and open the release's APK link. |
+| **Phone** (Android 8.0+) | Download [`Reelm.apk`](https://reelm-api.ssbeyonder.workers.dev/dl/Reelm.apk) (or `Reelm-v*.apk` from [Releases](../../releases/latest)) and open it (allow "install unknown apps"). New versions install over the old one, and the app tells you when an update is out. |
+| **Android TV / Fire TV** (Android 5.1+) | Download [`Reelm-TV.apk`](https://reelm-api.ssbeyonder.workers.dev/dl/Reelm-TV.apk) (or `Reelm-TV-v*.apk` from the same release). On Fire TV, install the *Downloader* app, allow it to install unknown apps, and open `reelm-api.ssbeyonder.workers.dev/dl/Reelm-TV.apk`. |
 | **Web** | Open **[reelm-tv.vercel.app](https://reelm-tv.vercel.app)**. Most sources also need the **Reelm Helper** extension (see below). |
 
 <details>
@@ -219,7 +219,7 @@ First-time deploy steps are in [`server/README.md`](server/README.md).
 
 ## Releases
 
-- **Android:** every push to `main` that touches `android/` builds signed phone and TV APKs and publishes them as release `v1.0.N`. The in-app updater checks the latest release.
+- **Android:** every push to `main` that touches `android/` builds signed phone and TV APKs and publishes them as release `v1.0.N` (plus a copy in Cloudflare R2 once `APKS_BUCKET` is set). The in-app updater asks the API (`/v1/app/latest`) and downloads from Cloudflare, falling back to GitHub.
 - **API:** changes to `server/` run the tests, apply D1 migrations and deploy the Worker.
 - **Web:** changes to `web/` deploy to Cloudflare. Vercel deploys from GitHub.
 

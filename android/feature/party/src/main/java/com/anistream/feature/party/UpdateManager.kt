@@ -16,6 +16,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,7 +25,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
+import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -43,7 +46,7 @@ data class UpdateUi(
 private const val LATEST = "https://api.github.com/repos/BeyonderSS/Reelm/releases/latest"
 private const val EVERY_MS = 6 * 60 * 60 * 1000L
 
-/** Checks GitHub for a newer release, downloads its APK and hands it to the system installer. */
+/** Checks for a newer release (Reelm API, else GitHub), downloads its APK and hands it to the system installer. */
 @Singleton
 class UpdateManager @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -86,7 +89,7 @@ class UpdateManager @Inject constructor(
     private suspend fun check(manual: Boolean) {
         _ui.update { it.copy(checking = true, status = null) }
         val release = try {
-            parseRelease(http.getJson(LATEST), tv)
+            latest()
         } catch (_: Exception) {
             _ui.update { it.copy(checking = false, status = if (manual) "Couldn't check for updates" else null) }
             return
@@ -100,6 +103,13 @@ class UpdateManager @Inject constructor(
                 status = if (!manual || offer) null else "You're on the latest version ($versionName)"
             )
         }
+    }
+
+    /** The Reelm API (APKs on Cloudflare, fast where GitHub's CDN crawls); GitHub releases if it's unset or down. */
+    private suspend fun latest(): Release? {
+        val api = BuildConfig.REELM_API_URL
+        if (api.isNotBlank()) runCatching { parseAppLatest(http.getJson("$api/v1/app/latest"), tv) }.getOrNull()?.let { return it }
+        return parseRelease(http.getJson(LATEST), tv)
     }
 
     /** Download the APK, then open the installer. Safe to call again after granting "install unknown apps". */
@@ -127,33 +137,70 @@ class UpdateManager @Inject constructor(
     private suspend fun download(release: Release): File = withContext(Dispatchers.IO) {
         // API 22 installers can't read a content:// URI, so they get a file:// in external app storage (world-readable path)
         val root = if (Build.VERSION.SDK_INT >= 24) context.cacheDir else context.getExternalFilesDir(null) ?: context.cacheDir
-        val dir = File(root, "updates").apply { deleteRecursively(); mkdirs() }
-        val file = File(dir, "Reelm-update.apk")
-        try {
-            http.client.newCall(Request.Builder().url(release.apkUrl).build()).execute().use { response ->
-                if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
-                val body = response.body ?: throw IOException("Empty body")
-                val total = body.contentLength().takeIf { it > 0 } ?: release.sizeBytes
-                var done = 0L
-                body.byteStream().use { input ->
-                    file.outputStream().use { out ->
-                        val buf = ByteArray(64 * 1024)
-                        while (true) {
-                            val n = input.read(buf)
-                            if (n < 0) break
-                            out.write(buf, 0, n)
-                            done += n
-                            if (total > 0) _ui.update { it.copy(progress = (done.toFloat() / total).coerceIn(0f, 1f)) }
-                        }
-                    }
-                }
+        val dir = File(root, "updates").apply { mkdirs() }
+        // named per version, so tapping Update again after a dropped connection resumes the same APK
+        val file = File(dir, "Reelm-${release.versionCode}.apk")
+        dir.listFiles()?.filter { it != file }?.forEach { it.deleteRecursively() }
+        var attempt = 0
+        while (true) {
+            try {
+                fetch(release, file)
+                break
+            } catch (e: IOException) {
+                if (++attempt >= 4) throw e
+                delay(2_000L * attempt)
             }
-        } catch (e: Exception) {
+        }
+        val bad = (release.sizeBytes > 0 && file.length() != release.sizeBytes) || (release.sha256 != null && sha256(file) != release.sha256)
+        if (bad) {
             file.delete()
-            throw e
+            throw IOException("Corrupt download")
         }
         file.setReadable(true, false)
         file
+    }
+
+    /** Appends to a partial [file] with a Range request; a server that ignores Range (plain 200) starts it over. */
+    private fun fetch(release: Release, file: File) {
+        val have = file.length()
+        val request = Request.Builder().url(release.apkUrl).apply { if (have > 0) header("Range", "bytes=$have-") }.build()
+        http.client.newCall(request).execute().use { response ->
+            if (response.code == 416 && have > 0) return // already whole; the size/sha check decides
+            if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
+            val resume = have > 0 && response.code == 206
+            if (resume && response.header("Content-Range")?.startsWith("bytes $have-") != true) {
+                file.delete()
+                throw IOException("Unexpected range")
+            }
+            val body = response.body ?: throw IOException("Empty body")
+            var done = if (resume) have else 0L
+            val total = body.contentLength().takeIf { it > 0 }?.plus(done) ?: release.sizeBytes
+            body.byteStream().use { input ->
+                FileOutputStream(file, resume).use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        done += n
+                        if (total > 0) _ui.update { it.copy(progress = (done.toFloat() / total).coerceIn(0f, 1f)) }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun sha256(file: File): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun install(file: File) {

@@ -118,5 +118,14 @@ Hello on connect: `{type:"hello", deviceId, deviceName, kind:"phone"|"tv"}` → 
 - `POST /v1/admin/providers` `{commit?, enabled?}` (admin) → the new `pinned`. `commit` must be a 40-hex sha, `enabled` up to 80 slugs `[a-zA-Z0-9_-]{1,40}` (else `400`). Logs `admin_sources`.
 
 ## App updates
-No server needed: the app reads `https://api.github.com/repos/BeyonderSS/Reelm/releases/latest`, compares the tag
-`v1.0.N` (versionCode `100+N`) to its own, and downloads `Reelm-v*.apk` (phone) or `Reelm-TV-v*.apk` (tv).
+APKs are served from Cloudflare because GitHub's release CDN crawls on some Indian ISPs (measured ~2 KB/s on Airtel).
+- `GET /v1/app/latest` (public, `Cache-Control: public, max-age=300`) → `{version:"1.0.N", phone:{url, size, sha256}|null, tv:{…}|null, notes}`.
+  Read from R2 `latest.json` (written by release.yml) when the `APKS` bucket is bound, else from GitHub `releases/latest`
+  (cached 5 min; `sha256` from GitHub's asset digest, may be `null`). `url` points at `/dl/…` on this worker.
+- `GET|HEAD /dl/Reelm-v1.0.N.apk`, `/dl/Reelm-TV-v1.0.N.apk` → the APK, `application/vnd.android.package-archive`,
+  `Accept-Ranges: bytes` (`Range: bytes=a-b|a-|-n` → `206` + `Content-Range`; a start past the end → `416 bytes */size`),
+  `Cache-Control: public, max-age=31536000, immutable`. From R2 when there; otherwise proxied from the GitHub release
+  asset through Cloudflare's cache (Range passed through) and mirrored into R2 when bound. Unknown version `404`.
+- `GET /dl/Reelm.apk`, `/dl/Reelm-TV.apk` → `302` to the latest versioned file (stable links for the README / Fire TV Downloader).
+- The app asks `/v1/app/latest` first and falls back to `https://api.github.com/repos/BeyonderSS/Reelm/releases/latest`;
+  tag `v1.0.N` = versionCode `100+N`. Downloads resume with `Range` and are checked against `size`/`sha256`.

@@ -48,6 +48,28 @@ class PartyTest {
         assertEquals(109, parseRelease(json, tv = true)?.versionCode)
     }
 
+    @Test fun appLatestPicksFlavorAndChecksum() {
+        val sha = "ab".repeat(32)
+        val json = Json.parseToJsonElement(
+            """{"version":"1.0.46","notes":"Fixes","phone":{"url":"https://api/dl/Reelm-v1.0.46.apk","size":8414369,"sha256":"$sha"},
+              "tv":{"url":"https://api/dl/Reelm-TV-v1.0.46.apk","size":7,"sha256":null}}"""
+        ).jsonObject
+        val phone = parseAppLatest(json, tv = false)!!
+        assertEquals(146, phone.versionCode)
+        assertEquals("https://api/dl/Reelm-v1.0.46.apk", phone.apkUrl)
+        assertEquals(8414369L, phone.sizeBytes)
+        assertEquals(sha, phone.sha256)
+        assertEquals("Fixes", phone.body)
+        assertNull(parseAppLatest(json, tv = true)!!.sha256)
+        assertNull(parseAppLatest(Json.parseToJsonElement("""{"version":"1.0.46","tv":null}""").jsonObject, tv = true))
+        assertNull(parseAppLatest(Json.parseToJsonElement("""{"version":"2.0","phone":{"url":"x"}}""").jsonObject, tv = false))
+        // GitHub's own asset digest is used on the fallback path
+        val gh = Json.parseToJsonElement(
+            """{"tag_name":"v1.0.45","assets":[{"name":"Reelm-v1.0.45.apk","browser_download_url":"u","size":1,"digest":"sha256:$sha"}]}"""
+        ).jsonObject
+        assertEquals(sha, parseRelease(gh, tv = false)?.sha256)
+    }
+
     @Test fun playingRoomAdvancesByElapsedServerTime() {
         assertEquals(12_500L, targetPosition(10_000, at = 1_000, serverNow = 3_500, playing = true))
         assertEquals(10_000L, targetPosition(10_000, at = 1_000, serverNow = 3_500, playing = false))

@@ -8,6 +8,7 @@ export interface Env {
   CF_ANALYTICS_TOKEN?: string; // secret; enables the admin Ops page
   CF_ACCOUNT_ID?: string;
   GITHUB_TOKEN?: string; // secret, optional; unauthenticated GitHub API calls share Cloudflare's egress IPs and get 403 rate-limited
+  APKS?: R2Bucket; // optional; release.yml uploads APKs + latest.json here. Unbound/missing objects fall back to GitHub via Cloudflare's cache
 }
 
 class HttpError extends Error {
@@ -43,7 +44,7 @@ async function checkPassword(password: string, stored: string) {
 }
 
 // ---- helpers ------------------------------------------------------------
-interface Ctx { req: Request; env: Env; url: URL; params: string[]; }
+interface Ctx { req: Request; env: Env; url: URL; params: string[]; ctx?: ExecutionContext; }
 type User = { id: string; username: string; is_admin?: number; last_seen_at?: number | null; last_used_at?: number | null; token_hash?: string };
 const now = () => Date.now();
 const uuid = () => crypto.randomUUID();
@@ -863,6 +864,7 @@ async function getRecs(c: Ctx) {
 }
 
 // ---- router -------------------------------------------------------------
+const DL = /^\/dl\/(Reelm(?:-TV)?(?:-v1\.0\.\d+)?\.apk)$/;
 const routes: [string, RegExp, (c: Ctx) => Response | Promise<Response>][] = [
   ["POST", /^\/v1\/auth\/register$/, register],
   ["POST", /^\/v1\/auth\/login$/, login],
@@ -904,12 +906,92 @@ const routes: [string, RegExp, (c: Ctx) => Response | Promise<Response>][] = [
   ["GET", /^\/v1\/pair\/([^/]+)$/, pairPoll],
   ["GET", /^\/pair\/([^/]+)$/, pairPage],
   ["GET", /^\/v1\/proxy$/, proxy],
+  ["GET", /^\/v1\/app\/latest$/, appLatest],
+  ["GET", DL, download],
+  ["HEAD", DL, download],
   ["GET", /^\/v1\/hub$/, hub],
   ["POST", /^\/v1\/rooms$/, createRoom],
   ["GET", /^\/v1\/rooms\/([^/]+)$/, joinRoom],
   ["GET", /^\/\.well-known\/assetlinks\.json$/, (c) =>
     new Response(c.env.ASSET_LINKS || "[]", { headers: { "content-type": "application/json" } })],
 ];
+
+// ---- app downloads -------------------------------------------------------------
+// GitHub's release CDN crawls on some Indian ISPs (~2 KB/s on Airtel); Cloudflare doesn't. APKs come from R2 when
+// release.yml put them there, else from GitHub through the worker (cached by Cloudflare, mirrored into R2 when bound).
+const REPO = "BeyonderSS/Reelm";
+const APK = /^Reelm(-TV)?-v(1\.0\.\d+)\.apk$/;
+const APK_TYPE = "application/vnd.android.package-archive";
+const IMMUTABLE = "public, max-age=31536000, immutable";
+type Apk = { file: string; size: number; sha256: string | null };
+type AppLatest = { version: string; phone: Apk | null; tv: Apk | null; notes: string };
+
+async function latestRelease(env: Env): Promise<AppLatest> {
+  const m = await env.APKS?.get("latest.json");
+  if (m) return m.json();
+  return cached("app-latest", 300, async () => {
+    const r = await gh(`https://api.github.com/repos/${REPO}/releases/latest`, env.GITHUB_TOKEN);
+    const pick = (tv: boolean): Apk | null => {
+      const a = (r.assets ?? []).find((a: any) => APK.exec(a.name) && !!APK.exec(a.name)![1] === tv);
+      return a ? { file: a.name, size: a.size, sha256: /^sha256:[0-9a-f]{64}$/.test(a.digest ?? "") ? a.digest.slice(7) : null } : null;
+    };
+    return { version: String(r.tag_name).replace(/^v/, ""), phone: pick(false), tv: pick(true), notes: r.body ?? "" };
+  }) as Promise<AppLatest>;
+}
+
+async function appLatest({ env, url }: Ctx) {
+  const l = await latestRelease(env);
+  const out = (a: Apk | null) => a && { url: `${url.origin}/dl/${a.file}`, size: a.size, sha256: a.sha256 };
+  return json({ version: l.version, phone: out(l.phone), tv: out(l.tv), notes: l.notes }, 200, { "Cache-Control": "public, max-age=300" });
+}
+
+/** /dl/Reelm-v1.0.N.apk (immutable, Range-able) and /dl/Reelm.apk, /dl/Reelm-TV.apk (302 to the latest). */
+async function download({ req, env, url, ctx, params: [file] }: Ctx) {
+  const m = APK.exec(file);
+  if (!m) {
+    const l = await latestRelease(env), a = file === "Reelm-TV.apk" ? l.tv : l.phone;
+    return a ? new Response(null, { status: 302, headers: { location: `${url.origin}/dl/${a.file}`, "cache-control": "public, max-age=300" } }) : json({ error: "not found" }, 404);
+  }
+  const range = req.headers.get("range"), body = (b: ReadableStream | null) => (req.method === "HEAD" ? null : b);
+  const h = new Headers({ "content-type": APK_TYPE, "cache-control": IMMUTABLE, "accept-ranges": "bytes", "content-disposition": `attachment; filename="${file}"` });
+  if (env.APKS) {
+    let obj: R2ObjectBody | null;
+    try { obj = (await env.APKS.get(file, { range: req.headers })) as R2ObjectBody | null; }
+    catch { return new Response(null, { status: 416, headers: { "content-range": "bytes */*" } }); } // unsatisfiable range
+    if (obj) {
+      h.set("etag", obj.httpEtag);
+      // R2 answers an out-of-bounds start with the whole object; a resuming client must get 416 instead
+      if (Number(/^bytes=(\d+)-/.exec(range ?? "")?.[1] ?? -1) >= obj.size) { await obj.body.cancel(); return new Response(null, { status: 416, headers: { "content-range": `bytes */${obj.size}` } }); }
+      const r = obj.range as { offset?: number; length?: number; suffix?: number } | undefined;
+      if (range && r) {
+        const offset = r.suffix != null ? obj.size - r.suffix : r.offset ?? 0, length = r.length ?? obj.size - offset;
+        h.set("content-range", `bytes ${offset}-${offset + length - 1}/${obj.size}`);
+        h.set("content-length", String(length));
+        return new Response(body(obj.body), { status: 206, headers: h });
+      }
+      h.set("content-length", String(obj.size));
+      return new Response(body(obj.body), { headers: h });
+    }
+  }
+  // not in R2 (yet): GitHub, through Cloudflare's cache under a stable key (GitHub redirects to a signed, expiring URL)
+  const cache = (caches as any).default as Cache, key = new Request(`https://reelm-cache.internal/dl/${file}`);
+  const hit = await cache.match(range ? new Request(key, { headers: { range } }) : key);
+  if (hit) return new Response(body(hit.body), hit);
+  const src = `https://github.com/${REPO}/releases/download/v${m[2]}/${file}`;
+  const up = await fetch(src, { headers: { "User-Agent": "reelm-api", ...(range ? { range } : {}) } });
+  if (!up.ok) { await up.body?.cancel(); return json({ error: "not found" }, up.status === 404 ? 404 : 502); }
+  for (const k of ["content-length", "content-range"]) if (up.headers.has(k)) h.set(k, up.headers.get(k)!);
+  let out = up.body;
+  const keep = async (s: ReadableStream | null) => {
+    // ponytail: buffers the APK (~8 MB) so cache + R2 can both take it; stream with FixedLengthStream if APKs near 100 MB
+    const buf = await new Response(s).arrayBuffer();
+    const full = new Headers(h); full.delete("content-range"); full.set("content-length", String(buf.byteLength));
+    await Promise.all([cache.put(key, new Response(buf, { headers: full })), env.APKS?.put(file, buf, { httpMetadata: { contentType: APK_TYPE } })]);
+  };
+  if (up.status === 200 && out) { const [a, b] = out.tee(); out = a; ctx?.waitUntil(keep(b)); }
+  else ctx?.waitUntil(fetch(src, { headers: { "User-Agent": "reelm-api" } }).then((r) => (r.ok ? keep(r.body) : r.body?.cancel())));
+  return new Response(body(out), { status: up.status, headers: h });
+}
 
 // ---- stream proxy (web player) ----------------------------------------------
 // Anime HLS needs a Referer and no CORS headers; the browser can't send either. Hosts the parsers return only.
@@ -954,7 +1036,7 @@ const CORS = {
   "access-control-expose-headers": "content-length,content-range",
 };
 
-async function route(req: Request, env: Env): Promise<Response> {
+async function route(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
   const url = new URL(req.url);
   if (req.method === "OPTIONS") return new Response(null, { status: 204 });
   let pathMatched = false;
@@ -962,15 +1044,15 @@ async function route(req: Request, env: Env): Promise<Response> {
     const m = url.pathname.match(re);
     if (!m) continue;
     pathMatched = true;
-    if (method === req.method) return fn({ req, env, url, params: m.slice(1).map(decodeURIComponent) });
+    if (method === req.method) return fn({ req, env, url, ctx, params: m.slice(1).map(decodeURIComponent) });
   }
   return json({ error: pathMatched ? "method not allowed" : "not found" }, pathMatched ? 405 : 404);
 }
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     let res: Response;
-    try { res = await route(req, env); }
+    try { res = await route(req, env, ctx); }
     catch (e) {
       if (!(e instanceof HttpError)) console.error(e);
       res = e instanceof HttpError ? json({ error: e.message }, e.status) : json({ error: "internal error" }, 500);

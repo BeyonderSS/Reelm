@@ -91,3 +91,26 @@ jobs:
             --notes-file notes.md \
             --target "$GITHUB_SHA" \
             --latest
+
+      # GitHub's release CDN crawls on some Indian ISPs (~2 KB/s on Airtel). The app and README download through the
+      # Reelm API (/v1/app/latest, /dl/*), which serves these R2 copies; until APKS_BUCKET is set it proxies GitHub instead.
+      - uses: actions/setup-node@v4
+        if: vars.APKS_BUCKET != ''
+        with:
+          node-version: 22
+
+      - name: Upload APKs to Cloudflare R2
+        if: vars.APKS_BUCKET != ''
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BUCKET: ${{ vars.APKS_BUCKET }}
+        run: |
+          put() { npx --yes wrangler@4 r2 object put "$BUCKET/$1" --file "$1" --content-type "$2" --remote; }
+          entry() { jq -n --arg f "$1" --argjson s "$(stat -c%s "$1")" --arg h "$(sha256sum "$1" | cut -d' ' -f1)" '{file:$f, size:$s, sha256:$h}'; }
+          put "Reelm-v$VERSION_NAME.apk" application/vnd.android.package-archive
+          put "Reelm-TV-v$VERSION_NAME.apk" application/vnd.android.package-archive
+          # the manifest goes last, so the API never points at an APK that isn't there yet
+          jq -n --arg v "$VERSION_NAME" --argjson p "$(entry "Reelm-v$VERSION_NAME.apk")" --argjson t "$(entry "Reelm-TV-v$VERSION_NAME.apk")" \
+            --rawfile n notes.md '{version:$v, phone:$p, tv:$t, notes:$n}' > latest.json
+          put latest.json application/json

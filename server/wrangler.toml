@@ -22,6 +22,14 @@ class_name = "Room"
 tag = "v1"
 new_sqlite_classes = ["UserHub", "Room"]
 
+# APK downloads (/dl/*, /v1/app/latest). R2 isn't enabled on the account yet (wrangler: code 10042), and a binding to a
+# missing bucket fails `wrangler deploy`, so this stays commented until then. Without it the worker proxies GitHub's
+# release assets through Cloudflare's cache. To switch on: enable R2, `npx wrangler r2 bucket create reelm-apks`,
+# uncomment, set the repo variable APKS_BUCKET=reelm-apks (release.yml then uploads every build).
+# [[r2_buckets]]
+# binding = "APKS"
+# bucket_name = "reelm-apks"
+
 [vars]
 # JSON string served at /.well-known/assetlinks.json (Android App Links). Empty array if unset.
 ASSET_LINKS = ""
