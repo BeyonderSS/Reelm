@@ -125,8 +125,8 @@ class PlayOnTvViewModel @Inject constructor(
         var h = if (resume) resumeFrom(item, history.getBySlug(item.animeSlug).getOrNull()) else item
         var ms = positionMs
         if (ms <= 0) history.getBySlug(item.animeSlug).getOrNull()
-            ?.takeIf { it.lastEpisodeWatched == item.lastEpisodeWatched && it.season == item.season }
-            ?.let { row -> h = item.copy(watchProgress = row.watchProgress, durationMs = row.durationMs, eps = row.eps); ms = (row.watchProgress * row.durationMs).toLong() }
+            ?.takeIf { it.lastEpisodeWatched == h.lastEpisodeWatched && it.season == h.season }
+            ?.let { row -> h = h.copy(watchProgress = row.watchProgress, durationMs = row.durationMs, eps = row.eps); ms = (row.watchProgress * row.durationMs).toLong() }
         if (!hub.sendHandoff(tv, profile, h, ms, source, autoplay)) return false
         account.lastTv = tv.id
         TvRemote.lastSent = h.takeIf { autoplay }

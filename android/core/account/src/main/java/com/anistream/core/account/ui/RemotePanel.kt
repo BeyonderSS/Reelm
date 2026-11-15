@@ -99,7 +99,7 @@ internal fun RemoteBanner(now: Now?, t: Long, ctl: Ctl) {
     val skip = now?.skip
     val secs = nextSeconds(now, t)
     if (skip != null) PrimaryButton(skip.label, { ctl("skip", null, null) }, Modifier.fillMaxWidth().padding(top = Space.lg))
-    else if (secs != null) Column(
+    else if (secs != null && secs > 0) Column(
         Modifier.fillMaxWidth().padding(top = Space.lg).clip(Radius.lg).background(Bg.raised).padding(Space.lg)
     ) {
         Text("Next episode in $secs s", style = AppType.bodyStrong)
@@ -243,7 +243,7 @@ private fun More(i: RemoteInfo, pos: Long, dur: Long, ctl: Ctl) {
     Chips {
         PillChip("Off", i.sleepMin == null || i.sleepMin == 0, { ctl("sleep", 0L, null) })
         listOf(15, 30, 60).forEach { m -> PillChip("$m min", i.sleepMin == m, { ctl("sleep", m.toLong(), null) }) }
-        if (dur > 0) PillChip("End of episode", false, { ctl("sleep", minutesToEnd(pos, dur), null) })
+        if (dur > 0) PillChip("End of episode", i.sleepMin != null && i.sleepMin !in listOf(0, 15, 30, 60), { ctl("sleep", minutesToEnd(pos, dur), null) })
     }
     val v = i.volume ?: return
     Label("TV volume")
