@@ -97,8 +97,8 @@ const note = "text-sm text-[#a3a1ae]";
 
 function Pick<T>({ label, items, value, onPick, name, off }: { label: string; items: readonly T[]; value: T; onPick: (v: T) => void; name: (v: T) => string; off?: (v: T) => boolean }) {
   return (
-    <div>
-      <p className="mt-4 mb-1.5 text-sm text-[#a3a1ae] first:mt-0">{label}</p>
+    <div className="mt-4 first:mt-0">
+      <p className="mb-1.5 text-sm text-[#a3a1ae]">{label}</p>
       <div role="radiogroup" aria-label={label} className="flex flex-wrap gap-1.5">
         {items.map((v) => <button key={String(v)} role="radio" aria-checked={v === value} disabled={off?.(v)} onClick={() => onPick(v)} className="beam opt disabled:opacity-40">{name(v)}</button>)}
       </div>
@@ -210,6 +210,7 @@ export function RemotePanel({ tv, fallback, onPlayHere, onClose, className }: { 
   const title = n?.title ?? fallback?.title ?? "", sub = n ? n.subtitle : fallback?.subtitle, poster = n?.poster ?? fallback?.poster;
   const status = off ? "TV disconnected" : !now ? `${fallback ? "Starting" : "Idle"} on ${d.name}` : `${now.playing ? "Playing" : "Paused"} on ${d.name}`;
   const shown = shownTabs(info, late), cur = tab && shown.includes(tab) ? tab : shown[0];
+  useEffect(() => { document.getElementById(`${uid}-${cur}`)?.scrollIntoView({ block: "nearest", inline: "nearest" }); }, [uid, cur]); // the chosen tab stays in view on phones
   const skip = now?.skip, nextLeft = now?.nextInMs != null ? Math.max(0, now.nextInMs - (now.playing ? Date.now() - now.at : 0)) : null;
   const key = (e: React.KeyboardEvent) => {
     const t = e.target as HTMLElement, k = e.key;
