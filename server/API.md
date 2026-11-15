@@ -49,7 +49,12 @@ Hello on connect: `{type:"hello", deviceId, deviceName, kind:"phone"|"tv"}` → 
   `playback` may also carry `positionMs` (ms; receivers fall back to legacy `position`), `autoplay:true` (go straight into the player) and `source` (label hint, e.g. "Vega · VegaMovies 1080p").
 - Remote: `{type:"control", to:deviceId, action:"play"|"pause"|"toggle"|"seekTo"|"seekBy"|"next"|"prev"|"stop", value?:ms}` → relayed to that device with `from` added.
   Unknown `action` or a non-finite `value` is dropped. Not logged.
-- Now playing: a TV sends `{type:"state", now:null | {title≤120, subtitle?≤120, poster?, playing, positionMs, durationMs, hasNext, hasPrev, at}}`.
+  Remote v2 adds actions `describe`, `skip`, `cancelNext`, `subs`, `subSize`, `subPos`, `audio`, `audioLang`, `quality`, `source`, `episode`,
+  `volume`, `speed`, `sleep`, `key` and an optional `arg` (any JSON, dropped if its JSON is over 1024 chars; `value` stays a finite number).
+  `describe` makes the TV answer with an `info` message.
+- Info: `{type:"info", to:deviceId, info:{…}}` from a TV → relayed only to the socket(s) with that deviceId, with `from` added.
+  Dropped if the sender never said hello or `info` JSON is over 8192 chars. Not stored, not logged. `info.rev` matches `now.rev`.
+- Now playing: a TV sends `{type:"state", now:null | {title≤120, subtitle?≤120, poster?, playing, positionMs, durationMs, hasNext, hasPrev, at, rev?:int≥0, skip?:{label≤40, endMs}|null, nextInMs?:number|null}}`.
   The server sanitizes it, keeps it in that socket's attachment (so `devices` entries carry `now`) and broadcasts `{type:"state", from:deviceId, now}` to the other sockets. Not logged.
 - `{type:"history", profileId}` is broadcast after a history PUT so other devices pull immediately.
 

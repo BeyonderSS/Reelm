@@ -134,6 +134,33 @@ describe("hub remote", () => {
     const ph2 = await open("ph2", "phone"); await wait();
     expect(ph2.msgs.find((m: any) => m.type === "devices").devices.find((d: any) => d.deviceId === "tv1").now.playing).toBe(true);
   });
+
+  it("remote v2: relays arg and info, drops oversized, keeps rev/skip/nextInMs in a max-size now", async () => {
+    const u = await signup();
+    const open = (id: string, kind: string) => call(`/v1/hub?token=${u.token}`, { headers: { Upgrade: "websocket" } }).then((r) => {
+      const w = r.webSocket!, msgs: any[] = []; w.accept(); w.addEventListener("message", (m: MessageEvent) => msgs.push(JSON.parse(m.data as string)));
+      w.send(JSON.stringify({ type: "hello", deviceId: id, deviceName: id, kind })); return { w, msgs };
+    });
+    const tv = await open("tv1", "tv"), ph = await open("ph1", "phone"), ph2 = await open("ph2", "phone");
+    const wait = () => new Promise((r) => setTimeout(r, 50));
+    await wait();
+    ph.w.send(JSON.stringify({ type: "control", to: "tv1", action: "subs", arg: { track: "en" } }));
+    ph.w.send(JSON.stringify({ type: "control", to: "tv1", action: "key", arg: "x".repeat(1100) }));
+    tv.w.send(JSON.stringify({ type: "info", to: "ph1", info: { rev: 1, title: "T" } }));
+    tv.w.send(JSON.stringify({ type: "info", to: "ph1", info: { rev: 2, junk: "x".repeat(9000) } }));
+    const big = { title: "€".repeat(500), subtitle: "€".repeat(500), poster: "€".repeat(500), playing: true, positionMs: 1, durationMs: 2, hasNext: true, hasPrev: true,
+      at: 1, rev: 7, skip: { label: "€".repeat(100), endMs: 5 }, nextInMs: 1234 };
+    tv.w.send(JSON.stringify({ type: "state", now: big }));
+    await wait();
+    expect(tv.msgs.filter((m: any) => m.type === "control")).toEqual([{ type: "control", to: "tv1", action: "subs", arg: { track: "en" }, from: "ph1" }]);
+    expect(ph.msgs.filter((m: any) => m.type === "info")).toEqual([{ type: "info", to: "ph1", info: { rev: 1, title: "T" }, from: "tv1" }]);
+    expect(ph2.msgs.some((m: any) => m.type === "info")).toBe(false);
+    const now = ph.msgs.find((m: any) => m.type === "state").now;
+    expect(now).toMatchObject({ rev: 7, nextInMs: 1234, skip: { endMs: 5 } });
+    expect(now.skip.label).toHaveLength(40);
+    const ph3 = await open("ph3", "phone"); await wait(); // attachment survived (<2 KB) if devices still lists it
+    expect(ph3.msgs.find((m: any) => m.type === "devices").devices.find((d: any) => d.deviceId === "tv1").now.rev).toBe(7);
+  });
 });
 
 describe("favorites", () => {

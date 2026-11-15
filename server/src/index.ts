@@ -1076,7 +1076,7 @@ function upgrade(state: DurableObjectState) {
   return { client, server };
 }
 
-type Now = { title: string; subtitle?: string; poster?: string; playing: boolean; positionMs: number; durationMs: number; hasNext: boolean; hasPrev: boolean; at: number };
+type Now = { title: string; subtitle?: string; poster?: string; playing: boolean; positionMs: number; durationMs: number; hasNext: boolean; hasPrev: boolean; at: number; rev?: number; skip?: { label: string; endMs: number } | null; nextInMs?: number | null };
 type Device = { deviceId: string; deviceName: string; kind: string; now?: Now | null };
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 /** Clamp a TV's "now playing" report; attachments max 2 KB so every string is capped. */
@@ -1086,9 +1086,14 @@ export function sanitizeNow(n: any): Now | null {
     durationMs: num(n.durationMs), hasNext: n.hasNext === true, hasPrev: n.hasPrev === true, at: num(n.at) || now() };
   if (typeof n.subtitle === "string") o.subtitle = n.subtitle.slice(0, 120);
   if (typeof n.poster === "string") o.poster = n.poster.slice(0, 300);
+  if (Number.isInteger(n.rev) && n.rev >= 0) o.rev = n.rev;
+  if (n.skip === null || (n.skip && typeof n.skip.label === "string" && Number.isFinite(n.skip.endMs))) o.skip = n.skip && { label: n.skip.label.slice(0, 40), endMs: n.skip.endMs };
+  if (n.nextInMs === null || Number.isFinite(n.nextInMs)) o.nextInMs = n.nextInMs;
   return o;
 }
-const ACTIONS = ["play", "pause", "toggle", "seekTo", "seekBy", "next", "prev", "stop"];
+const ACTIONS = ["play", "pause", "toggle", "seekTo", "seekBy", "next", "prev", "stop", "describe", "skip", "cancelNext", "subs", "subSize", "subPos",
+  "audio", "audioLang", "quality", "source", "episode", "volume", "speed", "sleep", "key"];
+const big = (v: unknown, max: number) => JSON.stringify(v).length > max;
 
 /** One per account: device presence, handoff, and "history changed" pushes. */
 export class UserHub extends DurableObject<Env> {
@@ -1120,9 +1125,14 @@ export class UserHub extends DurableObject<Env> {
       this.broadcastDevices();
     } else if (m.type === "control") {
       const from = ws.deserializeAttachment() as Device | null;
-      if (!from || !ACTIONS.includes(m.action) || (m.value !== undefined && !(typeof m.value === "number" && Number.isFinite(m.value)))) return;
-      const out = { type: "control", to: m.to, action: m.action, ...(m.value !== undefined ? { value: m.value } : {}), from: from.deviceId };
+      if (!from || !ACTIONS.includes(m.action) || (m.value !== undefined && !(typeof m.value === "number" && Number.isFinite(m.value)))
+        || (m.arg !== undefined && big(m.arg, 1024))) return;
+      const out = { type: "control", to: m.to, action: m.action, ...(m.value !== undefined ? { value: m.value } : {}), ...(m.arg !== undefined ? { arg: m.arg } : {}), from: from.deviceId };
       for (const t of this.ctx.getWebSockets()) if ((t.deserializeAttachment() as Device | null)?.deviceId === m.to) send(t, out);
+    } else if (m.type === "info") { // TV -> one remote; relayed, never stored or logged
+      const from = ws.deserializeAttachment() as Device | null;
+      if (!from || m.info === undefined || big(m.info, 8192)) return;
+      for (const t of this.ctx.getWebSockets()) if ((t.deserializeAttachment() as Device | null)?.deviceId === m.to) send(t, { type: "info", to: m.to, info: m.info, from: from.deviceId });
     } else if (m.type === "state") {
       const d = ws.deserializeAttachment() as Device | null;
       if (!d) return;
