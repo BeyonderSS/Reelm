@@ -142,10 +142,11 @@ private const val HERO_INTERVAL_MS = 7_000L
  * `/v1/trailer` key for a Home title: Movies & TV "tt…" ids go by IMDb id, other ids ("mb:…") by title/year/type;
  * anime by MAL id when known plus title/year, always as a series (so Cinemeta can add a logo).
  */
-internal fun trailerKeyFor(id: String, title: String, year: Int?, type: String?, media: Boolean, mal: Long?): TrailerKey = when {
-    !media -> TrailerKey(mal = mal, title = title, year = year, type = "series")
-    id.startsWith("tt") -> TrailerKey(imdb = id.substringBefore(':'))
-    else -> TrailerKey(title = title, year = year, type = if (type.equals("Series", ignoreCase = true)) "series" else "movie")
+internal fun trailerKeyFor(id: String, title: String, year: Int?, type: String?, media: Boolean, mal: Long?): TrailerKey {
+    if (!media) return TrailerKey(mal = mal, title = title, year = year, type = "series")
+    // the type matters with an IMDb id too: the server reads Cinemeta's /meta/{type}/{tt}, and a series asked as a movie gets another title's trailer
+    val kind = if (type.equals("Series", ignoreCase = true)) "series" else "movie"
+    return if (id.startsWith("tt")) TrailerKey(imdb = id.substringBefore(':'), type = kind) else TrailerKey(title = title, year = year, type = kind)
 }
 
 /** System "remove animations" (animator scale 0): no spinning, tracing or scaling. */
@@ -292,7 +293,8 @@ internal fun LivingHero(
         if (items.size < 2 || !settled) return@LaunchedEffect
         if (allowed && stream && !ended) return@LaunchedEffect
         delay(if (ended) 1_000 else HERO_INTERVAL_MS)
-        pagerState.animateScrollToPage((page + 1) % items.size, animationSpec = tween(600, easing = Motion.emphasized))
+        // outside this effect: the scroll flips `settled`, which restarts the effect and would cancel it mid-way
+        scope.launch { pagerState.animateScrollToPage((page + 1) % items.size, animationSpec = tween(600, easing = Motion.emphasized)) }
     }
 
     Column {

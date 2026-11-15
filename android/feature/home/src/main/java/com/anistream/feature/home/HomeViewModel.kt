@@ -178,7 +178,8 @@ class HomeViewModel @Inject constructor(
 
     /** Detail-page extras for a Home title, fetched once per id and shared by the hero, Hold to project and the reel. */
     suspend fun extra(id: String, media: Boolean): TitleExtra? = extras.getOrPut(id) {
-        viewModelScope.async {
+        // IO: AnidbHttpClient.getHtml reads the response body on the caller's thread
+        viewModelScope.async(kotlinx.coroutines.Dispatchers.IO) {
             runCatching {
                 if (media) movies.detail(id).getOrNull()?.let { TitleExtra(it.description, it.genres, null, it.year) }
                 else anime.getAnimeDetail(id).getOrNull()?.let { TitleExtra(it.synopsis, it.genres.map { g -> g.name }, it.malId, it.year) }
