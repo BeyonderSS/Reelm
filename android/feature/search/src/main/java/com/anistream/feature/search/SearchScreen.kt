@@ -34,6 +34,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Cast
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SearchOff
@@ -59,6 +60,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.anistream.core.account.ui.rememberTvSender
+import com.anistream.core.account.ui.searchItem
 import com.anistream.core.ui.components.AnimeCard
 import com.anistream.core.ui.components.EmptyState
 import com.anistream.core.ui.components.ErrorContent
@@ -92,6 +95,9 @@ fun SearchScreen(
     val open: (AnimeSearchResult) -> Unit = { r -> if (uiState.isMedia(r)) onMediaClick(r.slug) else onAnimeClick(r.slug) }
     val popular = uiState.shownPopular
     val popularLoading = uiState.shownPopularLoading
+    // a TV online: long-press or the cast badge sends a card there (Play / Open on TV)
+    val toTv = rememberTvSender()
+    val cast: ((AnimeSearchResult) -> Unit)? = toTv?.let { send -> { r -> send(searchItem(r.slug, r.title, r.posterUrl, uiState.isMedia(r), r.type == "Series")) } }
 
     Column(Modifier.fillMaxSize().background(Bg.base)) {
         Text(
@@ -141,7 +147,7 @@ fun SearchScreen(
             label = "search_mode"
         ) { m ->
             when (m) {
-                Mode.Idle -> PosterGrid(items = popular, onClick = open) {
+                Mode.Idle -> PosterGrid(items = popular, onClick = open, onCast = cast) {
                     if (uiState.recentSearches.isNotEmpty()) {
                         fullSpan {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -200,6 +206,7 @@ fun SearchScreen(
                 Mode.Results -> PosterGrid(
                     items = uiState.visibleResults,
                     onClick = open,
+                    onCast = cast,
                     isLoadingMore = uiState.isLoadingMore,
                     onLoadMore = viewModel::loadNextPage
                 )
@@ -283,6 +290,7 @@ private fun LazyGridScope.skeletonItems() = items(9) {
 private fun PosterGrid(
     items: List<AnimeSearchResult>,
     onClick: (AnimeSearchResult) -> Unit,
+    onCast: ((AnimeSearchResult) -> Unit)? = null,
     isLoadingMore: Boolean = false,
     onLoadMore: (() -> Unit)? = null,
     header: LazyGridScope.() -> Unit = {}
@@ -310,7 +318,13 @@ private fun PosterGrid(
     ) {
         header()
         items(items, key = { it.slug }) { anime ->
-            AnimeCard(anime = anime, onClick = { onClick(anime) }, modifier = Modifier.fillMaxWidth())
+            Box {
+                AnimeCard(anime = anime, onClick = { onClick(anime) }, modifier = Modifier.fillMaxWidth(), onLongClick = onCast?.let { { it(anime) } })
+                if (onCast != null) Icon(
+                    Icons.Rounded.Cast, contentDescription = "Send to TV", tint = Ink.high,
+                    modifier = Modifier.align(Alignment.TopEnd).padding(Space.xs).size(32.dp).clip(Radius.pill).background(Bg.badge).clickable { onCast(anime) }.padding(6.dp)
+                )
+            }
         }
         if (isLoadingMore) {
             fullSpan {
