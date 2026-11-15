@@ -865,26 +865,68 @@ async function getRecs(c: Ctx) {
 
 // ---- trailers: Cinemeta (+ Jikan for anime) -> YouTube ids, logo, backdrops; the app resolves the ids itself ----
 const CINEMETA = "https://v3-cinemeta.strem.io";
+// "Attack on Titan Season 2" ~ "attack-on-titan": lowercase, no accents/punctuation, no season/part suffix
+const normName = (s: string) => s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+  .replace(/\b(season|part|cour)\s*\d+\b/g, "").replace(/[^a-z0-9]/g, "");
+const editDist = (a: string, b: string) => {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + +(a[i - 1] !== b[j - 1]));
+    prev = cur;
+  }
+  return prev[b.length];
+};
+/** 0 = no match, 1 = close (a typo or two), 2 = exact after normalizing */
+export const nameMatch = (a: string, b: string) => {
+  const x = normName(a), y = normName(b);
+  if (!x || !y) return 0;
+  if (x === y) return 2;
+  return editDist(x, y) <= (Math.min(x.length, y.length) >= 8 ? 2 : Math.min(x.length, y.length) >= 4 ? 1 : 0) ? 1 : 0;
+};
 async function trailer({ url }: Ctx) {
   const q = url.searchParams, mal = /^\d{1,9}$/.test(q.get("mal") ?? "") ? q.get("mal")! : "";
   const title = (q.get("title") ?? "").trim().slice(0, 200), year = Number(q.get("year")) || 0;
-  const type = q.get("type") === "series" ? "series" : "movie";
+  let type = q.get("type") === "series" ? "series" : q.get("type") === "movie" ? "movie" : "";
   let imdb = /^tt\d{1,10}$/.test(q.get("imdb") ?? "") ? q.get("imdb")! : "";
   const cache = (caches as any).default as Cache;
   const key = new Request(`https://reelm-cache.internal/trailer?${new URLSearchParams({ imdb, mal, title: title.toLowerCase(), year: String(year), type })}`);
   const hit = await cache.match(key);
   if (hit) return json(await hit.json());
 
-  const get = async (u: string) => { try { const r = await fetch(u, { headers: { "User-Agent": "reelm-api" }, signal: AbortSignal.timeout(4000) }); return r.ok ? ((await r.json()) as any) : null; } catch { return null; } };
+  // null = genuinely nothing (404 / empty); an error or timeout sets `failed` so the answer isn't cached
+  let failed = false;
+  const get = async (u: string) => {
+    try {
+      const r = await fetch(u, { headers: { "User-Agent": "reelm-api" }, signal: AbortSignal.timeout(4000) });
+      if (r.ok) return (await r.json()) as any;
+      if (r.status !== 404) failed = true;
+    } catch { failed = true; }
+    return null;
+  };
+  const metaOf = (t: string, id: string) => get(`${CINEMETA}/meta/${t}/${id}.json`).then((r) => (r?.meta?.name ? r.meta : null));
+  let meta: any = null;
   if (!imdb && title) {
-    const hits: any[] = (await get(`${CINEMETA}/catalog/${type}/top/search=${encodeURIComponent(title)}.json`))?.metas ?? [];
-    // ponytail: first hit when no year is given; a wrong year match is worse than none, so a year with no hit finds nothing
-    imdb = hits.find((m) => /^tt\d+$/.test(m?.imdb_id ?? "") && (!year || Math.abs(parseInt(m.releaseInfo ?? m.year) - year) <= 1))?.imdb_id ?? "";
+    const hits: any[] = (await get(`${CINEMETA}/catalog/${type || "movie"}/top/search=${encodeURIComponent(title)}.json`))?.metas ?? [];
+    // a wrong title is worse than none: the name must match, and the year within 1 (anime years from our sources are unreliable,
+    // so an exact name match is enough there)
+    imdb = hits.find((m) => {
+      if (!/^tt\d+$/.test(m?.imdb_id ?? "")) return false;
+      const n = nameMatch(title, m.name ?? "");
+      return n > 0 && (!year || Math.abs(parseInt(m.releaseInfo ?? m.year) - year) <= 1 || (mal !== "" && n === 2));
+    })?.imdb_id ?? "";
   }
-  const [meta, jikan] = await Promise.all([
-    imdb ? get(`${CINEMETA}/meta/${type}/${imdb}.json`).then((r) => r?.meta) : null,
+  if (imdb && !type) {
+    // Cinemeta's movie endpoint answers a series id with an unrelated film (Numb3rs -> Jaws); its series endpoint is honest.
+    // So: the one whose name matches the title, else the series if it exists, else the movie.
+    const [s, m] = await Promise.all([metaOf("series", imdb), metaOf("movie", imdb)]);
+    meta = title && m && nameMatch(title, m.name) && !(s && nameMatch(title, s.name)) ? m : s ?? m;
+  }
+  const [meta2, jikan] = await Promise.all([
+    imdb && !meta && type ? metaOf(type, imdb) : meta,
     mal ? get(`https://api.jikan.moe/v4/anime/${mal}`) : null,
   ]);
+  meta = meta2;
   const ids = [
     ...(meta?.trailers ?? []).slice().sort((a: any, b: any) => +(b?.type === "Trailer") - +(a?.type === "Trailer")).map((t: any) => t?.source),
     ...(meta?.trailerStreams ?? []).map((t: any) => t?.ytId),
@@ -892,7 +934,7 @@ async function trailer({ url }: Ctx) {
   ];
   const ytIds = [...new Set(ids.filter((i): i is string => typeof i === "string" && /^[\w-]{6,20}$/.test(i)))];
   const body = { ytIds, logo: meta?.logo ?? null, backdrops: meta?.background ? [meta.background] : [], startAt: 12, imdb: imdb || null };
-  await cache.put(key, new Response(JSON.stringify(body), { headers: { "cache-control": `max-age=${(ytIds.length ? 7 : 1) * DAY / 1000}` } }));
+  if (!failed) await cache.put(key, new Response(JSON.stringify(body), { headers: { "cache-control": `max-age=${(ytIds.length ? 7 : 1) * DAY / 1000}` } }));
   return json(body);
 }
 
