@@ -60,9 +60,10 @@ private const val DWELL_MS = 2_500L
 private const val PREFETCH_MS = 700L
 
 /** Media id → trailer lookup: "tt…" is an IMDb id; anything else ("mb:…") goes by title and year. */
-internal fun mediaTrailerKey(id: String, title: String, year: Int?, series: Boolean): TrailerKey =
-    if (id.startsWith("tt")) TrailerKey(imdb = id.substringBefore(':'))
-    else TrailerKey(title = title, year = year, type = if (series) "series" else "movie")
+internal fun mediaTrailerKey(id: String, title: String, year: Int?, series: Boolean): TrailerKey {
+    val type = if (series) "series" else "movie"
+    return if (id.startsWith("tt")) TrailerKey(imdb = id.substringBefore(':'), type = type) else TrailerKey(title = title, year = year, type = type)
+}
 
 /** Anime: MyAnimeList id when known (Jikan PVs), plus title/year so the server can find a logo. */
 internal fun animeTrailerKey(mal: Long?, title: String, year: Int?) = TrailerKey(mal = mal, title = title, year = year, type = "series")
