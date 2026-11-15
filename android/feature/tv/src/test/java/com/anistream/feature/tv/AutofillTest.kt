@@ -13,6 +13,11 @@ class AutofillTest {
         assertEquals("Matrix", autofillTitle("MAT", listOf("The Matrix")))
     }
 
+    @Test fun trademarkSignsNeverComplete() {
+        assertNull(autofillTitle("vision quest", listOf("The Vision Quest™")))
+        assertEquals("Vision Quest 2", autofillTitle("vision", listOf("Vision® Quest 2")))
+    }
+
     @Test fun nothingWhenNoTitleStartsWithQuery() {
         assertNull(autofillTitle("zz", listOf("Death Note")))
         assertNull(autofillTitle("", listOf("Death Note")))

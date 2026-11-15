@@ -108,7 +108,7 @@ internal fun autofillTitle(query: String, titles: List<String>): String? {
     val q = query.trimStart().lowercase()
     if (q.isEmpty()) return null
     return titles.firstNotNullOfOrNull { title ->
-        val t = title.trimStart { !it.isLetterOrDigit() }
+        val t = title.filterNot { it in "™®©" }.trimStart { !it.isLetterOrDigit() }.trimEnd()
         val noArticle = articles.firstOrNull { t.startsWith(it, ignoreCase = true) }?.let { t.substring(it.length) }
         listOfNotNull(t, noArticle).firstOrNull { it.length > q.length && it.lowercase().startsWith(q) }
     }

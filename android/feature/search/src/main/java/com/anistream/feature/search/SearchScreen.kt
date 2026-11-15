@@ -123,7 +123,7 @@ fun SearchScreen(
                 items(if (uiState.scope == SCOPE_ALL) allTypeFilters.filter { it == "All" || it == ANIME_TYPE || ContentPrefs.shows(if (it == "Series") ContentPrefs.SERIES else ContentPrefs.MOVIES) }
                 else if (movies) mediaTypeFilters.filter { it == "All" || ContentPrefs.shows(if (it == "Series") ContentPrefs.SERIES else ContentPrefs.MOVIES) } else typeFilters) { type ->
                     val value = if (type == "All") null else type
-                    PillChip(label = type, selected = uiState.typeFilter == value, onClick = { viewModel.onTypeFilterChange(value) })
+                    PillChip(label = if (type == "All") "Any type" else type, selected = uiState.typeFilter == value, onClick = { viewModel.onTypeFilterChange(value) })
                 }
             }
         }
