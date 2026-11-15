@@ -37,13 +37,14 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.Backspace
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -85,7 +86,11 @@ import com.anistream.core.ui.theme.Ink
 import com.anistream.core.ui.theme.Radius
 import com.anistream.domain.model.AnimeSearchResult
 import com.anistream.domain.ContentPrefs
+import com.anistream.feature.search.ANIME_TYPE
+import com.anistream.feature.search.SCOPE_ALL
+import com.anistream.feature.search.SCOPE_MEDIA
 import com.anistream.feature.search.SearchViewModel
+import com.anistream.feature.search.searchTabs
 
 private val Violet = Color(0xFF5B3FA0)
 private val KeyBg = Color(0xFF1A1B24)
@@ -177,11 +182,9 @@ fun TvSearchScreen(onOpen: (id: String) -> Unit, vm: SearchViewModel = hiltViewM
         r.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let(vm::onQueryChange)
     }
     val hidden by ContentPrefs.hidden.collectAsStateWithLifecycle()
-    val showAnime = ContentPrefs.ANIME !in hidden
-    val showMedia = ContentPrefs.MOVIES !in hidden || ContentPrefs.SERIES !in hidden
-    // the scope on screen is never a hidden one
-    LaunchedEffect(showAnime, showMedia, s.scope) { if (!showAnime && s.scope == 0) vm.onScopeChange(1) else if (!showMedia && s.scope == 1) vm.onScopeChange(0) }
-    val list = (if (s.query.isBlank()) (if (s.scope == 1) s.mediaPopular else s.popular) else s.visibleResults).let { l ->
+    // the view model keeps the scope on a kind "What you watch" shows; no tabs when only one kind is left
+    val tabs = remember(hidden) { searchTabs() }
+    val list = (if (s.query.isBlank()) s.shownPopular else s.visibleResults).let { l ->
         // movie vs series is told apart by the search result's type
         if (s.scope != 1) l else l.filter { r -> if (r.type.equals("Series", true)) ContentPrefs.SERIES !in hidden else ContentPrefs.MOVIES !in hidden }
     }
@@ -220,9 +223,8 @@ fun TvSearchScreen(onOpen: (id: String) -> Unit, vm: SearchViewModel = hiltViewM
                     maxLines = 2, overflow = TextOverflow.Clip
                 )
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(u * 1f), verticalArrangement = Arrangement.spacedBy(u * 0.6f)) {
-                    Row(Modifier.background(Color.White.copy(alpha = 0.07f), Radius.pill).padding(u * 0.3f), horizontalArrangement = Arrangement.spacedBy(u * 0.3f)) {
-                        listOf("Anime", "Movies & TV").forEachIndexed { i, t ->
-                            if ((i == 0 && !showAnime) || (i == 1 && !showMedia)) return@forEachIndexed
+                    if (tabs.isNotEmpty()) Row(Modifier.background(Color.White.copy(alpha = 0.07f), Radius.pill).padding(u * 0.3f), horizontalArrangement = Arrangement.spacedBy(u * 0.3f)) {
+                        tabs.forEach { (t, i) ->
                             STouch({ vm.onScopeChange(i) }, selected = s.scope == i, base = Color.Transparent) {
                                 SText(t, 1.15f, Modifier.padding(horizontal = u * 1.3f, vertical = u * 0.5f), if (s.scope == i) FontWeight.SemiBold else FontWeight.Normal)
                             }
@@ -254,7 +256,8 @@ fun TvSearchScreen(onOpen: (id: String) -> Unit, vm: SearchViewModel = hiltViewM
             Spacer(Modifier.width(u * 5))
             // the giant query's line box sits high, so the left column starts 1 unit above the results
             Column(Modifier.weight(1f).padding(end = u * 4, top = u)) {
-                val types = if (s.scope == 1) mediaTypes.filter { !(it == "Movie" && ContentPrefs.MOVIES in hidden) && !(it == "Series" && ContentPrefs.SERIES in hidden) } else animeTypes
+                val media = mediaTypes.filter { !(it == "Movie" && ContentPrefs.MOVIES in hidden) && !(it == "Series" && ContentPrefs.SERIES in hidden) }
+                val types = when (s.scope) { SCOPE_MEDIA -> media; SCOPE_ALL -> listOf(ANIME_TYPE) + media; else -> animeTypes }
                 val label = TvType.title.copy(fontFamily = Display, fontWeight = FontWeight.SemiBold, fontSize = (u.value * 1.4f).sp, lineHeight = (u.value * 1.8f).sp)
                 Row(Modifier.fillMaxWidth().padding(bottom = u * 1.2f), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     Row(Modifier.weight(1f, fill = false), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(u)) {
@@ -263,7 +266,7 @@ fun TvSearchScreen(onOpen: (id: String) -> Unit, vm: SearchViewModel = hiltViewM
                                 s.query.isBlank() -> if (s.recentSearches.isEmpty()) "Popular" else "Recent"
                                 s.isLoading -> "Searching…"
                                 s.error != null -> s.error!!
-                                list.isEmpty() -> "Nothing matches \"${s.query.trim()}\""
+                                list.isEmpty() -> "Nothing found for \"${s.query.trim()}\""
                                 else -> if (list.size == 1) "1 result" else "${list.size} results"
                             },
                             style = label, maxLines = 1, overflow = TextOverflow.Ellipsis
@@ -291,8 +294,12 @@ fun TvSearchScreen(onOpen: (id: String) -> Unit, vm: SearchViewModel = hiltViewM
                         Chip("Clear recents", false, u, vm::onClearRecents)
                     }
                 }
+                val grid = rememberLazyGridState()
+                // a better match landing on top (All merges each kind as it arrives) must be seen; the grid would keep the old first card in view
+                LaunchedEffect(list.firstOrNull()?.slug) { grid.scrollToItem(0) }
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(5),
+                    state = grid,
                     modifier = Modifier.focusRestorer(),
                     contentPadding = PaddingValues(top = u * 0.5f, start = u * 0.5f, end = u * 0.5f, bottom = 40.dp),
                     verticalArrangement = Arrangement.spacedBy(u * 1.2f),
@@ -315,7 +322,7 @@ fun TvSearchScreen(onOpen: (id: String) -> Unit, vm: SearchViewModel = hiltViewM
                     }
                     if (s.query.isNotBlank() && list.isEmpty() && !s.isLoading && s.error == null) item(span = { GridItemSpan(maxLineSpan) }) {
                         Column(verticalArrangement = Arrangement.spacedBy(u * 1.2f)) {
-                            SText(if (s.typeFilter != null) "Try All types, or fewer letters." else if (showAnime && showMedia) "Try fewer letters, or switch to ${if (s.scope == 1) "Anime" else "Movies & TV"}." else "Try fewer letters.", 1.15f, color = Color(0xFFA3A1AE))
+                            SText(if (s.typeFilter != null) "Try All types, or fewer letters." else if (tabs.isNotEmpty() && s.scope != SCOPE_ALL) "Try fewer letters, or switch to All." else "Check the spelling, or try fewer letters.", 1.15f, color = Color(0xFFA3A1AE))
                             if (hasRecents) recents(true)
                         }
                     }

@@ -26,7 +26,10 @@ export const movieRoutes: Record<string, (q: URLSearchParams) => Promise<unknown
     const t = q.get("q") ?? "", mature = q.get("mature") === "1";
     const opt = <T,>(p: Promise<T[]>) => Promise.race([p.catch(() => [] as T[]), new Promise<T[]>((r) => setTimeout(() => r([]), 6000))]);
     const tmdb = (x: string) => opt<any>(typeof window === "undefined" ? tm.search(x) : json(`/api/movies/tmdb?q=${encodeURIComponent(x)}`));
-    const [mbs, cm, tms0] = await Promise.all([opt<any>(mb.search(t)), opt<any>(misc.cinemetaSearch(t)), tmdb(t)]);
+    // "vision quest" also asks for "visionquest" (and the other way round, the score treats both alike); each source's lists are joined
+    const vs = [t, ...(/\S\s+\S/.test(t.trim()) ? [t.replace(/\s+/g, "")] : [])];
+    const all = <T,>(f: (x: string) => Promise<T[]>) => Promise.all(vs.map(f)).then((l) => l.flat());
+    const [mbs, cm, tms0] = await Promise.all([all((x) => opt<any>(mb.search(x))), all((x) => opt<any>(misc.cinemetaSearch(x))), all(tmdb)]);
     // TMDB doesn't forgive typos: ask again with the best title the others found ("gang of wasepur" -> "Gangs of Wasseypur")
     const best = tms0.length ? "" : bestTitle(t, [...mbs.filter((i: any) => visible(i, mature)), ...cm]);
     const tms = best && best.toLowerCase() !== t.trim().toLowerCase() ? await tmdb(best) : tms0;

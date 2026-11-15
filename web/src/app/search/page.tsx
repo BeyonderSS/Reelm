@@ -3,12 +3,19 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { RotateCcw, X } from "lucide-react";
 import { animeCard, Grid, GridSkeleton, kidsOk, mediaCard, Notice } from "@/components/app";
-import { shows, showsMovies, type Profile } from "@/lib/core";
+import { shows, showsMovies, type CardData, type Profile } from "@/lib/core";
 import { useApi, useSession } from "@/lib/session";
+import { band, score } from "@/lib/search-rank";
 import { track } from "@/lib/telemetry";
 
-const TABS = [["anime", "Anime"], ["movies", "Movies & TV"]] as const;
+type Tab = "all" | "anime" | "movies";
+const TABS = [["all", "All"], ["anime", "Anime"], ["movies", "Movies & TV"]] as const;
 const TAB_ON = { anime: (p?: Profile) => shows(p, "anime"), movies: showsMovies };
+/** All = both kinds, best title match first (same 0.05 bands as the Movies & TV ranking, which keeps its own order inside a band; anime first on a tie).
+ *  Each card keeps its kind in its subtitle. */
+const merge = (q: string, a: CardData[], m: CardData[]) =>
+  [...a.map((c) => ({ ...c, sub: ["Anime", c.sub].filter(Boolean).join(", ") })), ...m]
+    .map((c, o) => ({ c, o, s: band(score(q, c.title)) })).sort((x, y) => y.s - x.s || x.o - y.o).map((x) => x.c);
 const RECENT = "reelm.recent";
 const readRecent = (): string[] => { try { return JSON.parse(localStorage.getItem(RECENT) ?? "[]"); } catch { return []; } };
 /** "Series, 2008" -> "Series"; anime subs are already the type ("TV", "OVA"). */
@@ -16,10 +23,11 @@ const kindOf = (sub?: string) => sub?.split(",")[0].trim() || "";
 
 function Search() {
   const q = useSearchParams(), router = useRouter(), { s } = useSession();
-  const term = q.get("q") ?? "", want = q.get("t") === "movies" ? "movies" : "anime";
-  // a hidden tab falls back to the other one (both can't be hidden)
-  const tab = TAB_ON[want](s.profile) ? want : want === "anime" ? "movies" : "anime";
-  const tabs = TABS.filter(([v]) => TAB_ON[v](s.profile));
+  const term = q.get("q") ?? "", t = q.get("t"), want: Tab = t === "movies" || t === "anime" ? t : "all";
+  // All is the default; with one kind hidden only the other is left (both can't be hidden), and no tabs
+  const on = { anime: TAB_ON.anime(s.profile), movies: TAB_ON.movies(s.profile) };
+  const tab: Tab = !on.anime ? "movies" : !on.movies ? "anime" : want;
+  const tabs = on.anime && on.movies ? TABS : [];
   const [text, setText] = useState(term), [kind, setKind] = useState(""), [recent, setRecent] = useState<string[]>([]);
   const box = useRef<HTMLTextAreaElement>(null);
   useEffect(() => setText(term), [term]);
@@ -31,8 +39,14 @@ function Search() {
     const id = setTimeout(() => go(tab, text), 450);
     return () => clearTimeout(id);
   }, [text]); // eslint-disable-line react-hooks/exhaustive-deps
-  const { data, loading, error } = useApi(term ? `${tab}/search?q=${encodeURIComponent(term)}${tab === "movies" && s.profile?.mature && !s.profile.kids ? "&mature=1" : ""}` : null);
-  const all = ((data ?? []) as any[]).map(tab === "anime" ? animeCard : mediaCard).filter((c) => kidsOk(c, s.profile?.kids, s.profile));
+  // All runs both searches at once and shows each side as it lands; a side that fails just drops out
+  const ani = useApi(term && tab !== "movies" ? `anime/search?q=${encodeURIComponent(term)}` : null);
+  const mov = useApi(term && tab !== "anime" ? `movies/search?q=${encodeURIComponent(term)}${s.profile?.mature && !s.profile.kids ? "&mature=1" : ""}` : null);
+  const ok = (c: CardData) => kidsOk(c, s.profile?.kids, s.profile);
+  const a = ((ani.data ?? []) as any[]).map(animeCard).filter(ok), m = ((mov.data ?? []) as any[]).map(mediaCard).filter(ok);
+  const all = tab === "anime" ? a : tab === "movies" ? m : merge(term, a, m);
+  const sides = tab === "all" ? [ani, mov] : [tab === "anime" ? ani : mov];
+  const loading = !all.length && sides.some((x) => x.loading), error = sides.every((x) => x.error) ? sides[0].error : undefined;
   const kinds = [...new Set(all.map((c) => kindOf(c.sub)).filter(Boolean))];
   const items = kind && kinds.includes(kind) ? all.filter((c) => kindOf(c.sub) === kind) : all;
   const empty = !!term && !loading && !error && !all.length;
@@ -97,10 +111,10 @@ function Search() {
             )}
           </div>
         )}
-        {!term && <Notice title="Find something to watch" body="Type a title. Results show anime or movies and series, depending on the switch." />}
+        {!term && <Notice title="Find something to watch" body="Type a title of an anime, movie or series." />}
         {loading && <GridSkeleton />}
         {error && <Notice title="Search didn't go through" body={error}><button className="beam rounded-full bg-secondary px-5 py-2.5 text-sm font-medium" onClick={() => location.reload()}>Try again</button></Notice>}
-        {empty && <Notice title={`Nothing found for “${term}”`} body={`Check the spelling, or look in ${tab === "anime" ? "Movies & TV" : "Anime"}.`} />}
+        {empty && <Notice title={`Nothing found for “${term}”`} body={tabs.length && tab !== "all" ? `Check the spelling, or look in ${tab === "anime" ? "Movies & TV" : "Anime"}.` : "Check the spelling."} />}
         {!loading && <Grid items={items} />}
       </section>
     </main>

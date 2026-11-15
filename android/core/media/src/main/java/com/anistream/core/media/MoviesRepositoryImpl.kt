@@ -140,10 +140,14 @@ class MoviesRepositoryImpl @Inject constructor(
     override suspend fun search(query: String, page: Int): Result<List<MediaItem>> = safeApiCall {
         if (page > 1) return@safeApiCall movieBox.search(query, page).filter { !MaturePolicy.active || !MaturePolicy.hides(it.genres, it.title) }
         suspend fun src(block: suspend () -> List<MediaItem>) = runCatching { withTimeout(SEARCH_TIMEOUT_MS) { block() } }
+        // "vision quest" also asks for "visionquest" (titleScore treats both alike); each source's lists are joined, a source fails only if every ask did
+        val asks = listOf(query) + (if (Regex("\\S\\s+\\S").containsMatchIn(query.trim())) listOf(query.replace(Regex("\\s+"), "")) else emptyList())
+        suspend fun each(block: suspend (String) -> List<MediaItem>) = coroutineScope { asks.map { q -> async { src { block(q) } } }.awaitAll() }
+            .let { r -> if (r.all { it.isFailure }) r.first() else kotlin.Result.success(r.flatMap { it.getOrNull().orEmpty() }) }
         val (mb, cine, tm) = coroutineScope {
-            val a = async { src { movieBox.search(query, 1) } }
-            val b = async { src { cinemetaSearch(query) } }
-            val c = async { src { tmdbSearch(query) } }
+            val a = async { each { movieBox.search(it, 1) } }
+            val b = async { each { cinemetaSearch(it) } }
+            val c = async { each { tmdbSearch(it) } }
             Triple(a.await(), b.await(), c.await())
         }
         if (mb.isFailure && cine.isFailure && tm.isFailure) throw mb.exceptionOrNull()!!

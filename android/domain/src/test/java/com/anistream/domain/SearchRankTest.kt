@@ -27,3 +27,23 @@ class SearchRankTest {
         assertEquals(false, rankSearch("gang of wasepur", listOf(mb), true).any { it.id == "mb:3" })
     }
 }
+
+class SearchSpacingTypoTest {
+    private fun i(id: String, title: String, year: Int?, rating: Double? = null) = MediaItem(id, MediaType.MOVIE, title, year = year, rating = rating, genres = listOf("Drama"))
+    private fun first(q: String, l: List<MediaItem>) = rankSearch(q, listOf(l), true).firstOrNull()?.title
+
+    private val vq = listOf(
+        i("mb:v1", "Vision Quest", 1985, 6.7), i("mb:v2", "Vision Quest", 2025), i("mb:v3", "Vernacular Visions 9 Feat. Guest Presenting Photographer Justin Smith", 2014),
+        i("mb:v4", "VisionQuest [Hindi]", 2026, 8.3), i("mb:v5", "VisionQuest Sound", 2015)
+    )
+
+    @Test fun spacingAndPopularity() = listOf("vision quest", "visionquest", "visoin quest", "Vision-Quest").forEach { assertEquals(it, "VisionQuest [Hindi]", first(it, vq)) }
+
+    @Test fun typos() {
+        assertEquals("Breaking Bad [Hindi] S1-S5", first("brekaing bad", listOf(i("mb:b1", "Ismo: Breaking Bad English", 2024), i("mb:b2", "The Bad News Bears in Breaking Training", 1977), i("mb:b3", "Breaking Bad [Hindi] S1-S5", 2013, 9.5))))
+        assertEquals("Interstellar [Hindi]", first("intersteller", listOf(i("mb:i1", "The Science of Interstellar", 2014), i("mb:i2", "Interstellar Wars", 2016), i("mb:i3", "Interstellar [Hindi]", 2014, 8.7))))
+        assertEquals("Naruto: Shippuden [Hindi]", first("naruto shipuden", listOf(i("mb:n1", "Naruto Shippuden the Movie: Blood Prison", 2011), i("mb:n2", "Naruto: Shippuden [Hindi]", 2017, 8.7))))
+        val sv = listOf(i("mb:s1", "Hum Suryavasham Hain", 2022), i("mb:s2", "Sooryavansham [Hindi]", 1999, 6.4), i("mb:s3", "Suryavanshi", 1992))
+        assertEquals(true, rankSearch("suryavansam", listOf(sv), true).any { it.title == "Sooryavansham [Hindi]" })
+    }
+}
