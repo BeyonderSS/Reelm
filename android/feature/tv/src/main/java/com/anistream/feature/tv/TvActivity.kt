@@ -149,6 +149,12 @@ private fun TvApp() {
     // page, which resolves the streams); a player already open is replaced. Without autoplay: the Continue Watching destination.
     LaunchedEffect(Unit) {
         acct.hub.handoffs.collect { h ->
+            // "Open on TV": just the title's page; no history row, no playback
+            if (!h.autoplay) {
+                val row = com.anistream.core.account.HistoryPayload.decode(h.payload, 0)
+                if (row.animeSlug.isNotBlank() || row.mediaId != null) nav.navigate(if (row.kind == "media") TvRoutes.movie(row.detailId) else TvRoutes.anime(row.animeSlug))
+                return@collect
+            }
             val row = acct.applyHandoff(h) ?: return@collect
             HandoffHint.positionMs = h.positionMs.takeIf { h.autoplay }
             HandoffHint.source = h.source.takeIf { h.autoplay }
@@ -159,6 +165,26 @@ private fun TvApp() {
             }
             // a detail page opened only to resolve the autoplay: its player replaces it, so Stop returns to where the TV was
             if (h.autoplay && row.kind == "media") nav.currentBackStackEntry?.savedStateHandle?.set("handoff", true)
+        }
+    }
+    // remote keys and volume work on every screen; outside a player `describe` gets just the volume
+    val activity = androidx.compose.ui.platform.LocalContext.current as ComponentActivity
+    LaunchedEffect(Unit) {
+        acct.hub.controls.collect { c ->
+            when (c.action) {
+                "key" -> when (val k = RemoteMap.string(c.arg)) {
+                    "home" -> nav.navigateTop(TvRoutes.HOME)
+                    "back" -> activity.onBackPressedDispatcher.onBackPressed()
+                    else -> remoteKeyCode(k)?.let { code ->
+                        val t = android.os.SystemClock.uptimeMillis()
+                        activity.dispatchKeyEvent(android.view.KeyEvent(t, t, android.view.KeyEvent.ACTION_DOWN, code, 0))
+                        activity.dispatchKeyEvent(android.view.KeyEvent(t, t, android.view.KeyEvent.ACTION_UP, code, 0))
+                    }
+                }
+                "volume" -> applyVolume(activity, c)
+                "describe" -> if (bridges == 0 && c.from.isNotEmpty())
+                    acct.hub.sendInfo(c.from, com.anistream.core.account.RemoteInfo(volume = remoteVolume(activity)).let { it.copy(rev = it.hashCode()) }.toJson())
+            }
         }
     }
     // a profile switch or a history pull changes Continue Watching
@@ -333,4 +359,16 @@ private fun NavHostController.navigateTop(route: String) = navigate(route) {
     popUpTo(graph.findStartDestination().id) { saveState = true }
     launchSingleTop = true
     restoreState = true
+}
+
+/** Remote `key` names → the D-pad / media key the TV remote would send ("home" and "back" are handled by navigation). */
+internal fun remoteKeyCode(k: String?) = when (k) {
+    "up" -> android.view.KeyEvent.KEYCODE_DPAD_UP
+    "down" -> android.view.KeyEvent.KEYCODE_DPAD_DOWN
+    "left" -> android.view.KeyEvent.KEYCODE_DPAD_LEFT
+    "right" -> android.view.KeyEvent.KEYCODE_DPAD_RIGHT
+    "ok" -> android.view.KeyEvent.KEYCODE_DPAD_CENTER
+    "playpause" -> android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+    "menu" -> android.view.KeyEvent.KEYCODE_MENU
+    else -> null
 }

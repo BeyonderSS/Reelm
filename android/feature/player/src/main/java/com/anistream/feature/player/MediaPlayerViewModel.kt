@@ -515,23 +515,29 @@ class MediaPlayerViewModel @Inject constructor(
 
     /** Countdown finished / "Play now": resolve the next episode's streams and play them. */
     fun nextEpisode() {
-        val s = _uiState.value
-        val r = s.request ?: return
+        val r = _uiState.value.request ?: return
+        if (_uiState.value.hasNextEpisode) playEpisode(r.season, r.episode + 1)
+    }
+
+    /** Another episode of the playing series (the remote's episode picker); another season looks up that season's length. */
+    fun playEpisode(season: Int, episode: Int) {
+        val r = _uiState.value.request ?: return
         val mediaId = r.mediaId ?: return
-        if (!s.hasNextEpisode) return
+        if (r.isLive || r.season <= 0 || season <= 0 || episode <= 0 || (season == r.season && episode == r.episode)) return
         saveProgress()
-        val episode = r.episode + 1
         _uiState.update { it.copy(ended = false, isLoading = true, error = null) }
         viewModelScope.launch {
+            val count = if (season == r.season) r.seasonEpisodeCount
+                else (movies.detail(mediaId) as? Result.Success)?.data?.seasons?.firstOrNull { it.number == season }?.episodeCount ?: 0
             val local = downloads.getAll().getOrNull().orEmpty()
-                .firstOrNull { it.animeTitle == r.title && it.subtitle == "S${r.season} · E$episode" }?.localStream()
-            when (val res = if (local != null) Result.success(listOf(local)) else movies.streams(mediaId, r.season, episode)) {
+                .firstOrNull { it.animeTitle == r.title && it.subtitle == "S$season · E$episode" }?.localStream()
+            when (val res = if (local != null) Result.success(listOf(local)) else movies.streams(mediaId, season, episode)) {
                 is Result.Success -> {
                     if (res.data.isEmpty()) {
                         _uiState.update { it.copy(isLoading = false, error = "No streams for episode $episode") }
                         return@launch
                     }
-                    val next = ordered(r.copy(streams = res.data, episode = episode, subtitle = "S${r.season} · E$episode"))
+                    val next = ordered(r.copy(streams = res.data, season = season, episode = episode, subtitle = "S$season · E$episode", seasonEpisodeCount = count))
                     NowPlaying.request = next
                     tried.clear()
                     _uiState.update { it.copy(request = next, downloadStarted = false, skips = emptyList()) }

@@ -94,6 +94,10 @@ import com.anistream.feature.player.CountdownRing
 import com.anistream.feature.player.activeSkip
 import com.anistream.feature.player.skipLabel
 import com.anistream.domain.model.SkipInterval
+import com.anistream.core.account.RemoteInfo
+import com.anistream.core.account.SkipNow
+import com.anistream.core.account.HistoryPayload
+import com.anistream.domain.model.WatchHistory
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -221,7 +225,9 @@ private fun TvPlayerChrome(
     meta: EpisodeMeta = EpisodeMeta(),
     /** candidate streams, for the "Audio language" choices */
     streams: List<MediaStream> = emptyList(),
-    onAudioLanguage: ((String?) -> Unit)? = null
+    onAudioLanguage: ((String?) -> Unit)? = null,
+    /** the phone/web remote: what's playing and the screen's own pickers */
+    remote: RemoteHooks
 ) {
     val party: PartyViewModel = hiltViewModel()
     var partyOpen by remember { mutableStateOf(false) }
@@ -288,6 +294,37 @@ private fun TvPlayerChrome(
         now - lastSeekAt > 1500
     val nextCard = marquee && strip != null && upNext != null && !ended
     LaunchedEffect(nextCard) { if (!nextCard && nextFocused) runCatching { rootFocus.requestFocus() } }
+
+    // Remote v2: everything the remote's panel shows, and its actions on the same code paths as the D-pad
+    val texts = textOptions(tracks)
+    val countdown = if (creditsCard) CREDITS_NEXT_MS else if (upNextShown) UP_NEXT_MS else null
+    val countdownEnd = remember(countdown, skipNow?.takeIf { creditsCard }) { countdown?.let { System.currentTimeMillis() + it } }
+    val remoteInfo = RemoteInfo(
+        title = remote.title, season = remote.season, episode = remote.episode, payload = remote.payload,
+        subtitles = RemoteInfo.Subtitles(texts.any { it.selected }, texts.indexOfFirst { it.selected }.takeIf { it >= 0 }?.toString(),
+            texts.mapIndexed { i, t -> RemoteInfo.Track("$i", t.label) }, RemoteMap.sizeCode(tweaks.subScale), RemoteMap.posCode(tweaks.subPosition)),
+        audio = RemoteInfo.Audio(audio.indexOfFirst { it.selected }.takeIf { it >= 0 }?.toString(), audio.mapIndexed { i, a -> RemoteInfo.Track("$i", a.label) },
+            if (remote.langs != null) remote.lang else preferredLang, remote.langs ?: languages),
+        quality = remote.quality, sources = remote.sources, source = remote.source,
+        speed = RemoteMap.percent(tweaks.speed), speeds = if (isLive) emptyList() else PlaybackSpeeds.map(RemoteMap::percent),
+        sleepMin = tweaks.sleep.takeIf { it != 0 }, volume = remoteVolume(context)
+    ).let { it.copy(rev = it.hashCode()) }
+    TvRemoteBridge(player, remote, remoteInfo, skipNow?.takeIf { chipAvailable || creditsCard }?.let { SkipNow(skipLabel(it.type), it.endMs) }, countdownEnd) { c ->
+        when (c.action) {
+            "skip" -> skipNow?.let { sk -> player.seekTo(if (duration > 0) sk.endMs.coerceAtMost(duration) else sk.endMs); lastSeekAt = System.currentTimeMillis() }
+            "cancelNext" -> if (upNextShown) onCancelUpNext() else if (creditsCard) creditsDismissed = skipNow
+            "subs" -> RemoteMap.track(c.arg)?.let { i -> if (i < 0) selectText(player, null) else texts.getOrNull(i)?.let { selectText(player, it) } }
+            "subSize" -> RemoteMap.scale(c.arg)?.let(tweaks::updateSubScale)
+            "subPos" -> RemoteMap.position(c.arg)?.let(tweaks::updateSubPosition)
+            "audio" -> RemoteMap.track(c.arg)?.let(audio::getOrNull)?.let { selectAudio(player, it) }
+            "audioLang" -> (remote.onLang ?: onAudioLanguage)?.invoke(RemoteMap.string(c.arg))
+            "quality" -> c.value?.let { remote.onQuality(it.toInt()) }
+            "source" -> RemoteMap.string(RemoteMap.field(c.arg, "id"))?.toIntOrNull()?.let(remote.onSource)
+            "episode" -> RemoteMap.episode(c.arg)?.let { (se, ep) -> remote.onEpisode(se, ep) }
+            "speed" -> if (!isLive) c.value?.let { tweaks.updateSpeed(player, RemoteMap.speed(it)) }
+            "sleep" -> c.value?.toInt()?.takeIf { it >= -1 }?.let(tweaks::updateSleep)
+        }
+    }
 
     fun show() { visible = true; poke++ }
     fun closePanel() { panel = Panel.NONE; poke++; runCatching { rootFocus.requestFocus() } }
@@ -885,7 +922,20 @@ fun TvAnimePlayerScreen(onExit: () -> Unit, vm: PlayerViewModel = hiltViewModel(
         if (s.animeTitle.isNotBlank()) value = guideVm.guide.anime(s.animeTitle, null, null, s.episodeNumbers.size.takeIf { it > 0 } ?: 20).associateBy { it.n }
     }
     val nextEp = next?.let { guide[it] }
-    TvRemoteBridge(vm.player, s.animeTitle.takeIf { it != s.animeSlug }.orEmpty(), "Episode ${s.episodeNumber}", s.posterUrl, s.hasNext, s.hasPrevious, vm::nextEpisode, vm::previousEpisode, onExit)
+    val heights = s.availableQualities.groupBy { it.height.takeIf { h -> h > 0 } ?: RemoteMap.heightOf(it.qualityLabel) }.filterKeys { it > 0 }
+    val remote = RemoteHooks(
+        s.animeTitle.takeIf { it != s.animeSlug }.orEmpty(), "Episode ${s.episodeNumber}", s.posterUrl, s.hasNext, s.hasPrevious, vm::nextEpisode, vm::previousEpisode, onExit,
+        episode = s.episodeNumber, payload = s.animeSlug.takeIf { it.isNotBlank() }?.let {
+            HistoryPayload.encode(WatchHistory(it, s.animeTitle, posterUrl = s.posterUrl, totalEpisodes = s.episodeNumbers.size, lastEpisodeWatched = s.episodeNumber))
+        },
+        quality = RemoteInfo.Quality(
+            heights.entries.firstOrNull { (_, v) -> v.any { it.qualityLabel == s.selectedQuality && s.autoNote.isEmpty() } }?.key ?: 0,
+            heights.map { (h, v) -> RemoteInfo.Chip(h, v.size) }.sortedByDescending { it.height }
+        ),
+        onQuality = { h -> (if (h <= 0) s.autoQuality.takeIf { it.isNotEmpty() } else heights[h]?.first()?.qualityLabel)?.let(vm::selectQuality) },
+        onEpisode = { _, e -> vm.playEpisode(e) },
+        langs = listOf("ja", "en"), lang = if (s.language == "dub") "en" else "ja", onLang = { vm.setLanguage(if (it == "en") "dub" else "sub") }
+    )
     TvPlayerChrome(
         player = vm.player,
         title = s.animeTitle,
@@ -917,7 +967,8 @@ fun TvAnimePlayerScreen(onExit: () -> Unit, vm: PlayerViewModel = hiltViewModel(
             name = guide[s.episodeNumber]?.title?.takeIf { it.isNotBlank() } ?: "Episode ${s.episodeNumber}",
             synopsis = guide[s.episodeNumber]?.overview, runtimeMin = guide[s.episodeNumber]?.runtime, airDate = guide[s.episodeNumber]?.airDate,
             nextName = nextEp?.title, nextStill = nextEp?.still
-        )
+        ),
+        remote = remote
     )
 }
 
@@ -946,7 +997,23 @@ fun TvMediaPlayerScreen(
     val ge = r?.episode?.let { guide[it] }
     val nextEp = r?.episode?.let { guide[it + 1] }
     val subs = textOptions(rememberTracks(vm.player))
-    TvRemoteBridge(vm.player, r?.title.orEmpty(), listOfNotNull(r?.subtitle, ge?.title?.takeIf { it.isNotBlank() }).joinToString(" · ").ifBlank { null }, r?.posterUrl, s.hasNextEpisode, false, vm::nextEpisode, {}, onExit)
+    val unsupported = vm.unsupportedHeights()
+    val remote = RemoteHooks(
+        r?.title.orEmpty(), listOfNotNull(r?.subtitle, ge?.title?.takeIf { it.isNotBlank() }).joinToString(" · ").ifBlank { null }, r?.posterUrl,
+        s.hasNextEpisode, false, vm::nextEpisode, {}, onExit,
+        season = r?.season?.takeIf { it > 0 }, episode = r?.episode?.takeIf { it > 0 },
+        payload = r?.takeIf { !it.isLive }?.let {
+            HistoryPayload.encode(WatchHistory(it.historyKey.orEmpty(), it.title, posterUrl = it.posterUrl, totalEpisodes = it.seasonEpisodeCount,
+                lastEpisodeWatched = it.episode, kind = "media", season = it.season, mediaId = it.mediaId, subtitle = it.subtitle))
+        },
+        quality = RemoteInfo.Quality(s.quality, quals.map { (h, n) -> RemoteInfo.Chip(h, n, h !in unsupported) }), onQuality = vm::selectQuality,
+        sources = (vm.allSourcesOrder().ifEmpty { streams.indices.toList() }).take(40).map { i ->
+            streams[i].let { st -> RemoteInfo.Source("$i", listOf(st.sourceName, st.qualityLabel).filter(String::isNotBlank).joinToString(" · ").take(60), st.height, st.height !in unsupported) }
+        },
+        source = s.streamIndex.takeIf { it in streams.indices }?.toString(),
+        onSource = { i -> if (i in streams.indices) vm.selectStream(i) },
+        onEpisode = vm::playEpisode
+    )
     TvPlayerChrome(
         player = vm.player,
         title = r?.title.orEmpty(),
@@ -993,7 +1060,8 @@ fun TvMediaPlayerScreen(
             show = if (r.season > 0 && r.episode > 0) "${r.title}, season ${r.season}, episode ${r.episode}" else null,
             name = if (r.episode > 0) ge?.title?.takeIf { it.isNotBlank() } ?: "Episode ${r.episode}" else r.title,
             synopsis = ge?.overview, runtimeMin = ge?.runtime, airDate = ge?.airDate, nextName = nextEp?.title, nextStill = nextEp?.still
-        )
+        ),
+        remote = remote
     )
 }
 
