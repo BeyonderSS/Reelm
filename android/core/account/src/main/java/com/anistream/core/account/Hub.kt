@@ -91,17 +91,29 @@ class HubClient @Inject constructor(private val account: AccountRepository, priv
     /** Other TVs on this account. */
     fun tvs(list: List<Device>) = list.filter { it.kind == "tv" && it.id != account.deviceId }
 
-    fun sendHandoff(to: Device, profileId: String, h: WatchHistory, positionMs: Long, source: String? = null): Boolean =
+    /** [autoplay] false = the TV opens the title's detail page instead of playing ("Open on TV"). */
+    fun sendHandoff(to: Device, profileId: String, h: WatchHistory, positionMs: Long, source: String? = null, autoplay: Boolean = true): Boolean =
         socket?.send(buildJsonObject {
             put("type", "handoff"); put("to", to.id); put("profileId", profileId)
             put("playback", buildJsonObject {
-                put("payload", HistoryPayload.encode(h)); put("positionMs", positionMs); put("autoplay", true)
+                put("payload", HistoryPayload.encode(h)); put("positionMs", positionMs); put("autoplay", autoplay)
                 if (source != null) put("source", source)
             })
         }.toString()) ?: false
 
-    fun sendControl(to: String, action: String, value: Long? = null): Boolean =
-        socket?.send(buildJsonObject { put("type", "control"); put("to", to); put("action", action); if (value != null) put("value", value) }.toString()) ?: false
+    fun sendControl(to: String, action: String, value: Long? = null, arg: JsonElement? = null): Boolean =
+        socket?.send(buildJsonObject {
+            put("type", "control"); put("to", to); put("action", action); if (value != null) put("value", value); if (arg != null) put("arg", arg)
+        }.toString()) ?: false
+
+    /** TV: answer a remote's `describe` with [RemoteInfo.toJson]. */
+    fun sendInfo(to: String, info: JsonObject) {
+        socket?.send(buildJsonObject { put("type", "info"); put("to", to); put("info", info) }.toString())
+    }
+
+    private val _infos = MutableStateFlow<Map<String, JsonObject>>(emptyMap())
+    /** Remote: the last `info` from each TV (deviceId → [RemoteInfo.parse] it). */
+    val infos: StateFlow<Map<String, JsonObject>> = _infos.asStateFlow()
 
     /** TV: what the player shows now (null = left the player). */
     fun sendState(now: Now?) {
@@ -111,7 +123,9 @@ class HubClient @Inject constructor(private val account: AccountRepository, priv
                 buildJsonObject {
                     put("title", n.title.take(120)); n.subtitle?.let { put("subtitle", it.take(120)) }; n.poster?.let { put("poster", it) }
                     put("playing", n.playing); put("positionMs", n.positionMs); put("durationMs", n.durationMs)
-                    put("hasNext", n.hasNext); put("hasPrev", n.hasPrev); put("at", n.at)
+                    put("hasNext", n.hasNext); put("hasPrev", n.hasPrev); put("at", n.at); put("rev", n.rev)
+                    put("skip", n.skip?.let { s -> buildJsonObject { put("label", s.label.take(40)); put("endMs", s.endMs) } } ?: JsonNull)
+                    put("nextInMs", n.nextInMs)
                 }
             } ?: JsonNull)
         }.toString())
@@ -155,7 +169,8 @@ class HubClient @Inject constructor(private val account: AccountRepository, priv
                 _states.value = _devices.value.associate { it.id to it.now }
             }
             "state" -> str(m, "from").takeIf { it.isNotEmpty() }?.let { from -> _states.update { it + (from to parseNow(m["now"], received = true)) } }
-            "control" -> _controls.tryEmit(Control(str(m, "action"), m["value"]?.jsonPrimitive?.doubleOrNull?.toLong()))
+            "control" -> _controls.tryEmit(Control(str(m, "action"), m["value"]?.jsonPrimitive?.doubleOrNull?.toLong(), m["arg"]?.takeIf { it !is JsonNull }, str(m, "from")))
+            "info" -> { val from = str(m, "from"); (m["info"] as? JsonObject)?.takeIf { from.isNotEmpty() }?.let { i -> _infos.update { it + (from to i) } } }
             "history" -> _historyPings.tryEmit(str(m, "profileId"))
             "favorites" -> _favoritePings.tryEmit(str(m, "profileId"))
             "handoff" -> m["playback"]?.jsonObject?.let { p ->
@@ -174,6 +189,8 @@ class HubClient @Inject constructor(private val account: AccountRepository, priv
         fun b(k: String) = n[k]?.jsonPrimitive?.booleanOrNull == true
         val t = System.currentTimeMillis()
         return Now(str(n, "title"), n["subtitle"]?.jsonPrimitive?.contentOrNull, n["poster"]?.jsonPrimitive?.contentOrNull, b("playing"),
-            l("positionMs"), l("durationMs"), b("hasNext"), b("hasPrev"), if (received) t else l("at").takeIf { it in 1..t } ?: t)
+            l("positionMs"), l("durationMs"), b("hasNext"), b("hasPrev"), if (received) t else l("at").takeIf { it in 1..t } ?: t,
+            l("rev").toInt(), (n["skip"] as? JsonObject)?.let { SkipNow(str(it, "label"), it["endMs"]?.jsonPrimitive?.doubleOrNull?.toLong() ?: 0L) },
+            n["nextInMs"]?.jsonPrimitive?.doubleOrNull?.toLong())
     }
 }

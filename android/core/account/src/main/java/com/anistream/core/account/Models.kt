@@ -1,6 +1,7 @@
 package com.anistream.core.account
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -18,13 +19,17 @@ data class Device(val id: String, val name: String, val kind: String, val now: N
 /** What a TV is playing (hub "state"). [at] = when it was reported; the position runs on from there while [playing]. */
 data class Now(
     val title: String, val subtitle: String?, val poster: String?, val playing: Boolean,
-    val positionMs: Long, val durationMs: Long, val hasNext: Boolean, val hasPrev: Boolean, val at: Long
+    val positionMs: Long, val durationMs: Long, val hasNext: Boolean, val hasPrev: Boolean, val at: Long,
+    val rev: Int = 0, val skip: SkipNow? = null, val nextInMs: Long? = null
 ) {
     fun positionAt(t: Long) = (positionMs + if (playing) (t - at).coerceAtLeast(0) else 0).let { if (durationMs > 0) it.coerceAtMost(durationMs) else it }
 }
 
-/** A remote command for this TV's player: play, pause, toggle, seekTo / seekBy ([value] ms), next, prev, stop. */
-data class Control(val action: String, val value: Long?)
+/** A skip button showing on the TV now ("Skip intro"), and where it jumps to. */
+data class SkipNow(val label: String, val endMs: Long)
+
+/** A remote command for this TV (CONTRACT §1/§3): [action] with an optional number [value] and JSON [arg]; [from] = the sender's deviceId. */
+data class Control(val action: String, val value: Long?, val arg: JsonElement? = null, val from: String = "")
 
 /** "Living room", or "Living room · 3f9a" when two TVs share the name. */
 fun deviceLabel(d: Device, all: List<Device>): String {
