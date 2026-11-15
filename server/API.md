@@ -134,3 +134,9 @@ APKs are served from Cloudflare because GitHub's release CDN crawls on some Indi
 - `GET /dl/Reelm.apk`, `/dl/Reelm-TV.apk` → `302` to the latest versioned file (stable links for the README / Fire TV Downloader).
 - The app asks `/v1/app/latest` first and falls back to `https://api.github.com/repos/BeyonderSS/Reelm/releases/latest`;
   tag `v1.0.N` = versionCode `100+N`. Downloads resume with `Range` and are checked against `size`/`sha256`.
+
+## Trailers
+- `GET /v1/trailer?imdb=tt…` or `?title=…&year=2024&type=movie|series` (public) → `{ytIds:[…], logo:string|null, backdrops:[…], startAt:12, imdb:string|null}`.
+  `title` is searched on Cinemeta and the hit must match `year` ±1 (first hit when no year). `mal=<id>` (anime) adds Jikan's PV id; send `title` too for a logo.
+  `ytIds` are ordered (Cinemeta trailers, then `trailerStreams`, then Jikan) and de-duplicated; the app resolves them to a stream itself.
+  Always `200`: upstream failures or no match give the empty shape (`ytIds:[]`). Cached at the edge 7 days, 1 day when empty.

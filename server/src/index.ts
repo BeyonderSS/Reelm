@@ -863,6 +863,39 @@ async function getRecs(c: Ctx) {
     200, { "Cache-Control": "private, max-age=300" });
 }
 
+// ---- trailers: Cinemeta (+ Jikan for anime) -> YouTube ids, logo, backdrops; the app resolves the ids itself ----
+const CINEMETA = "https://v3-cinemeta.strem.io";
+async function trailer({ url }: Ctx) {
+  const q = url.searchParams, mal = /^\d{1,9}$/.test(q.get("mal") ?? "") ? q.get("mal")! : "";
+  const title = (q.get("title") ?? "").trim().slice(0, 200), year = Number(q.get("year")) || 0;
+  const type = q.get("type") === "series" ? "series" : "movie";
+  let imdb = /^tt\d{1,10}$/.test(q.get("imdb") ?? "") ? q.get("imdb")! : "";
+  const cache = (caches as any).default as Cache;
+  const key = new Request(`https://reelm-cache.internal/trailer?${new URLSearchParams({ imdb, mal, title: title.toLowerCase(), year: String(year), type })}`);
+  const hit = await cache.match(key);
+  if (hit) return json(await hit.json());
+
+  const get = async (u: string) => { try { const r = await fetch(u, { headers: { "User-Agent": "reelm-api" }, signal: AbortSignal.timeout(4000) }); return r.ok ? ((await r.json()) as any) : null; } catch { return null; } };
+  if (!imdb && title) {
+    const hits: any[] = (await get(`${CINEMETA}/catalog/${type}/top/search=${encodeURIComponent(title)}.json`))?.metas ?? [];
+    // ponytail: first hit when no year is given; a wrong year match is worse than none, so a year with no hit finds nothing
+    imdb = hits.find((m) => /^tt\d+$/.test(m?.imdb_id ?? "") && (!year || Math.abs(parseInt(m.releaseInfo ?? m.year) - year) <= 1))?.imdb_id ?? "";
+  }
+  const [meta, jikan] = await Promise.all([
+    imdb ? get(`${CINEMETA}/meta/${type}/${imdb}.json`).then((r) => r?.meta) : null,
+    mal ? get(`https://api.jikan.moe/v4/anime/${mal}`) : null,
+  ]);
+  const ids = [
+    ...(meta?.trailers ?? []).slice().sort((a: any, b: any) => +(b?.type === "Trailer") - +(a?.type === "Trailer")).map((t: any) => t?.source),
+    ...(meta?.trailerStreams ?? []).map((t: any) => t?.ytId),
+    jikan?.data?.trailer?.youtube_id,
+  ];
+  const ytIds = [...new Set(ids.filter((i): i is string => typeof i === "string" && /^[\w-]{6,20}$/.test(i)))];
+  const body = { ytIds, logo: meta?.logo ?? null, backdrops: meta?.background ? [meta.background] : [], startAt: 12, imdb: imdb || null };
+  await cache.put(key, new Response(JSON.stringify(body), { headers: { "cache-control": `max-age=${(ytIds.length ? 7 : 1) * DAY / 1000}` } }));
+  return json(body);
+}
+
 // ---- router -------------------------------------------------------------
 const DL = /^\/dl\/(Reelm(?:-TV)?(?:-v1\.0\.\d+)?\.apk)$/;
 const routes: [string, RegExp, (c: Ctx) => Response | Promise<Response>][] = [
@@ -906,6 +939,7 @@ const routes: [string, RegExp, (c: Ctx) => Response | Promise<Response>][] = [
   ["GET", /^\/v1\/pair\/([^/]+)$/, pairPoll],
   ["GET", /^\/pair\/([^/]+)$/, pairPage],
   ["GET", /^\/v1\/proxy$/, proxy],
+  ["GET", /^\/v1\/trailer$/, trailer],
   ["GET", /^\/v1\/app\/latest$/, appLatest],
   ["GET", DL, download],
   ["HEAD", DL, download],
