@@ -2,6 +2,7 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { RotateCcw, X } from "lucide-react";
+import { CardTv } from "@/components/play-on-tv";
 import { animeCard, Grid, GridSkeleton, kidsOk, mediaCard, Notice } from "@/components/app";
 import { shows, showsMovies, type CardData, type Profile } from "@/lib/core";
 import { useApi, useSession } from "@/lib/session";
@@ -115,7 +116,7 @@ function Search() {
         {loading && <GridSkeleton />}
         {error && <Notice title="Search didn't go through" body={error}><button className="beam rounded-full bg-secondary px-5 py-2.5 text-sm font-medium" onClick={() => location.reload()}>Try again</button></Notice>}
         {empty && <Notice title={`Nothing found for “${term}”`} body={tabs.length && tab !== "all" ? `Check the spelling, or look in ${tab === "anime" ? "Movies & TV" : "Anime"}.` : "Check the spelling."} />}
-        {!loading && <Grid items={items} />}
+        {!loading && <Grid items={items} extra={(c) => <CardTv c={c} />} />}
       </section>
     </main>
   );

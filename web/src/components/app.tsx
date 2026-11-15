@@ -217,9 +217,11 @@ export function Rail({ title, items, wide, action }: { title: string; items: Car
   );
 }
 
-export const Grid = ({ items }: { items: CardData[] }) => (
+/** `extra` overlays each card's top-right corner (shown on hover/focus with a mouse, always on touch). */
+export const Grid = ({ items, extra }: { items: CardData[]; extra?: (c: CardData) => ReactNode }) => (
   <div className="grid grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))] gap-x-3 gap-y-5 sm:grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))] md:gap-x-4">
-    {items.map((c, i) => <BlurFade key={c.href} delay={Math.min(i, 12) * 0.03}><PosterCard c={c} fill /></BlurFade>)}
+    {items.map((c, i) => <BlurFade key={c.href} delay={Math.min(i, 12) * 0.03} className="group/x relative"><PosterCard c={c} fill />
+      {extra && <div className="absolute top-2 right-2 transition-opacity focus-within:opacity-100 has-[[aria-expanded=true]]:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/x:opacity-100">{extra(c)}</div>}</BlurFade>)}
   </div>
 );
 

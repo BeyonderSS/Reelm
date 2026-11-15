@@ -71,7 +71,7 @@ function Title({ id }: { id: string }) {
               {left && <small className="text-xs font-medium opacity-75">{left.join(" ")}</small>}
             </Link>
           )}
-          {primary && m.playable !== false && <PlayOnTv className={pill.secondary} get={() => ({ payload: resume ? play(last!.payload.season, last!.payload.episode) : series ? play(cur?.season ?? 1, 1) : play(), positionMs: resume ? histMs(last) : 0 })} />}
+          {primary && m.playable !== false && <PlayOnTv className={pill.secondary} page={() => play()} get={() => ({ payload: resume ? play(last!.payload.season, last!.payload.episode) : series ? play(cur?.season ?? 1, 1) : play(), positionMs: resume ? histMs(last) : 0 })} />}
           <FavButton c={mediaCard(m)} />
           {audio.length > 1 && (
             <nav aria-label="Audio language" className="seg">

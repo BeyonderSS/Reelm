@@ -57,7 +57,7 @@ export default function Anime({ params }: { params: Promise<{ slug: string }> })
               <Play className="fill-current" />{resumeEp ? `Resume episode ${resumeEp.number}` : eps.length > 1 ? "Play episode 1" : "Play"}
             </Link>
           )}
-          {!e.loading && (resumeEp || eps[0]) && <PlayOnTv className={pill.secondary} get={() => (resumeEp ? { payload: { ...play(resumeEp), lang: resume!.p.lang ?? lang }, positionMs: resume!.ms } : { payload: play(eps[0]), positionMs: 0 })} />}
+          {!e.loading && (resumeEp || eps[0]) && <PlayOnTv className={pill.secondary} page={() => play(eps[0])} get={() => (resumeEp ? { payload: { ...play(resumeEp), lang: resume!.p.lang ?? lang }, positionMs: resume!.ms } : { payload: play(eps[0]), positionMs: 0 })} />}
           <FavButton c={{ ...animeCard(a), href: `/anime/${slug}`, sub: a.type }} />
           <div role="radiogroup" aria-label="Audio" className="seg">
             {["sub", "dub"].filter((l) => l === "sub" || a.dub).map((l) => (
