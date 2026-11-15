@@ -27,6 +27,7 @@ class RemoteMapTest {
         assertNull(RemoteMap.track(j("""{}""")))
         assertEquals(2 to 5, RemoteMap.episode(j("""{"season":2,"episode":5}""")))
         assertNull(RemoteMap.episode(j("""{"season":2}""")))
+        assertEquals(1 to 7, RemoteMap.episode(j("""{"episode":7}""")))
         assertEquals(1.25f, RemoteMap.speed(125))
         assertEquals(2f, RemoteMap.speed(400))
         assertEquals(125, RemoteMap.percent(1.25f))

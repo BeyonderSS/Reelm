@@ -308,8 +308,8 @@ private fun TvPlayerChrome(
         quality = remote.quality, sources = remote.sources, source = remote.source,
         speed = RemoteMap.percent(tweaks.speed), speeds = if (isLive) emptyList() else PlaybackSpeeds.map(RemoteMap::percent),
         sleepMin = tweaks.sleep.takeIf { it != 0 }, volume = remoteVolume(context)
-    ).let { it.copy(rev = it.hashCode()) }
-    TvRemoteBridge(player, remote, remoteInfo, skipNow?.takeIf { chipAvailable || creditsCard }?.let { SkipNow(skipLabel(it.type), it.endMs) }, countdownEnd) { c ->
+    ).let { it.copy(rev = it.hashCode() and Int.MAX_VALUE) }
+    TvRemoteBridge(player, remote, remoteInfo, skipNow?.takeIf { chipAvailable || creditsCard }?.let { SkipNow(skipLabel(it.type), if (duration > 0) it.endMs.coerceAtMost(duration) else it.endMs) }, countdownEnd) { c ->
         when (c.action) {
             "skip" -> skipNow?.let { sk -> player.seekTo(if (duration > 0) sk.endMs.coerceAtMost(duration) else sk.endMs); lastSeekAt = System.currentTimeMillis() }
             "cancelNext" -> if (upNextShown) onCancelUpNext() else if (creditsCard) creditsDismissed = skipNow

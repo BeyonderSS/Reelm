@@ -114,7 +114,7 @@ internal object RemoteMap {
     /** `{track: "3"}` → 3, `{track: null}` → -1 (off), anything else → null (ignored) */
     fun track(arg: JsonElement?): Int? = field(arg, "track").let { if (it == null) null else if (it is JsonNull) -1 else string(it)?.toIntOrNull() }
     fun episode(arg: JsonElement?): Pair<Int, Int>? {
-        val s = (field(arg, "season") as? JsonPrimitive)?.intOrNull ?: return null
+        val s = (field(arg, "season") as? JsonPrimitive)?.intOrNull ?: 1 // anime has no seasons
         val e = (field(arg, "episode") as? JsonPrimitive)?.intOrNull ?: return null
         return (s to e).takeIf { e > 0 && s >= 0 }
     }

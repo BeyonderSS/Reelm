@@ -183,7 +183,7 @@ private fun TvApp() {
                 }
                 "volume" -> applyVolume(activity, c)
                 "describe" -> if (bridges == 0 && c.from.isNotEmpty())
-                    acct.hub.sendInfo(c.from, com.anistream.core.account.RemoteInfo(volume = remoteVolume(activity)).let { it.copy(rev = it.hashCode()) }.toJson())
+                    acct.hub.sendInfo(c.from, com.anistream.core.account.RemoteInfo(volume = remoteVolume(activity)).let { it.copy(rev = it.hashCode() and Int.MAX_VALUE) }.toJson())
             }
         }
     }
