@@ -400,7 +400,8 @@ class MediaPlayerViewModel @Inject constructor(
             .apply { if (request.isLive) setLiveConfiguration(MediaItem.LiveConfiguration.Builder().build()) }
             .build()
         // DefaultDataSource reads file:// too, so downloads play here with the same controls
-        val source = DefaultMediaSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(appContext, http)).setLoadErrorHandlingPolicy(FailFast4xx).createMediaSource(item)
+        val source = (if (request.isLive || inferMimeType(stream)?.startsWith("application/") == true) DefaultMediaSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(appContext, http))
+            else progressiveSources(appContext, http)).setLoadErrorHandlingPolicy(FailFast4xx).createMediaSource(item) // hosts that ignore Range: see NoRange.kt
         // live: no position = start at the live edge
         startedAt = System.currentTimeMillis()
         if (request.isLive || startMs == null) player.setMediaSource(source) else player.setMediaSource(source, startMs)

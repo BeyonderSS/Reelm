@@ -31,7 +31,7 @@ internal fun buildPlayer(context: Context): ExoPlayer {
 @OptIn(UnstableApi::class)
 internal object FailFast4xx : DefaultLoadErrorHandlingPolicy() {
     override fun getRetryDelayMsFor(info: LoadErrorHandlingPolicy.LoadErrorInfo): Long =
-        if ((info.exception as? HttpDataSource.InvalidResponseCodeException)?.responseCode in 400..499) C.TIME_UNSET else super.getRetryDelayMsFor(info)
+        if ((info.exception as? HttpDataSource.InvalidResponseCodeException)?.responseCode in 400..499 || info.exception is NoRangeException) C.TIME_UNSET else super.getRetryDelayMsFor(info)
 }
 
 /**
