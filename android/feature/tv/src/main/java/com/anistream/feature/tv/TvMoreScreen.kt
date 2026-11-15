@@ -118,6 +118,7 @@ fun TvMoreScreen(onOpen: (PartyDestination) -> Unit, party: PartyViewModel = hil
                     }, selected = on)
                 }
             } } }
+            PreviewTrailers(acct.trailers)
             if (acct.repo.enabled) DeviceName(acct)
         }
     }
@@ -171,6 +172,21 @@ fun TvUpdateHost(vm: UpdateViewModel = hiltViewModel()) {
                 )
                 TvPill("Later", vm.updates::dismiss, enabled = ui.progress == null, large = true)
             }
+        }
+    }
+}
+
+/** "Preview trailers" (On / Wi-Fi only / Off): the TV-styled version of core:trailer's PreviewTrailersSetting. */
+@Composable
+private fun PreviewTrailers(repo: com.anistream.core.trailer.TrailerRepository) {
+    val mode by repo.mode.collectAsStateWithLifecycle()
+    Spacer(Modifier.height(28.dp))
+    Text("Preview trailers", style = TvType.headline)
+    Text("Muted trailers play when you rest on a title. Wi-Fi only skips metered networks and Data Saver.", style = TvType.body.copy(color = Ink.muted))
+    Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        listOf("On", "Wi-Fi only", "Off").forEachIndexed { i, label ->
+            val m = com.anistream.core.trailer.PreviewMode.entries[i]
+            TvPill(label, { repo.setMode(m) }, selected = mode == m)
         }
     }
 }

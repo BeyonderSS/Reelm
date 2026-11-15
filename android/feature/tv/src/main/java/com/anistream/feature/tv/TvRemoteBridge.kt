@@ -51,7 +51,8 @@ internal class RemoteHooks(
  */
 @Composable
 internal fun TvRemoteBridge(player: Player, hooks: RemoteHooks, info: RemoteInfo, skip: SkipNow?, countdownEnd: Long?, onAction: (Control) -> Unit) {
-    val hub = hiltViewModel<TvAccountViewModel>().hub
+    val acct = hiltViewModel<TvAccountViewModel>()
+    val hub = acct.hub
     val cur = rememberUpdatedState(Triple(hooks, info, skip to countdownEnd))
     val act = rememberUpdatedState(onAction)
     fun report() {
@@ -72,12 +73,14 @@ internal fun TvRemoteBridge(player: Player, hooks: RemoteHooks, info: RemoteInfo
             }
         }
         player.addListener(l)
-        onDispose { player.removeListener(l); if (--bridges == 0) hub.sendState(null) }
+        onDispose { player.removeListener(l); if (--bridges == 0) { hub.sendState(null); acct.trailers.remoteDriving = false } }
     }
     LaunchedEffect(hooks.title, hooks.subtitle, hooks.hasNext, hooks.hasPrev, info.rev, skip, countdownEnd) { report() }
     LaunchedEffect(player) { while (true) { delay(5_000); if (player.isPlaying) report() } }
     LaunchedEffect(player) {
         hub.controls.collect { c ->
+            // a phone is driving this playback: no trailer previews until the player goes
+            acct.trailers.remoteDriving = true
             val h = cur.value.first
             val dur = player.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
             when (c.action) {

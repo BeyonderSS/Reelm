@@ -142,6 +142,8 @@ data class TvItem(
     val onDetails: (() -> Unit)? = null,
     val episodeLine: String? = null,
     val onLongClick: (() -> Unit)? = null,
+    /** what to look the trailer up by (Home previews); null = no preview */
+    val trailer: com.anistream.core.trailer.TrailerKey? = null,
     val onClick: () -> Unit
 )
 
@@ -221,7 +223,7 @@ fun TvCard(item: TvItem, wide: Boolean, onFocused: () -> Unit, modifier: Modifie
         glow = CardDefaults.glow(focusedGlow = focusGlow()),
         border = CardDefaults.border(focusedBorder = Border(FocusRing, shape = Radius.md))
     ) {
-        Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().dwellRing(item.key, LocalTvPreview.current, 26.dp, 8.dp)) {
             if (item.imageUrl != null) {
                 AsyncImage(model = item.imageUrl, contentDescription = item.title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
             }

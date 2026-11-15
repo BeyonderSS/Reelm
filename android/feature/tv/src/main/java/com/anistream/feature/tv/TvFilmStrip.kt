@@ -3,6 +3,15 @@ package com.anistream.feature.tv
 import android.graphics.drawable.BitmapDrawable
 import android.util.LruCache
 import androidx.compose.foundation.background
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.derivedStateOf
+import com.anistream.core.ui.theme.Motion
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -103,12 +112,12 @@ internal fun rememberPosterColor(url: String?): State<Color?> {
 @Composable
 internal fun uiScale() = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp / 960f
 
-/** Rounded ticket with a half-circle notch top and bottom on the perforation line (1/3 of the width). */
-private class TicketShape(val s: Float) : Shape {
+/** Rounded ticket with a half-circle notch top and bottom on the perforation line ([notch] of the width; 1/3, more for the reel). */
+private class TicketShape(val s: Float, val notch: Float = 1f / 3) : Shape {
     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
         val r = 6.7f * s * density.density
         val body = Path().apply { addRoundRect(RoundRect(Rect(Offset.Zero, size), CornerRadius(8.6f * s * density.density))) }
-        val x = size.width / 3
+        val x = size.width * notch
         val holes = Path().apply {
             addOval(Rect(x - r, -r, x + r, r)); addOval(Rect(x - r, size.height - r, x + r, size.height + r))
         }
@@ -122,14 +131,22 @@ private fun tint(c: Color, a: Float, b: Float) = Brush.linearGradient(listOf(ler
 private fun Ticket(item: TvItem, onFocused: () -> Unit, modifier: Modifier = Modifier) {
     val s = uiScale()
     fun d(n: Float) = (n * s).dp
-    val ticket = remember(s) { TicketShape(s) }
     var focused by remember { mutableStateOf(false) }
     val color by rememberPosterColor(item.imageUrl)
-    val w = if (focused) d(249.6f) else d(201.6f)
+    // Running reel: the focused ticket widens and its art slot becomes a 16:9 frame playing the trailer
+    val p = LocalTvPreview.current
+    val reel by remember(p, item.key) { derivedStateOf { p != null && p.live && p.inStrip && p.key == item.key } }
+    val r by animateFloatAsState(if (reel) 1f else 0f, if (LocalReduceMotion.current) snap() else tween(600, easing = Motion.emphasized), label = "reel")
+    val base = if (focused) d(249.6f) else d(201.6f)
+    val h = base / 2
+    val art = base / 3 + (h * 16f / 9f - base / 3) * r
+    val w = base + (art - base / 3)
+    val notch = art / w
+    val ticket = remember(s, notch) { TicketShape(s, notch) }
     Surface(
         onClick = item.onClick,
         onLongClick = item.onLongClick,
-        modifier = modifier.width(w).height(w / 2)
+        modifier = modifier.width(w).height(h)
             .onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() },
         shape = ClickableSurfaceDefaults.shape(ticket),
         colors = ClickableSurfaceDefaults.colors(containerColor = Color.Transparent, focusedContainerColor = Color.Transparent),
@@ -137,16 +154,18 @@ private fun Ticket(item: TvItem, onFocused: () -> Unit, modifier: Modifier = Mod
         glow = ClickableSurfaceDefaults.glow(focusedGlow = Glow.None)
     ) {
         Row(
-            Modifier.fillMaxSize().background(tint(color ?: DuskViolet, 0.42f, 0.14f)).drawWithContent {
+            Modifier.fillMaxSize().background(tint(color ?: DuskViolet, 0.42f, 0.14f)).dwellRing(item.key, p, d(22f), d(8.6f)).drawWithContent {
                 drawContent()
                 // dashed perforation; amber inset edge when focused (outer half is clipped by the shape)
-                drawLine(Color.White.copy(alpha = 0.28f), Offset(size.width / 3, 0f), Offset(size.width / 3, size.height), d(1.4f).toPx(),
+                drawLine(Color.White.copy(alpha = 0.28f), Offset(size.width * notch, 0f), Offset(size.width * notch, size.height), d(1.4f).toPx(),
                     pathEffect = PathEffect.dashPathEffect(floatArrayOf(d(4f).toPx(), d(4f).toPx())))
                 if (focused) drawPath((ticket.createOutline(size, layoutDirection, this) as Outline.Generic).path, Accent.main, style = Stroke(d(4.8f).toPx()))
             }
         ) {
-            Box(Modifier.width(w / 3).fillMaxSize()) {
+            Box(Modifier.width(art).fillMaxSize()) {
                 if (item.imageUrl != null) AsyncImage(item.imageUrl, item.title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                val info = p?.info
+                if (reel && info != null) PreviewFrame(p, info, Modifier.fillMaxSize())
             }
             Column(Modifier.weight(1f).fillMaxSize().padding(start = d(13.4f), end = d(11.5f), top = d(10.6f), bottom = d(9.6f)), verticalArrangement = Arrangement.spacedBy(d(3.4f))) {
                 val t = if (focused) 19.2f else 14.9f
@@ -182,6 +201,12 @@ private fun Ticket(item: TvItem, onFocused: () -> Unit, modifier: Modifier = Mod
 fun TvStripRow(row: TvRow, restoreKey: String?, restoreRequester: FocusRequester, onFocused: (TvItem) -> Unit, modifier: Modifier = Modifier, up: FocusRequester? = null) {
     val s = uiScale()
     fun d(n: Float) = (n * s).dp
+    // sprockets run while a ticket plays its trailer (Running reel)
+    val p = LocalTvPreview.current
+    val running by remember(p) { derivedStateOf { p != null && p.live && p.inStrip } }
+    val shift = if (running && !LocalReduceMotion.current)
+        rememberInfiniteTransition(label = "sprockets").animateFloat(0f, 1f, infiniteRepeatable(tween(450, easing = LinearEasing)), label = "run")
+    else null
     // no row label: the strip itself says "continue watching" (as in the mockup)
     Column(modifier) {
         Box(Modifier.fillMaxWidth().height(d(186f)), contentAlignment = Alignment.Center) {
@@ -192,7 +217,7 @@ fun TvStripRow(row: TvRow, restoreKey: String?, restoreRequester: FocusRequester
                     .drawBehind {
                         val hole = Color(0xFF2A2A30)
                         val hw = d(11.5f).toPx(); val hh = d(10.6f).toPx(); val y = d(5.8f).toPx(); val cr = CornerRadius(d(1f).toPx())
-                        var x = d(4f).toPx()
+                        var x = d(4f).toPx() - (shift?.value ?: 0f) * d(28.8f).toPx()
                         while (x < size.width) {
                             drawRoundRect(hole, Offset(x, y), Size(hw, hh), cr)
                             drawRoundRect(hole, Offset(x, size.height - y - hh), Size(hw, hh), cr)

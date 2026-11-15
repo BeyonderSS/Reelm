@@ -108,7 +108,9 @@ data class PairUi(val code: String? = null, val qr: Bitmap? = null, val error: S
 
 /** TV sign-in: shows a QR for the pairing code and polls until a signed-in phone claims it. The TV never asks for a password. */
 @HiltViewModel
-class TvAccountViewModel @Inject constructor(val repo: AccountRepository, val hub: HubClient, val sync: HistorySync) : ViewModel() {
+class TvAccountViewModel @Inject constructor(
+    val repo: AccountRepository, val hub: HubClient, val sync: HistorySync, val trailers: com.anistream.core.trailer.TrailerRepository,
+) : ViewModel() {
     val session = repo.session
 
     private val _pair = MutableStateFlow(PairUi())

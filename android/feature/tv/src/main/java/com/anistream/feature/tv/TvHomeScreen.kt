@@ -1,6 +1,26 @@
 package com.anistream.feature.tv
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.border
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.unit.lerp
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.anistream.core.trailer.TrailerInfo
+import com.anistream.core.trailer.TrailerRepository
+import com.anistream.core.ui.theme.Accent
+import com.anistream.core.ui.theme.Motion
+import com.anistream.core.ui.theme.Radius
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -151,11 +171,30 @@ fun TvHomeScreen(filter: HomeFilter, homeVm: HomeViewModel, moviesVm: MoviesHome
     // the hero stands tall over Continue watching (as in the mockup) and gives the lower rows room once focus goes down
     val tall = remember(rows) { derivedStateOf { focusedRow.intValue <= 0 && rows.firstOrNull()?.wide == true } }
 
-    Box(Modifier.fillMaxSize()) {
+    // trailer previews: dwell ring, then House lights / Running reel / Poster wakes up (TvTrailerPreview.kt)
+    val trailers = hiltViewModel<TvAccountViewModel>().trailers
+    val preview = remember { TvPreview() }
+    val homeFocused = remember { mutableStateOf(false) }
+    val sc = uiScale()
+    TvPreviewDriver(preview, focused, homeFocused, removing == null, trailers)
+    val bigness = animateFloatAsState(if (preview.big) 1f else 0f, tween(if (LocalReduceMotion.current) 0 else 600, easing = Motion.emphasized), label = "big")
+
+    CompositionLocalProvider(LocalTvPreview provides preview) {
+    Box(Modifier.fillMaxSize().onFocusChanged { homeFocused.value = it.hasFocus }.onPreviewKeyEvent { e ->
+        if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        when (e.key) {
+            // ▲ while a trailer plays: sound on (House lights also goes full screen); otherwise Up moves focus as always
+            Key.DirectionUp -> preview.live.also { if (it) { preview.sound = !preview.sound; if (!preview.inStrip && !lowEnd) preview.big = preview.sound } }
+            // Left/Right cancel straight away (focus still moves)
+            Key.DirectionLeft, Key.DirectionRight -> { if (preview.live || preview.counting) preview.stop(); false }
+            else -> false
+        }
+    }) {
         HomeBackdrop(hero)
+        HouseLights(preview, bigness)
         Column(Modifier.fillMaxSize()) {
-            HomeHero(hero, filter, tall, heroReq)
-            when {
+            HomeHero(hero, filter, tall, heroReq, trailers, Modifier.graphicsLayer { alpha = 1f - bigness.value; translationY = -(29 * sc).dp.toPx() * bigness.value })
+            Box(Modifier.graphicsLayer { alpha = 1f - bigness.value; translationY = (288 * sc).dp.toPx() * bigness.value }) { when {
                 rows.isEmpty() && (anime.isLoading || media.isLoading) -> TvMessage("Loading…")
                 rows.isEmpty() -> TvMessage(anime.error ?: media.error ?: "Nothing here yet") {
                     TvPill("Retry", onClick = { homeVm.loadContent(); moviesVm.load() })
@@ -184,8 +223,10 @@ fun TvHomeScreen(filter: HomeFilter, homeVm: HomeViewModel, moviesVm: MoviesHome
                         itemsIndexed(rows.drop(1), key = { _, it -> it.title }) { i, row -> rowItem(i + 1, row) }
                     }
                 }
-            }
+            } }
         }
+        PreviewOverlay(preview, bigness, tall)
+    }
     }
 }
 
@@ -207,40 +248,61 @@ private fun HomeBackdrop(hero: State<TvItem?>) {
     })
 }
 
-/** Marquee hero: giant title (solid name, outlined subtitle), tilted whole poster, chips and the amber Resume pill. */
+/**
+ * Marquee hero: the title logo (fallback: giant title, solid name, outlined subtitle), tilted whole poster, ★ rating and chips,
+ * the amber Resume pill. While a trailer plays the logo shrinks to 0.78 and an amber progress line runs under the buttons;
+ * House lights fades the poster out, Poster wakes up (low-end) turns it over into a 16:9 window playing the trailer.
+ */
 @Composable
-private fun HomeHero(hero: State<TvItem?>, filter: HomeFilter, tall: State<Boolean>, focus: FocusRequester) {
+private fun HomeHero(hero: State<TvItem?>, filter: HomeFilter, tall: State<Boolean>, focus: FocusRequester, trailers: TrailerRepository, modifier: Modifier = Modifier) {
     val s = uiScale()
     fun d(n: Float) = (n * s).dp
     val h = hero.value
+    val p = LocalTvPreview.current
+    val lowEnd = LocalLowEnd.current
+    val reduce = LocalReduceMotion.current
     val stroke = with(LocalDensity.current) { d(1.15f).toPx() }
-    Box(Modifier.fillMaxWidth().height(d(if (tall.value) 330f else 250f))) {
-        if (h?.imageUrl != null) AsyncImage(
-            h.imageUrl, null, contentScale = ContentScale.Crop,
-            modifier = Modifier.align(Alignment.TopEnd).padding(top = d(48f), end = d(57.6f)).width(d(134.4f)).aspectRatio(2f / 3f)
-                .graphicsLayer { rotationZ = -3f; shadowElevation = d(18f).toPx(); shape = RoundedCornerShape(d(7.7f)); clip = true }
-                .background(Bg.raised)
-        )
+    // the trailer belongs to this hero (not a Continue-watching reel, and the low-end hero has caught up with focus)
+    val mine = p != null && p.live && !p.inStrip && p.key == h?.key
+    val playing = mine && p!!.shown
+    val logoScale by animateFloatAsState(if (playing) 0.78f else 1f, tween(if (reduce) 0 else 600, easing = Motion.emphasized), label = "logo")
+    Box(modifier.fillMaxWidth().height(d(if (tall.value) 330f else 250f))) {
+        if (h?.imageUrl != null) HeroPoster(h, if (mine) p!!.info else null, p, lowEnd, reduce, s)
         val title = h?.title ?: when (filter) { HomeFilter.ALL -> "Reelm"; HomeFilter.MEDIA -> "Movies & TV"; HomeFilter.ANIME -> "Anime" }
-        val cut = listOf(":", " - ").map { title.indexOf(it) }.filter { it > 0 }.minOrNull() ?: title.length
-        val rest = title.substring(cut).trimStart(':', '-', ' ')
-        val big = title.length <= 40
-        Text(
-            buildAnnotatedString {
-                withStyle(SpanStyle(color = Ink.high)) { append(title.substring(0, cut).trim()) }
-                if (rest.isNotEmpty()) withStyle(SpanStyle(color = Color(0x80ECEAF2), drawStyle = Stroke(stroke))) { append(" $rest") }
-            },
-            maxLines = 2, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(start = Overscan, top = d(17f)).width(d(662f)),
-            style = TvType.display.copy(
-                fontFamily = DisplayHeavy, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.015).em, lineBreak = LineBreak.Heading,
-                fontSize = ((if (big) 73f else 56f) * s).sp, lineHeight = ((if (big) 62.7f else 48.2f) * s).sp
-            ),
-        )
-        if (h != null) Column(Modifier.align(Alignment.BottomStart).padding(start = Overscan, bottom = d(30f)), verticalArrangement = Arrangement.spacedBy(d(9.6f))) {
-            Row(horizontalArrangement = Arrangement.spacedBy(d(5.8f))) {
+        // logo from /v1/trailer (cached); text until it is known, and whenever there is none or it fails to load
+        var logoFailed by remember(h?.key) { mutableStateOf(false) }
+        val logo by produceState<String?>(null, h?.trailer) { value = h?.trailer?.let { withTimeoutOrNull(4_000) { trailers.logo(it) } } }
+        val titleMod = Modifier.padding(start = Overscan, top = d(17f)).graphicsLayer { scaleX = logoScale; scaleY = logoScale; transformOrigin = TransformOrigin(0f, 1f) }
+        if (logo != null && !logoFailed) AsyncImage(
+            logo, title, contentScale = ContentScale.Fit, alignment = Alignment.BottomStart, onError = { logoFailed = true },
+            modifier = titleMod.height(d(96f)).width(d(288f))
+        ) else {
+            val cut = listOf(":", " - ").map { title.indexOf(it) }.filter { it > 0 }.minOrNull() ?: title.length
+            val rest = title.substring(cut).trimStart(':', '-', ' ')
+            val big = title.length <= 40
+            Text(
+                buildAnnotatedString {
+                    withStyle(SpanStyle(color = Ink.high)) { append(title.substring(0, cut).trim()) }
+                    if (rest.isNotEmpty()) withStyle(SpanStyle(color = Color(0x80ECEAF2), drawStyle = Stroke(stroke))) { append(" $rest") }
+                },
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                modifier = titleMod.width(d(662f)),
+                style = TvType.display.copy(
+                    fontFamily = DisplayHeavy, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.015).em, lineBreak = LineBreak.Heading,
+                    fontSize = ((if (big) 73f else 56f) * s).sp, lineHeight = ((if (big) 62.7f else 48.2f) * s).sp
+                ),
+            )
+        }
+        if (h != null) Column(Modifier.align(Alignment.BottomStart).padding(start = Overscan, bottom = d(18f)), verticalArrangement = Arrangement.spacedBy(d(9.6f))) {
+            Row(horizontalArrangement = Arrangement.spacedBy(d(5.8f)), verticalAlignment = Alignment.CenterVertically) {
+                val chip = TvType.body.copy(fontSize = (10.1f * s).sp, lineHeight = (14f * s).sp, color = Color(0xFFD9D6E2))
                 h.meta.distinct().filter { it.isNotBlank() }.take(5).forEach {
-                    Text(it, maxLines = 1, style = TvType.body.copy(fontSize = (10.1f * s).sp, lineHeight = (14f * s).sp, color = Color(0xFFD9D6E2)),
+                    // the rating reads as text with an amber star (as in the mockup); the rest are chips
+                    if (it.startsWith("★ ")) Text(buildAnnotatedString {
+                        withStyle(SpanStyle(color = Accent.main)) { append("★ ") }
+                        withStyle(SpanStyle(color = Ink.high, fontWeight = FontWeight.SemiBold)) { append(it.removePrefix("★ ")) }
+                    }, maxLines = 1, style = chip, modifier = Modifier.padding(end = d(2.9f)))
+                    else Text(it, maxLines = 1, style = chip,
                         modifier = Modifier.background(Color.White.copy(alpha = 0.09f), RoundedCornerShape(50)).padding(horizontal = d(8.6f), vertical = d(2.9f)))
                 }
             }
@@ -248,7 +310,37 @@ private fun HomeHero(hero: State<TvItem?>, filter: HomeFilter, tall: State<Boole
                 MarqueeBtn(h.resumeLabel ?: "Play", h.onClick, primary = true, modifier = Modifier.focusRequester(focus))
                 h.onDetails?.let { MarqueeBtn("Details", it) }
             }
+            // trailer progress (space kept so the buttons never jump)
+            Box(Modifier.width(d(172.8f)).height(d(2.4f)).graphicsLayer { alpha = if (playing) 1f else 0f }.background(Ink.high.copy(alpha = 0.15f), Radius.pill)) {
+                if (playing) Box(Modifier.fillMaxWidth(p!!.progress.coerceIn(0f, 1f)).height(d(2.4f)).background(Accent.main, Radius.pill))
+            }
         }
+    }
+}
+
+/** The tilted poster top-right; fades out under House lights, flips into a framed 16:9 trailer window for Poster wakes up. */
+@Composable
+private fun BoxScope.HeroPoster(h: TvItem, info: TrailerInfo?, p: TvPreview?, lowEnd: Boolean, reduce: Boolean, s: Float) {
+    fun d(n: Float) = (n * s).dp
+    val window = lowEnd && info != null
+    val house = !lowEnd && info != null && p?.shown == true
+    // low-end runs the reduced-motion path, but one layer turning over is cheap and it is the whole point of the variant
+    val flip by animateFloatAsState(if (window) 1f else 0f, tween(700, easing = Motion.emphasized), label = "flip")
+    val fade by animateFloatAsState(if (house) 0f else 1f, tween(if (reduce) 0 else 400), label = "posterFade")
+    val w = lerp(d(134.4f), d(326.4f), flip)
+    val ht = lerp(d(201.6f), d(183.6f), flip)
+    Box(Modifier.align(Alignment.TopEnd).padding(top = lerp(d(48f), d(40f), flip), end = d(57.6f)).width(w).height(ht).graphicsLayer { alpha = fade }) {
+        if (flip < 0.5f) AsyncImage(
+            h.imageUrl, null, contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+                .graphicsLayer { rotationZ = -3f; rotationY = flip * 180f; cameraDistance = 12 * density; shadowElevation = d(18f).toPx(); shape = RoundedCornerShape(d(7.7f)); clip = true }
+                .background(Bg.raised)
+        ) else Box(
+            Modifier.fillMaxSize()
+                .graphicsLayer { rotationY = (flip - 1f) * 180f; cameraDistance = 12 * density; shadowElevation = d(18f).toPx(); shape = RoundedCornerShape(d(11.5f)); clip = true }
+                .background(Color.Black)
+                .border(d(1.5f), Accent.main.copy(alpha = 0.65f), RoundedCornerShape(d(11.5f)))
+        ) { if (info != null && p != null) PreviewFrame(p, info, Modifier.fillMaxSize()) }
     }
 }
 
@@ -275,12 +367,14 @@ private fun buildRows(
     fun animeItem(row: String, a: AnimeSearchResult) = TvItem(
         key = "$row|${a.slug}", title = a.title, imageUrl = a.posterUrl,
         meta = listOfNotNull(a.type, a.year?.toString(), scoreLabel(a.score)),
+        trailer = animeTrailerKey(a.malId, a.title, a.year),
         onClick = { nav.navigate(TvRoutes.anime(a.slug)) }
     )
 
     fun mediaItem(row: String, m: MediaItem) = TvItem(
         key = "$row|${m.id}", title = m.title, imageUrl = m.posterUrl,
         meta = listOfNotNull(if (m.type == MediaType.SERIES) "Series" else "Movie", m.year?.toString(), scoreLabel(m.rating)) + m.genres.take(2),
+        trailer = mediaTrailerKey(m.id, m.title, m.year, m.type == MediaType.SERIES),
         onClick = { nav.navigate(TvRoutes.movie(m.id)) }
     )
 
@@ -294,6 +388,8 @@ private fun buildRows(
         progress = h.watchProgress,
         minutesLeft = h.minutesLeft,
         onLongClick = { onRemove(h) },
+        trailer = if (h.kind == "media") mediaTrailerKey(h.detailId, h.animeTitle, null, h.season > 0 || h.lastEpisodeWatched > 0)
+            else animeTrailerKey(h.malId, h.animeTitle, null),
         // anime resumes straight into the player; media goes through detail, where Resume is the first focus
         onClick = {
             if (h.kind == "media") nav.navigate(TvRoutes.movie(h.detailId))

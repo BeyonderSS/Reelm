@@ -33,6 +33,7 @@ dependencies {
     implementation(project(":core:account"))
     implementation(project(":core:database"))
     implementation(project(":core:media"))
+    implementation(project(":core:trailer"))
     implementation(project(":feature:home"))
     implementation(project(":feature:movies"))
     implementation(project(":feature:anime-detail"))
