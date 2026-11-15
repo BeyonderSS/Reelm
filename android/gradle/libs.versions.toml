@@ -34,6 +34,8 @@ espresso = "3.6.1"
 mockk = "1.13.13"
 # alpha13: last quickjs-kt with minSdk 21 (1.0.1+ need 23) and Kotlin 2.0 metadata
 quickjs = "1.0.0-alpha13"
+# YouTube trailer resolving (:core:trailer); JitPack. Bump when YouTube breaks extraction.
+newpipeExtractor = "v0.27.1"
 
 [libraries]
 core-ktx = { group = "androidx.core", name = "core-ktx", version = "1.15.0" }
@@ -67,6 +69,7 @@ media3-datasource = { group = "androidx.media3", name = "media3-datasource", ver
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
 quickjs = { group = "io.github.dokar3", name = "quickjs-kt", version.ref = "quickjs" }
+newpipe-extractor = { group = "com.github.TeamNewPipe", name = "NewPipeExtractor", version.ref = "newpipeExtractor" }
 quickjs-jvm = { group = "io.github.dokar3", name = "quickjs-kt-jvm", version.ref = "quickjs" }
 jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
@@ -91,7 +94,8 @@ coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutin
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 junit-ext = { group = "androidx.test.ext", name = "junit", version.ref = "junitExt" }
 espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espresso" }
-desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version = "2.1.4" }
+# _nio: NewPipe Extractor needs java.nio.file below API 33 (superset of desugar_jdk_libs)
+desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs_nio", version = "2.1.4" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 javax-inject = { group = "javax.inject", name = "javax.inject", version = "1" }
 

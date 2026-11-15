@@ -11,6 +11,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // NewPipe Extractor (+ its nanojson fork) only publish to JitPack
+        maven("https://jitpack.io") { content { includeGroup("com.github.TeamNewPipe") } }
     }
 }
 
@@ -24,6 +26,7 @@ include(":core:common")
 include(":core:media")
 include(":core:account")
 include(":core:ui")
+include(":core:trailer")
 include(":domain")
 include(":player")
 include(":feature:home")
