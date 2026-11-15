@@ -216,7 +216,9 @@ private fun Hint(key: String, label: String, s: Float) {
             style = TvType.body.copy(fontSize = (11.5f * s).sp, lineHeight = (15f * s).sp, fontWeight = FontWeight.SemiBold, color = Ink.high),
             modifier = Modifier.background(Ink.high.copy(alpha = 0.14f), androidx.compose.foundation.shape.RoundedCornerShape((4.8f * s).dp)).padding(horizontal = (5.8f * s).dp, vertical = (1f * s).dp)
         )
+        // the hint sits on moving video: a soft shadow keeps it readable on bright frames
         Text(label, maxLines = 1, modifier = Modifier.padding(start = (4.8f * s).dp),
-            style = TvType.body.copy(fontSize = (12.5f * s).sp, lineHeight = (16f * s).sp, color = Ink.muted))
+            style = TvType.body.copy(fontSize = (12.5f * s).sp, lineHeight = (16f * s).sp, color = Ink.body,
+                shadow = androidx.compose.ui.graphics.Shadow(Bg.shadow, blurRadius = 8f * s)))
     }
 }

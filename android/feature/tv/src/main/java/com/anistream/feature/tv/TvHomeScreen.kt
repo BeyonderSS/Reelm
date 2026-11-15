@@ -269,14 +269,19 @@ private fun HomeHero(hero: State<TvItem?>, filter: HomeFilter, tall: State<Boole
     Box(modifier.fillMaxWidth().height(d(if (tall.value) 330f else 250f))) {
         if (h?.imageUrl != null) HeroPoster(h, if (mine) p!!.info else null, p, lowEnd, reduce, s)
         val title = h?.title ?: when (filter) { HomeFilter.ALL -> "Reelm"; HomeFilter.MEDIA -> "Movies & TV"; HomeFilter.ANIME -> "Anime" }
-        // logo from /v1/trailer (cached); text until it is known, and whenever there is none or it fails to load
+        // logo from /v1/trailer (cached): nothing for up to 600 ms while it is looked up (never the previous title's logo),
+        // then text whenever there is none or it fails to load
         var logoFailed by remember(h?.key) { mutableStateOf(false) }
-        val logo by produceState<String?>(null, h?.trailer) { value = h?.trailer?.let { withTimeoutOrNull(4_000) { trailers.logo(it) } } }
+        var looked by remember { mutableStateOf<Pair<Any?, String?>?>(null) }
+        LaunchedEffect(h?.trailer) { val k = h?.trailer; looked = k to k?.let { withTimeoutOrNull(4_000) { trailers.logo(it) } } }
+        val known = looked?.takeIf { it.first == h?.trailer }
+        val waited by produceState(false, h?.key) { value = false; delay(600); value = true }
+        val logo = known?.second
         val titleMod = Modifier.padding(start = Overscan, top = d(17f)).graphicsLayer { scaleX = logoScale; scaleY = logoScale; transformOrigin = TransformOrigin(0f, 1f) }
         if (logo != null && !logoFailed) AsyncImage(
             logo, title, contentScale = ContentScale.Fit, alignment = Alignment.BottomStart, onError = { logoFailed = true },
             modifier = titleMod.height(d(96f)).width(d(288f))
-        ) else {
+        ) else if (known != null || waited || h?.trailer == null) {
             val cut = listOf(":", " - ").map { title.indexOf(it) }.filter { it > 0 }.minOrNull() ?: title.length
             val rest = title.substring(cut).trimStart(':', '-', ' ')
             val big = title.length <= 40
