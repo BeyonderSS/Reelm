@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Cast, Pause, Play, RotateCcw, RotateCw, SkipBack, SkipForward, Square, Tv as TvIcon, X, MonitorSmartphone } from "lucide-react";
+import { Cast, Pause, Play, RotateCcw, RotateCw, SkipBack, SkipForward, Square, Tv as TvIcon, X, MonitorSmartphone, GripVertical, Maximize2, Minimize2 } from "lucide-react";
 import { watchHref, type Play as P } from "@/lib/core";
 import { control, handedOff, handoff, lastTv, posOf, useHub, type Now, type Tv } from "@/lib/hub";
 import { useSession } from "@/lib/session";
@@ -113,8 +113,24 @@ export const hereFor = (p: P | null, n: Now): P | null => {
 
 /** "Playing on <TV>": a mini bar while any TV on the account plays; tapping opens the remote. Above the tab bar, or up top where
  *  there is none (the player's own controls own the bottom). */
+type Dock = { side: "left" | "right"; y: number; min: boolean };
+const DOCK = "reelm.tvBar";
+const readDock = (raised?: boolean): Dock => {
+  try { const d = JSON.parse(localStorage.getItem(DOCK) ?? ""); if (d && (d.side === "left" || d.side === "right") && typeof d.y === "number") return { side: d.side, y: d.y, min: !!d.min }; } catch {}
+  return { side: "right", y: raised ? 0.82 : 0.86, min: false }; // y = fraction of the free height, so it survives resizes
+};
+const saveDock = (d: Dock) => { try { localStorage.setItem(DOCK, JSON.stringify(d)); } catch {} };
+
+/**
+ * "Playing on <TV>": a floating card you can drag anywhere; on release it snaps to the nearest side, keeping its height.
+ * Minimised it is a reel: the poster in a disc with the episode's progress as an amber ring (tap = play/pause).
+ * It only covers its own box. Position and size are remembered per browser.
+ */
 export function TvBar({ raised }: { raised?: boolean }) {
   const { tvs, remoteHere } = useHub(), router = useRouter(), [open, setOpen] = useState<string | null>(null);
+  const [dock, setDock] = useState<Dock>(() => (typeof window === "undefined" ? { side: "right", y: 0.86, min: false } : readDock(raised)));
+  const [drag, setDrag] = useState<{ x: number; y: number } | null>(null), box = useRef<HTMLDivElement>(null);
+  const dragged = useRef(false);
   const tv = tvs.find((t) => t.now && t.deviceId !== remoteHere);
   if (open) {
     const n = tvs.find((t) => t.deviceId === open)?.now, p = n && hereFor(handedOff(open), n);
@@ -125,20 +141,81 @@ export function TvBar({ raised }: { raised?: boolean }) {
     );
   }
   if (!tv?.now) return null;
-  const n = tv.now, f = n.durationMs ? posOf(n) / n.durationMs : 0;
+  const n = tv.now, f = n.durationMs ? Math.min(1, posOf(n) / n.durationMs) : 0, M = 12;
+  const update = (d: Partial<Dock>) => setDock((o) => { const v = { ...o, ...d }; saveDock(v); return v; });
+
+  // drag: press anywhere on the card, then follow the pointer at window level (it leaves the card at once); 5 px keeps taps as taps
+  const down = (e: React.PointerEvent) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("[data-nodrag]")) return;
+    const r = box.current!.getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top, sx = e.clientX, sy = e.clientY;
+    let at: { x: number; y: number } | null = null;
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId || (!at && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 5)) return;
+      at = { x: Math.min(innerWidth - r.width - M, Math.max(M, ev.clientX - dx)), y: Math.min(innerHeight - r.height - M, Math.max(M, ev.clientY - dy)) };
+      setDrag(at);
+    };
+    const up = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
+      removeEventListener("pointermove", move); removeEventListener("pointerup", up); removeEventListener("pointercancel", up);
+      if (!at) return;
+      dragged.current = true; setTimeout(() => (dragged.current = false), 0); // the click that ends a drag is not a tap
+      const reserve = raised && innerWidth < 768 ? 80 : 0; // the mobile tab bar
+      const free = Math.max(1, innerHeight - r.height - 2 * M - reserve);
+      update({ side: at.x + r.width / 2 < innerWidth / 2 ? "left" : "right", y: Math.min(1, Math.max(0, (at.y - M) / free)) });
+      setDrag(null);
+    };
+    addEventListener("pointermove", move); addEventListener("pointerup", up); addEventListener("pointercancel", up);
+  };
+  const swallowClickAfterDrag = (e: React.MouseEvent) => { if (dragged.current) { e.preventDefault(); e.stopPropagation(); } };
+
+  const pos: React.CSSProperties = drag
+    ? { left: drag.x, top: drag.y }
+    : { [dock.side]: M, top: `calc(${M}px + (100dvh - ${2 * M}px - var(--h, 0px) - var(--reserve, 0px)) * ${dock.y})` };
+  const shell = cn("fixed z-40 touch-none select-none", raised ? "max-md:[--reserve:80px]" : "[body:has([data-tv-picker])_&]:hidden", !drag && "motion-safe:transition-[top,left,right] motion-safe:duration-300 motion-safe:ease-out", drag ? "cursor-grabbing" : "cursor-grab");
+  const label = `${n.playing ? "Playing" : "Paused"} on ${tv.name}`;
+  const toggle = <button data-nodrag aria-label={n.playing ? "Pause on TV" : "Play on TV"} onClick={() => control(tv.deviceId, "toggle")}
+    className="beam grid size-11 flex-none place-items-center rounded-full bg-primary text-primary-foreground [&_svg]:size-5">{n.playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}</button>;
+
+  if (dock.min) {
+    const R = 27, C = 2 * Math.PI * R;
+    return (
+      <div ref={box} role="group" aria-label={`${label}: ${n.title}`} style={{ ...pos, ["--h" as string]: "64px" }} className={cn(shell, "group size-16")}
+        onPointerDown={down} onClickCapture={swallowClickAfterDrag}>
+        <svg viewBox="0 0 64 64" aria-hidden className="absolute inset-0 -rotate-90">
+          <circle cx="32" cy="32" r={R} fill="#101016" stroke="rgb(255 255 255 / 0.12)" strokeWidth="4" />
+          <circle cx="32" cy="32" r={R} fill="none" stroke="var(--color-primary)" strokeWidth="4" strokeLinecap="round" strokeDasharray={C} strokeDashoffset={C * (1 - f)} />
+        </svg>
+        <button aria-label={n.playing ? `Pause ${n.title} on ${tv.name}` : `Play ${n.title} on ${tv.name}`} onClick={() => control(tv.deviceId, "toggle")}
+          className="beam absolute inset-[7px] grid place-items-center overflow-hidden rounded-full bg-haze shadow-[0_12px_30px_rgb(0_0_0/0.55)] [&_svg]:size-5">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          {n.poster && <img src={n.poster} alt="" referrerPolicy="no-referrer" draggable={false} className="absolute inset-0 size-full object-cover" />}
+          <span className={cn("relative grid size-8 place-items-center rounded-full bg-black/55 text-white backdrop-blur-sm", n.playing && "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100")}>{n.playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}</span>
+        </button>
+        <button data-nodrag aria-label="Expand" onClick={() => update({ min: false })}
+          className="beam absolute -top-1 grid size-6 place-items-center rounded-full bg-[#101016] text-[#a3a1ae] ring-1 ring-white/12 hover:text-foreground [&_svg]:size-3.5 group-hover:opacity-100 focus-visible:opacity-100 md:opacity-0"
+          style={{ [dock.side === "right" ? "left" : "right"]: -4 }}><Maximize2 /></button>
+      </div>
+    );
+  }
   return (
-    <div className={cn(card, "page-in fixed inset-x-2 z-40 flex items-center gap-3 overflow-hidden p-2 pr-3 md:inset-x-auto md:right-6 md:w-[26rem]", raised ? "bottom-[calc(max(env(safe-area-inset-bottom),6px)+70px)] md:bottom-6" : "top-20 [body:has([data-tv-picker])_&]:hidden")}>
-      <button onClick={() => setOpen(tv.deviceId)} aria-label={`Playing on ${tv.name}: ${n.title}. Open remote`} className="beam flex min-w-0 flex-1 items-center gap-3 rounded-xl text-left">
+    <div ref={box} role="group" aria-label={label} style={{ ...pos, ["--h" as string]: "76px" }} className={cn(card, shell, "flex w-[min(26rem,calc(100vw-24px))] items-center gap-2 overflow-hidden p-2 pr-2.5")}
+      onPointerDown={down} onClickCapture={swallowClickAfterDrag}>
+      <GripVertical aria-hidden className="size-4 flex-none text-white/25" />
+      <button onClick={() => setOpen(tv.deviceId)} aria-label={`${label}: ${n.title}. Open remote`} className="beam flex min-w-0 flex-1 items-center gap-3 rounded-xl text-left">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        {n.poster ? <img src={n.poster} alt="" referrerPolicy="no-referrer" className="h-14 w-10 flex-none rounded-md object-cover" /> : <span className="grid h-14 w-10 flex-none place-items-center rounded-md bg-haze"><TvIcon className="size-4" /></span>}
+        {n.poster ? <img src={n.poster} alt="" referrerPolicy="no-referrer" draggable={false} className="h-14 w-10 flex-none rounded-md object-cover" /> : <span className="grid h-14 w-10 flex-none place-items-center rounded-md bg-haze"><TvIcon className="size-4" /></span>}
         <span className="min-w-0 flex-1">
-          <small className="block truncate text-xs font-semibold text-primary">{n.playing ? "Playing" : "Paused"} on {tv.name}</small>
+          <small className="block truncate text-xs font-semibold text-primary">{label}</small>
           <b className="block truncate font-display">{n.title}</b>
           {n.subtitle && <small className="block truncate text-xs text-[#a3a1ae]">{n.subtitle}</small>}
         </span>
       </button>
-      <button aria-label={n.playing ? "Pause on TV" : "Play on TV"} onClick={() => control(tv.deviceId, "toggle")} className="beam grid size-11 flex-none place-items-center rounded-full bg-primary text-primary-foreground [&_svg]:size-5">{n.playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}</button>
-      <i aria-hidden className="absolute inset-x-0 bottom-0 h-0.5 bg-white/10"><i className="block h-full bg-primary" style={{ width: `${Math.min(100, f * 100)}%` }} /></i>
+      {toggle}
+      <span data-nodrag className="flex flex-none flex-col gap-1">
+        <button aria-label="Open remote" onClick={() => setOpen(tv.deviceId)} className="beam grid size-7 place-items-center rounded-full text-[#a3a1ae] hover:bg-white/8 hover:text-foreground [&_svg]:size-3.5"><Maximize2 /></button>
+        <button aria-label="Minimise" onClick={() => update({ min: true })} className="beam grid size-7 place-items-center rounded-full text-[#a3a1ae] hover:bg-white/8 hover:text-foreground [&_svg]:size-3.5"><Minimize2 /></button>
+      </span>
+      <i aria-hidden className="absolute inset-x-0 bottom-0 h-0.5 bg-white/10"><i className="block h-full bg-primary" style={{ width: `${f * 100}%` }} /></i>
     </div>
   );
 }
