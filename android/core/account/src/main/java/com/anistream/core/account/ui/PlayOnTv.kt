@@ -311,7 +311,8 @@ fun TvRemoteHost(onPlayHere: (WatchHistory) -> Unit) {
     // what the panel shows: ask on open, when the TV comes back, and whenever its state revision moves
     LaunchedEffect(tvId, tv != null, now != null, now?.rev) { if (tv != null && now != null) send("describe", null, null) }
 
-    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        // edge-to-edge window so the status/navigation bar paddings below actually apply (the buttons sat under the nav bar)
         Column(Modifier.fillMaxSize().background(Bg.base).statusBarsPadding().navigationBarsPadding().padding(horizontal = Space.lg)) {
             Row(Modifier.fillMaxWidth().padding(vertical = Space.sm), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = close) { Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "Close", tint = Ink.high) }

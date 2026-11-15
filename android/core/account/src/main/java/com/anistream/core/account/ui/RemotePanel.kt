@@ -73,7 +73,7 @@ import java.util.Locale
 /** Sends one control to the TV: action, value, arg. */
 internal typealias Ctl = (String, Long?, JsonElement?) -> Unit
 
-internal enum class RemoteTab(val label: String) { Subtitles("Subtitles"), Audio("Audio"), Quality("Quality"), Episodes("Episodes"), More("More") }
+internal enum class RemoteTab(val label: String) { Subtitles("Subs"), Audio("Audio"), Quality("Quality"), Episodes("Episodes"), More("More") }
 
 /** Which sections the TV reported something for (the others show disabled). */
 internal fun remoteTabs(i: RemoteInfo): Map<RemoteTab, Boolean> = mapOf(
@@ -116,12 +116,9 @@ internal fun RemoteSections(info: RemoteInfo?, now: Now?, pos: Long, vm: PlayOnT
     val tabs = info?.let(::remoteTabs)
     var tab by remember { mutableStateOf(RemoteTab.Subtitles) }
     val shown = tab.takeIf { tabs?.get(it) == true } ?: tabs?.entries?.firstOrNull { it.value }?.key ?: RemoteTab.More
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = Space.xl), horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
-        RemoteTab.entries.forEach { t ->
-            val on = tabs?.get(t) == true
-            PillChip(t.label, selected = info != null && t == shown, onClick = { if (on) tab = t }, modifier = Modifier.alpha(if (on) 1f else 0.38f))
-        }
-    }
+    // only the sections the TV reported, as one full-width bar: nothing runs off a narrow phone screen
+    val visible = RemoteTab.entries.filter { tabs?.get(it) == true }
+    if (visible.size > 1) SegmentedControl(visible.map { it.label }, visible.indexOf(shown).coerceAtLeast(0), { tab = visible[it] }, Modifier.fillMaxWidth().padding(top = Space.xl))
     Column(Modifier.fillMaxWidth().padding(top = Space.lg)) {
         if (info == null) {
             repeat(3) { LoadingShimmer(Modifier.fillMaxWidth().height(44.dp).padding(bottom = Space.sm).clip(Radius.md)) }
