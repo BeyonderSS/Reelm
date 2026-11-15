@@ -223,4 +223,4 @@ class UpdateManager @Inject constructor(
 
 /** Gives composables the singleton [UpdateManager]. */
 @HiltViewModel
-class UpdateViewModel @Inject constructor(val updates: UpdateManager) : ViewModel()
+class UpdateViewModel @Inject constructor(val updates: UpdateManager, val trailers: com.anistream.core.trailer.TrailerRepository) : ViewModel()
