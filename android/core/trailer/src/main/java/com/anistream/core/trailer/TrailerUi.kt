@@ -2,6 +2,8 @@ package com.anistream.core.trailer
 
 import android.content.Context
 import android.graphics.Matrix
+import android.os.Handler
+import android.os.Looper
 import android.view.TextureView
 import androidx.annotation.OptIn
 import androidx.compose.animation.Crossfade
@@ -61,30 +63,70 @@ import kotlin.math.min
 private const val CAP_MS = 30_000L
 private const val FADE_MS = 600
 
-/** The one ExoPlayer every TrailerSurface shares; created by the first surface, released with the last. Main thread only. */
+/**
+ * The one ExoPlayer every TrailerSurface shares; released with the last surface. Accessed on the main thread only, but built on a
+ * background thread ahead of time ([prewarm], from [rememberDwell]): a cold ExoPlayer build blocked the UI ~55 ms on the TV emulator
+ * right as the trailer faded in. ExoPlayer supports building off its application thread (calls wait for the constructor).
+ */
 private object Shared {
     var player: ExoPlayer? = null
+    var factory: DefaultMediaSourceFactory? = null
+    private var warming: Thread? = null
     var users = 0
     /** surface currently showing video; snapshot state so the others hide themselves */
     var owner by mutableStateOf<Any?>(null)
+    private val main = Handler(Looper.getMainLooper())
+    private val idleRelease = Runnable { if (users == 0) releaseNow() }
 
+    /** Any thread: the player's setters must run on main, see [adopt]. */
     @OptIn(UnstableApi::class)
+    private fun build(context: Context) = ExoPlayer.Builder(context).setLooper(Looper.getMainLooper()).build() to DefaultMediaSourceFactory(context)
+
+    private fun adopt(context: Context, built: Pair<ExoPlayer, DefaultMediaSourceFactory>): ExoPlayer {
+        val p = built.first
+        val cap = if (LowEnd.isOn(context)) 854 to 480 else 1280 to 720 // only matters for the HLS fallback
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setMaxVideoSize(cap.first, cap.second).build()
+        p.volume = 0f
+        player = p
+        factory = built.second
+        return p
+    }
+
+    /** Build the player in the background if none exists; an unused one is released after a while. */
+    fun prewarm(context: Context) {
+        if (player != null || warming != null) return
+        val app = context.applicationContext
+        warming = Thread {
+            val built = runCatching { build(app) }.getOrNull()
+            main.post {
+                warming = null
+                if (built == null) return@post
+                if (player != null) { built.first.release(); return@post }
+                adopt(app, built)
+                if (users == 0) main.postDelayed(idleRelease, IDLE_MS)
+            }
+        }.apply { name = "trailer-prewarm"; start() }
+    }
+
     fun acquire(context: Context): ExoPlayer {
         users++
-        return player ?: ExoPlayer.Builder(context.applicationContext).build().also { p ->
-            val cap = if (LowEnd.isOn(context)) 854 to 480 else 1280 to 720 // only matters for the HLS fallback
-            p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setMaxVideoSize(cap.first, cap.second).build()
-            p.volume = 0f
-            player = p
-        }
+        main.removeCallbacks(idleRelease)
+        return player ?: context.applicationContext.let { adopt(it, build(it)) }
     }
 
     fun release() {
         if (--users > 0) return
+        releaseNow()
+    }
+
+    private fun releaseNow() {
         player?.release()
         player = null
+        factory = null
         owner = null
     }
+
+    private const val IDLE_MS = 20_000L
 }
 
 /** Center-crop the video into the view (TextureView stretches by default). */
@@ -120,6 +162,7 @@ fun TrailerSurface(
     val firstFrame by rememberUpdatedState(onFirstFrame)
     val progress by rememberUpdatedState(onProgress)
     val end by rememberUpdatedState(onEnded)
+    val isActive by rememberUpdatedState(active)
     val mine = Shared.owner === token
 
     SideEffect { if (mine) player.volume = if (sound) 1f else 0f }
@@ -131,7 +174,8 @@ fun TrailerSurface(
             }
             override fun onVideoSizeChanged(videoSize: VideoSize) { if (Shared.owner === token) texture?.crop(videoSize) }
             override fun onPlayerError(error: PlaybackException) {
-                if (Shared.owner === token && !ended) { ended = true; end() }
+                // a cancel tears the surface down under the decoder ("setSurface() ... Released state"): not a failed trailer
+                if (Shared.owner === token && isActive && !ended) { ended = true; end() }
             }
         }
         player.addListener(l)
@@ -159,11 +203,12 @@ fun TrailerSurface(
             loaded = url
             rendered = false
             player.setVideoTextureView(view)
-            val factory = DefaultMediaSourceFactory(context)
+            val factory = Shared.factory ?: DefaultMediaSourceFactory(context)
             val video = factory.createMediaSource(MediaItem.fromUri(url))
             player.setMediaSource(info.audioUrl?.let { MergingMediaSource(video, factory.createMediaSource(MediaItem.fromUri(it))) } ?: video, info.startAtMs)
             player.prepare()
         }
+        if (player.playerError != null) player.prepare() // an error swallowed while cancelled: retry on resume
         player.volume = if (sound) 1f else 0f
         player.playWhenReady = true
         while (Shared.owner === token) {
@@ -221,9 +266,11 @@ fun LivingBackdrop(urls: List<String>, modifier: Modifier = Modifier) {
 @Composable
 fun rememberDwell(active: Boolean, delayMs: Long): Boolean {
     var done by remember { mutableStateOf(false) }
+    val context = LocalContext.current
     LaunchedEffect(active, delayMs) {
         done = false
-        if (active) { delay(delayMs); done = true }
+        // a dwell means a trailer is likely next: have the player ready so starting it doesn't stall the UI
+        if (active) { Shared.prewarm(context); delay(delayMs); done = true }
     }
     return active && done
 }
