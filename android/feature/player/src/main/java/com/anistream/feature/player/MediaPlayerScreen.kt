@@ -211,17 +211,13 @@ fun MediaPlayerScreen(
                         viewModel.openWebPlayer()
                     }
                 }
-                val subs = ui.stream?.subtitles.orEmpty()
+                val subs = textOptions(rememberTracks(viewModel.player))
                 if (subs.isNotEmpty()) {
                     Spacer(Modifier.height(Space.xl))
                     Text("Subtitles", style = AppType.heading)
                     Spacer(Modifier.height(Space.sm))
-                    SheetOption("Off", selected = ui.subtitleIndex == -1) { viewModel.selectSubtitle(-1) }
-                    subs.forEachIndexed { i, t ->
-                        SheetOption(t.label.ifBlank { t.languageCode }, selected = i == ui.subtitleIndex) {
-                            viewModel.selectSubtitle(i)
-                        }
-                    }
+                    SheetOption("Off", selected = subs.none { it.selected }) { selectText(viewModel.player, null) }
+                    subs.forEach { o -> SheetOption(o.label, selected = o.selected) { selectText(viewModel.player, o) } }
                 }
                 PlayerTweaksSection(viewModel.player, tweaks, live = ui.isLive, autoSkipToggle = !ui.isLive)
                 if (!ui.isLive) WatchTogetherSection(mediaPayload(request))

@@ -78,6 +78,7 @@ import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.common.text.Cue
 import androidx.media3.common.text.CueGroup
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
@@ -113,9 +114,22 @@ fun subtitleScaleLabel(v: Float) = when (v) { 0.75f -> "Small"; 1f -> "Normal"; 
 val SubtitleDelays = listOf(0L, 250L, 500L, 1000L, 2000L, 3000L, 5000L)
 fun delayLabel(ms: Long) = if (ms == 0L) "None" else "+%.2g s".format(Locale.US, ms / 1000f)
 
-/** Where captions sit; [bottomFraction] feeds SubtitleView.setBottomPaddingFraction (TV overscan eats the bottom edge). */
-enum class SubPosition(val label: String, val bottomFraction: Float) {
-    BOTTOM("Bottom", 0.08f), RAISED("Raised", 0.12f), HIGHER("Higher", 0.2f), TOP("Top", 0.78f)
+/**
+ * Where captions sit. [inset] is the gap from the bottom edge (from the top for [TOP]) as a fraction of the video height;
+ * TV overscan eats the edges. It pads the caption layer itself: SubtitleView's bottomPaddingFraction only moves cues
+ * with no line, and Media3 gives every WebVTT cue one (-1, -2 … stacked up from the bottom), so it never moved them.
+ */
+enum class SubPosition(val label: String, val inset: Float) {
+    BOTTOM("Bottom", 0.08f), RAISED("Raised", 0.12f), HIGHER("Higher", 0.2f), TOP("Top", 0.05f)
+}
+
+/** For [SubPosition.TOP]: a cue placed at the bottom (no line, a negative line number, or a low fraction) mirrored to the top. */
+internal fun Cue.toTop(): Cue = when {
+    text == null -> this // bitmap (PGS) cues keep their own placement
+    line == Cue.DIMEN_UNSET -> buildUpon().setLine(0f, Cue.LINE_TYPE_NUMBER).build()
+    lineType == Cue.LINE_TYPE_NUMBER && line < 0 -> buildUpon().setLine(-line - 1, Cue.LINE_TYPE_NUMBER).build()
+    lineType == Cue.LINE_TYPE_FRACTION && line >= 0.8f -> buildUpon().setLine(1f - line, Cue.LINE_TYPE_FRACTION).setLineAnchor(Cue.ANCHOR_TYPE_START).build()
+    else -> this // deliberately placed (signs, songs): left alone
 }
 
 fun isTvDevice(ctx: Context) = ctx.packageManager.run { hasSystemFeature(PackageManager.FEATURE_LEANBACK) || hasSystemFeature("amazon.hardware.fire_tv") }
@@ -277,6 +291,32 @@ fun selectAudio(player: Player, o: AudioOption) {
 
 fun hasSubtitles(tracks: Tracks) = tracks.groups.any { it.type == C.TRACK_TYPE_TEXT }
 
+class TextOption(val label: String, val selected: Boolean, internal val group: Tracks.Group, internal val index: Int)
+
+/** Every playable subtitle track: the file's own (MKV/MP4/HLS) and the sideloaded ones, labelled like audio tracks. */
+fun textOptions(tracks: Tracks): List<TextOption> {
+    val out = mutableListOf<TextOption>()
+    for (g in tracks.groups) {
+        if (g.type != C.TRACK_TYPE_TEXT) continue
+        for (i in 0 until g.length) {
+            if (!g.isTrackSupported(i)) continue
+            val f = g.getTrackFormat(i)
+            val lang = f.language?.takeIf { it != "und" }?.let { Locale(it).displayLanguage }
+            val forced = if (f.selectionFlags and C.SELECTION_FLAG_FORCED != 0) "Forced" else null
+            out += TextOption(listOfNotNull(lang, f.label, forced).distinct().joinToString(" · ").ifEmpty { "Track ${out.size + 1}" }, g.isTrackSelected(i), g, i)
+        }
+    }
+    return out
+}
+
+/** null turns subtitles off. */
+fun selectText(player: Player, o: TextOption?) {
+    player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, o == null)
+        .apply { if (o != null) setOverrideForType(TrackSelectionOverride(o.group.mediaTrackGroup, o.index)) else clearOverridesOfType(C.TRACK_TYPE_TEXT) }
+        .build()
+}
+
 /**
  * PlayerView + picture mode + our own subtitle layer (size, background, delay) + speed and sleep timer.
  * Shared by the phone and TV players; [create] builds the PlayerView.
@@ -336,7 +376,11 @@ fun VideoSurface(
                 else -> Modifier.align(Alignment.Center).aspectRatio(aspect)
             }
         )
-        if (showCaptions) Subtitles(player, tweaks, Modifier.fillMaxSize())
+        val pos = tweaks.subPosition
+        if (showCaptions) Subtitles(player, tweaks, Modifier.fillMaxSize().padding(
+            top = if (pos == SubPosition.TOP) maxHeight * pos.inset else 0.dp,
+            bottom = if (pos == SubPosition.TOP) 0.dp else maxHeight * pos.inset
+        ))
     }
 }
 
@@ -345,30 +389,30 @@ private fun Subtitles(player: Player, tweaks: PlayerTweaks, modifier: Modifier) 
     val ctx = LocalContext.current
     val view = remember { SubtitleView(ctx) }
     val delayMs = tweaks.subDelayMs
-    DisposableEffect(player, delayMs) {
+    val top = tweaks.subPosition == SubPosition.TOP
+    DisposableEffect(player, delayMs, top) {
         val handler = Handler(Looper.getMainLooper())
+        fun show(cues: List<Cue>) = view.setCues(if (top) cues.map { it.toTop() } else cues)
         val l = object : Player.Listener {
             override fun onCues(cueGroup: CueGroup) {
                 val cues = cueGroup.cues
-                if (delayMs <= 0) view.setCues(cues) else handler.postDelayed({ view.setCues(cues) }, delayMs)
+                if (delayMs <= 0) show(cues) else handler.postDelayed({ show(cues) }, delayMs)
             }
         }
-        view.setCues(player.currentCues.cues)
+        show(player.currentCues.cues)
         player.addListener(l)
         onDispose {
             player.removeListener(l)
             handler.removeCallbacksAndMessages(null)
         }
     }
-    val bottom = tweaks.subPosition.bottomFraction
     val scale = tweaks.subScale
     val bg = tweaks.subBackground
     AndroidView(
         factory = { view },
         update = {
             it.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * scale)
-            // TVs overscan the bottom edge, so TV defaults to Raised (12%); the Position setting overrides
-            it.setBottomPaddingFraction(bottom)
+            it.setBottomPaddingFraction(0f) // the layer is padded instead (see SubPosition)
             it.setStyle(
                 CaptionStyleCompat(
                     AColor.WHITE,
@@ -467,6 +511,8 @@ internal fun PlayerTweaksSection(
     if (hasSubtitles(tracks)) {
         SheetHeading("Subtitle size")
         ChoiceRow(SubtitleScales, tweaks.subScale, ::subtitleScaleLabel, tweaks::updateSubScale)
+        SheetHeading("Subtitle position")
+        ChoiceRow(SubPosition.entries, tweaks.subPosition, { it.label }, tweaks::updateSubPosition)
         SheetHeading("Subtitle background")
         ChoiceRow(listOf(true, false), tweaks.subBackground, { if (it) "On" else "Off" }) { tweaks.subBackground = it }
         SheetHeading("Subtitle delay")

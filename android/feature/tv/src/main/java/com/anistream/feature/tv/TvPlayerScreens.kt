@@ -111,6 +111,8 @@ import com.anistream.feature.player.hasSubtitles
 import com.anistream.feature.player.rememberPlayerTweaks
 import com.anistream.feature.player.rememberTracks
 import com.anistream.feature.player.selectAudio
+import com.anistream.feature.player.selectText
+import com.anistream.feature.player.textOptions
 import com.anistream.feature.player.sleepLabel
 import com.anistream.feature.player.speedLabel
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -943,7 +945,7 @@ fun TvMediaPlayerScreen(
     }
     val ge = r?.episode?.let { guide[it] }
     val nextEp = r?.episode?.let { guide[it + 1] }
-    val subs = s.stream?.subtitles.orEmpty()
+    val subs = textOptions(rememberTracks(vm.player))
     TvRemoteBridge(vm.player, r?.title.orEmpty(), listOfNotNull(r?.subtitle, ge?.title?.takeIf { it.isNotBlank() }).joinToString(" · ").ifBlank { null }, r?.posterUrl, s.hasNextEpisode, false, vm::nextEpisode, {}, onExit)
     TvPlayerChrome(
         player = vm.player,
@@ -970,7 +972,8 @@ fun TvMediaPlayerScreen(
             ).apply { stub = { i -> streams.getOrNull(i)?.let { srcInfo(it, if (i == s.streamIndex) s.note else null) } } },
             SettingGroup("Show all sources", if (streams.size > 1) listOf(false, true) else emptyList(), { if (it) "On" else "Off" }, { it == s.showAllSources }, vm::setShowAllSources)
                 .apply { stay = true },
-            SettingGroup("Subtitles", if (subs.isEmpty()) emptyList() else listOf(-1) + subs.indices, { i -> if (i < 0) "Off" else subs[i].label }, { it == s.subtitleIndex }, vm::selectSubtitle)
+            SettingGroup("Subtitles", if (subs.isEmpty()) emptyList() else listOf(-1) + subs.indices, { i -> if (i < 0) "Off" else subs[i].label },
+                { i -> if (i < 0) subs.none { it.selected } else subs[i].selected }, { i -> selectText(vm.player, subs.getOrNull(i)) })
         ),
         // MediaPlayerViewModel can only advance one episode, so the strip offers exactly that
         strip = if (s.hasNextEpisode && r != null) EpisodeStrip(listOf(r.episode + 1), -1, 0) { vm.nextEpisode() } else null,

@@ -55,8 +55,6 @@ data class MediaPlayerUiState(
     /** the stream the auto-pick chose, and why ("Auto" / "Pinned 1080p"); null when none */
     val autoIndex: Int = -1,
     val autoNote: String = "",
-    /** index into the current stream's subtitles; -1 = off */
-    val subtitleIndex: Int = -1,
     val isLoading: Boolean = true,
     val error: String? = null,
     val message: String? = null,
@@ -108,10 +106,24 @@ internal fun inferMimeType(stream: MediaStream): String? {
     }
 }
 
-internal fun subtitleMime(mime: String): String = when {
-    mime.contains("vtt", ignoreCase = true) -> MimeTypes.TEXT_VTT
-    mime.contains("ass", ignoreCase = true) || mime.contains("ssa", ignoreCase = true) -> MimeTypes.TEXT_SSA
-    else -> MimeTypes.APPLICATION_SUBRIP
+/** Media3 MIME for a sideloaded subtitle: the source's type ("text/vtt", "vtt", "ass" …), else the URL's extension, else SRT. */
+internal fun subtitleMime(mime: String, url: String = ""): String {
+    val ext = url.substringBefore('?').substringBefore('#').substringAfterLast('.', "").lowercase()
+    val m = mime.lowercase()
+    return when {
+        "vtt" in m || ext == "vtt" -> MimeTypes.TEXT_VTT
+        "ttml" in m || "dfxp" in m || ext == "ttml" || ext == "dfxp" -> MimeTypes.APPLICATION_TTML
+        "ssa" in m || m == "ass" || m.endsWith("/ass") || m.endsWith("-ass") || ext == "ass" || ext == "ssa" -> MimeTypes.TEXT_SSA
+        else -> MimeTypes.APPLICATION_SUBRIP
+    }
+}
+
+/** ISO code for a subtitle language that sources sometimes give by name ("English" → "en"); codes pass through. */
+internal fun subtitleLanguage(lang: String): String {
+    val l = lang.trim()
+    if (l.length <= 3) return l.lowercase()
+    val name = l.substringBefore(' ').substringBefore('(').lowercase()
+    return Locale.getAvailableLocales().firstOrNull { it.getDisplayLanguage(Locale.ENGLISH).lowercase() == name }?.language ?: l
 }
 
 /**
@@ -320,16 +332,17 @@ class MediaPlayerViewModel @Inject constructor(
             .setUserAgent(userAgent)
             .setAllowCrossProtocolRedirects(true)
             .setDefaultRequestProperties(stream.headers.filterKeys { !it.equals("User-Agent", true) })
-        val subtitleIndex = stream.subtitles.indexOfFirst { it.languageCode.startsWith("en", true) || it.label.startsWith("English", true) }
+        val english = stream.subtitles.indexOfFirst { it.languageCode.startsWith("en", true) || it.label.startsWith("English", true) }
         val item = MediaItem.Builder()
             .setUri(stream.url)
             .apply { inferMimeType(stream)?.let { setMimeType(it) } }
             .setSubtitleConfigurations(stream.subtitles.mapIndexed { i, t ->
                 MediaItem.SubtitleConfiguration.Builder(Uri.parse(t.url))
                     .setId("sub$i")
-                    .setMimeType(subtitleMime(t.mimeType))
-                    .setLanguage(t.languageCode)
+                    .setMimeType(subtitleMime(t.mimeType, t.url))
+                    .setLanguage(subtitleLanguage(t.languageCode))
                     .setLabel(t.label)
+                    .setSelectionFlags(if (i == english) C.SELECTION_FLAG_DEFAULT else 0)
                     .build()
             })
             .apply { if (request.isLive) setLiveConfiguration(MediaItem.LiveConfiguration.Builder().build()) }
@@ -340,7 +353,13 @@ class MediaPlayerViewModel @Inject constructor(
         startedAt = System.currentTimeMillis()
         if (request.isLive || startMs == null) player.setMediaSource(source) else player.setMediaSource(source, startMs)
         _uiState.update { it.copy(streamIndex = index, isLoading = true, error = null, ended = false) }
-        applySubtitle(stream, subtitleIndex)
+        // subtitles: the file's own tracks (MKV/MP4/HLS) and the sideloaded ones are all Media3 text tracks; the selector
+        // turns on one in the viewer's language (or English) and the Subtitles menu lists every one (see textOptions)
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .setPreferredTextLanguages(*listOf(Locale.getDefault().language, "en").distinct().toTypedArray())
+            .build()
         player.prepare()
         player.playWhenReady = true
         // Some files load forever without an error (Google CDN MKVs whose index ExoPlayer can't reach): after 40 s
@@ -389,22 +408,6 @@ class MediaPlayerViewModel @Inject constructor(
     }
 
     fun retry() = tried.clear().let { play(_uiState.value.streamIndex, if (_uiState.value.isLive) null else player.currentPosition) }
-
-    /** -1 = off */
-    fun selectSubtitle(index: Int) {
-        val stream = _uiState.value.stream ?: return
-        applySubtitle(stream, index)
-    }
-
-    // ponytail: picks by language, so two tracks with the same language code select the first; use a TrackSelectionOverride if that bites
-    private fun applySubtitle(stream: MediaStream, index: Int) {
-        val track = stream.subtitles.getOrNull(index)
-        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, track == null)
-            .setPreferredTextLanguage(track?.languageCode)
-            .build()
-        _uiState.update { it.copy(subtitleIndex = if (track == null) -1 else index) }
-    }
 
     /** Upsert the history row so Continue Watching sees it; resume when it's the same season/episode. */
     private suspend fun recordStart(request: PlaybackRequest) {

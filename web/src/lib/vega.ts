@@ -192,7 +192,9 @@ async function resolve(base: string, p: string, r: Req, ctx: any, f: F, at: (s: 
       }
       const ht = h(l) || +(`${s.quality ?? ""}`.match(/\d{3,4}/)?.[0] ?? 0), ac = /ddp|dd\+|dd ?[257]\.1|e-?ac-?3|\bac-?3|dts|atmos|truehd/i.test(l.title) && !/aac|opus/i.test(l.title);
       return { url: s.link as string, hls, height: ht, label: `${NAMES[p] ?? p} · ${String(s.server ?? "").split(" · ").filter((x) => x && x !== "Unknown" && !/^\d{3,4}p$/.test(x)).join(" ") || "Direct"}${ht ? " " + ht + "p" : ""}${ac ? " · Dolby audio" : ""}`, dolby: ac,
-        codec: /av1/i.test(l.title) ? "AV1" : /hevc|x265|h\.?265/i.test(l.title) ? "HEVC" : /avc|x264|h\.?264/i.test(l.title) ? "H.264" : undefined, subtitles: [] as any[],
+        codec: /av1/i.test(l.title) ? "AV1" : /hevc|x265|h\.?265/i.test(l.title) ? "HEVC" : /avc|x264|h\.?264/i.test(l.title) ? "H.264" : undefined,
+        // the provider's own subtitle files (watch page shows them through /api/sub as WebVTT)
+        subtitles: ((s.subtitles ?? []) as any[]).filter((t) => /^https?:/.test(t?.uri ?? "")).map((t) => ({ url: t.uri as string, label: String(t.title || t.language || "Subtitles"), lang: String(t.language ?? "") })),
         langs: langs(langs(l.title).length ? l.title : found.title) }; // the link names its own audio when it differs from the post (a Hindi-only 480p under a Dual Audio post)
     }
     return null;
