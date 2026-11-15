@@ -929,7 +929,7 @@ fun TvAnimePlayerScreen(onExit: () -> Unit, vm: PlayerViewModel = hiltViewModel(
             HistoryPayload.encode(WatchHistory(it, s.animeTitle, posterUrl = s.posterUrl, totalEpisodes = s.episodeNumbers.size, lastEpisodeWatched = s.episodeNumber))
         },
         quality = RemoteInfo.Quality(
-            heights.entries.firstOrNull { (_, v) -> v.any { it.qualityLabel == s.selectedQuality && s.autoNote.isEmpty() } }?.key ?: 0,
+            RemoteMap.pickedHeight(heights.mapValues { (_, v) -> v.map { it.qualityLabel } }, s.selectedQuality, s.autoQuality),
             heights.map { (h, v) -> RemoteInfo.Chip(h, v.size) }.sortedByDescending { it.height }
         ),
         onQuality = { h -> (if (h <= 0) s.autoQuality.takeIf { it.isNotEmpty() } else heights[h]?.first()?.qualityLabel)?.let(vm::selectQuality) },
@@ -1000,7 +1000,7 @@ fun TvMediaPlayerScreen(
     val unsupported = vm.unsupportedHeights()
     val remote = RemoteHooks(
         r?.title.orEmpty(), listOfNotNull(r?.subtitle, ge?.title?.takeIf { it.isNotBlank() }).joinToString(" · ").ifBlank { null }, r?.posterUrl,
-        s.hasNextEpisode, false, vm::nextEpisode, {}, onExit,
+        s.hasNextEpisode, (r?.episode ?: 0) > 1, vm::nextEpisode, { r?.let { vm.playEpisode(it.season, it.episode - 1) } }, onExit,
         season = r?.season?.takeIf { it > 0 }, episode = r?.episode?.takeIf { it > 0 },
         payload = r?.takeIf { !it.isLive }?.let {
             HistoryPayload.encode(WatchHistory(it.historyKey.orEmpty(), it.title, posterUrl = it.posterUrl, totalEpisodes = it.seasonEpisodeCount,

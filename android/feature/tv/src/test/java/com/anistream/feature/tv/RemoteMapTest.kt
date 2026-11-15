@@ -21,6 +21,12 @@ class RemoteMapTest {
         assertNull(RemoteMap.position(JsonNull))
     }
 
+    @Test fun animePickedQuality() {
+        val h = mapOf(1080 to listOf("1080p"), 720 to listOf("720p", "720p HD"))
+        assertEquals(720, RemoteMap.pickedHeight(h, "720p HD", "1080p"))
+        assertEquals(0, RemoteMap.pickedHeight(h, "1080p", "1080p"))
+    }
+
     @Test fun tracksEpisodesSpeeds() {
         assertEquals(3, RemoteMap.track(j("""{"track":"3"}""")))
         assertEquals(-1, RemoteMap.track(j("""{"track":null}""")))

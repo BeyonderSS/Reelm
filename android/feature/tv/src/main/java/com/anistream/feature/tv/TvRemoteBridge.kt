@@ -118,6 +118,9 @@ internal object RemoteMap {
         val e = (field(arg, "episode") as? JsonPrimitive)?.intOrNull ?: return null
         return (s to e).takeIf { e > 0 && s >= 0 }
     }
+    /** anime quality the viewer picked (0 = Auto: still on the auto pick); autoNote is never empty, so it can't tell */
+    fun pickedHeight(heights: Map<Int, List<String>>, selected: String, auto: String) =
+        if (selected == auto) 0 else heights.entries.firstOrNull { selected in it.value }?.key ?: 0
     /** "1080p" / "720p HD" → 1080 / 720; 0 when the label has no height */
     fun heightOf(label: String) = Regex("""(\d{3,4})p""").find(label)?.groupValues?.get(1)?.toInt() ?: 0
 }

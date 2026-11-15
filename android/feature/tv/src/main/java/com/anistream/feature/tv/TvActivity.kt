@@ -173,7 +173,7 @@ private fun TvApp() {
         acct.hub.controls.collect { c ->
             when (c.action) {
                 "key" -> when (val k = RemoteMap.string(c.arg)) {
-                    "home" -> nav.navigateTop(TvRoutes.HOME)
+                    "home" -> nav.popBackStack(nav.graph.findStartDestination().id, false) // not navigateTop: its restoreState brings the popped player back
                     "back" -> activity.onBackPressedDispatcher.onBackPressed()
                     else -> remoteKeyCode(k)?.let { code ->
                         val t = android.os.SystemClock.uptimeMillis()
