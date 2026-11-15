@@ -4,6 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.anistream.core.account.HistorySync
 import com.anistream.core.common.Result
+import com.anistream.core.trailer.TrailerInfo
+import com.anistream.core.trailer.TrailerKey
+import com.anistream.core.trailer.TrailerRepository
 import com.anistream.domain.ContentPrefs
 import com.anistream.domain.model.AnimeSearchResult
 import com.anistream.domain.model.Channel
@@ -14,6 +17,7 @@ import com.anistream.domain.model.MediaType
 import com.anistream.domain.model.Recommendation
 import com.anistream.domain.model.WatchHistory
 import com.anistream.domain.model.liveRequest
+import com.anistream.domain.repository.AnidbRepository
 import com.anistream.domain.repository.FavoriteRepository
 import com.anistream.domain.repository.HomeContent
 import com.anistream.domain.repository.LiveTvRepository
@@ -23,7 +27,11 @@ import com.anistream.domain.repository.RecommendationsRepository
 import com.anistream.domain.usecase.GetContinueWatchingUseCase
 import com.anistream.domain.usecase.GetHomeContentUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
@@ -31,7 +39,11 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
+
+/** What the trailer UI shows beyond a Home card: synopsis, genres, and the MAL id / year anime cards often lack. */
+data class TitleExtra(val synopsis: String?, val genres: List<String>, val malId: Long?, val year: Int?)
 
 data class HomeUiState(
     val animeLoading: Boolean = true,
@@ -85,6 +97,8 @@ class HomeViewModel @Inject constructor(
     private val liveTv: LiveTvRepository,
     private val favorites: FavoriteRepository,
     private val history: com.anistream.domain.repository.WatchHistoryRepository,
+    private val anime: AnidbRepository,
+    val trailers: TrailerRepository,
     recommendations: RecommendationsRepository,
     sync: HistorySync
 ) : ViewModel() {
@@ -157,6 +171,43 @@ class HomeViewModel @Inject constructor(
                 FavoriteAnime(animeSlug = item.slug, animeTitle = item.title, posterUrl = item.posterUrl, score = item.score)
             ).getOrNull() ?: return@launch
             _uiState.update { it.copy(myList = if (added) it.myList + item.slug else it.myList - item.slug) }
+        }
+    }
+
+    private val extras = ConcurrentHashMap<String, Deferred<TitleExtra?>>()
+
+    /** Detail-page extras for a Home title, fetched once per id and shared by the hero, Hold to project and the reel. */
+    suspend fun extra(id: String, media: Boolean): TitleExtra? = extras.getOrPut(id) {
+        viewModelScope.async {
+            runCatching {
+                if (media) movies.detail(id).getOrNull()?.let { TitleExtra(it.description, it.genres, null, it.year) }
+                else anime.getAnimeDetail(id).getOrNull()?.let { TitleExtra(it.synopsis, it.genres.map { g -> g.name }, it.malId, it.year) }
+            }.getOrNull()
+        }
+    }.await()
+
+    private suspend fun trailerKey(card: AnimeSearchResult, media: Boolean): TrailerKey {
+        // anime cards rarely carry a MAL id or year: the detail has them
+        val e = if (media || (card.malId != null && card.year != null)) null else extra(card.slug, false)
+        return trailerKeyFor(card.slug, card.title, card.year ?: e?.year, card.type, media, card.malId ?: e?.malId)
+    }
+
+    suspend fun trailer(card: AnimeSearchResult, media: Boolean): TrailerInfo? = trailers.get(trailerKey(card, media))
+    suspend fun logo(card: AnimeSearchResult, media: Boolean): String? = trailers.logo(trailerKey(card, media))
+
+    private val _reelReady = MutableStateFlow<Set<String>>(emptySet())
+    /** ids of Tonight's reel candidates that resolved to a playable trailer */
+    val reelReady: StateFlow<Set<String>> = _reelReady.asStateFlow()
+    private var reelJob: Job? = null
+
+    /** Resolve reel candidates one by one (cached in TrailerRepository, so the feed starts instantly). */
+    fun probeReel(items: List<Pair<AnimeSearchResult, Boolean>>) {
+        reelJob?.cancel()
+        reelJob = viewModelScope.launch {
+            for ((card, media) in items) {
+                if (card.slug in _reelReady.value) continue
+                if (trailer(card, media)?.streamUrl != null) _reelReady.update { it + card.slug }
+            }
         }
     }
 

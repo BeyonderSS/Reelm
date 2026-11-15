@@ -61,6 +61,11 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.draw.blur
+import com.anistream.core.trailer.PreviewMode
+import com.anistream.core.ui.components.PillChip
+import com.anistream.domain.ContentPrefs
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -104,14 +109,32 @@ import com.anistream.domain.model.WatchHistory
 import com.anistream.domain.model.forYouRows
 
 private const val HERO_COUNT = 8
-private const val HERO_INTERVAL_MS = 7_000
+private const val REEL_MAX = 10
+private const val TOP_PICKS = "Top picks for you"
 private val TOP_BAR_HEIGHT = 56.dp
 
 private enum class HomeMode { Loading, Error, Empty, Content }
 
 /** A featured title in the hero; [media] = Movies & TV (opens the movie detail), otherwise anime. */
 @Immutable
-private data class HeroItem(val card: AnimeSearchResult, val media: Boolean)
+internal data class HeroItem(val card: AnimeSearchResult, val media: Boolean)
+
+/** Home's filter chips; Live TV is a chip too but opens the Live TV tab. */
+private enum class PhoneFilter(val label: String) {
+    All("All"), Movies("Movies"), Series("Series"), Anime("Anime");
+
+    fun keeps(media: Boolean, type: String?): Boolean = when (this) {
+        All -> true
+        Movies -> media && !type.equals("Series", true)
+        Series -> media && type.equals("Series", true)
+        Anime -> !media
+    }
+
+    /** media history rows: episode 0 = a movie */
+    fun keeps(h: WatchHistory): Boolean = if (h.kind == "media") keeps(true, if (h.lastEpisodeWatched > 0) "Series" else "Movie") else keeps(false, null)
+}
+
+private fun <T> interleave(a: List<T>, b: List<T>): List<T> = (0 until maxOf(a.size, b.size)).flatMap { i -> listOfNotNull(a.getOrNull(i), b.getOrNull(i)) }
 
 /** One poster row. [path] = hianime "See all" category, [catalogKey] = Movies & TV "See all". */
 @Immutable
@@ -178,6 +201,38 @@ fun HomeScreen(
         }
     }
 
+    var filter by rememberSaveable { mutableStateOf(PhoneFilter.All) }
+    val hidden by ContentPrefs.hidden.collectAsStateWithLifecycle()
+    val fHero = remember(hero, filter) { hero.filter { filter.keeps(it.media, it.card.type) } }
+    val fRows = remember(rows, filter) {
+        rows.map { r -> r.copy(items = r.items.filter { filter.keeps(r.media, it.type) }) }.filter { it.items.isNotEmpty() }
+    }
+    val fAnimePicks = if (filter.keeps(false, null)) animePicks else emptyList()
+    val fMediaPicks = remember(mediaPicks, filter) {
+        mediaPicks.map { (t, l) -> t to l.filter { filter.keeps(true, it.type) } }.filter { it.second.isNotEmpty() }
+    }
+    val continueWatching = remember(uiState.continueWatching, filter) { uiState.continueWatching.filter(filter::keeps) }
+
+    // Tonight's reel: Top picks (anime and Movies & TV interleaved); the hero's titles stand in until there are 3 picks
+    val previewMode by viewModel.trailers.mode.collectAsStateWithLifecycle()
+    val reelCandidates = remember(animePicks, mediaPicks, hero) {
+        val a = animePicks.firstOrNull { it.first == TOP_PICKS }?.second.orEmpty().map { HeroItem(it, media = false) }
+        val m = mediaPicks.firstOrNull { it.first == TOP_PICKS }?.second.orEmpty().map { HeroItem(it, media = true) }
+        val picks = interleave(a, m)
+        (if (picks.size >= 3) picks else picks + hero).distinctBy { it.card.slug }.take(REEL_MAX)
+    }
+    LaunchedEffect(reelCandidates, previewMode) {
+        if (previewMode != PreviewMode.OFF && reelCandidates.isNotEmpty()) viewModel.probeReel(reelCandidates.map { it.card to it.media })
+    }
+    val reelReady by viewModel.reelReady.collectAsStateWithLifecycle()
+    val reel = remember(reelCandidates, reelReady, filter) {
+        reelCandidates.filter { it.card.slug in reelReady && filter.keeps(it.media, it.card.type) }
+    }
+    val showReel = previewMode != PreviewMode.OFF && reel.size >= 3
+    var projecting by remember { mutableStateOf<HeroItem?>(null) }
+    var reelAt by remember { mutableStateOf<Int?>(null) }
+    var seen by remember { mutableStateOf(emptySet<String>()) }
+
     val hasContent = hero.isNotEmpty() || rows.isNotEmpty() || uiState.continueWatching.isNotEmpty()
     val mode = when {
         hasContent -> HomeMode.Content
@@ -190,6 +245,8 @@ fun HomeScreen(
     val refreshState = rememberPullToRefreshState()
     val refreshing = uiState.isLoading && hasContent
     val openHero: (HeroItem) -> Unit = { if (it.media) onMediaClick(it.card.slug) else onAnimeClick(it.card.slug) }
+    val playHero: (HeroItem) -> Unit = { h -> if (h.media) onMediaClick(h.card.slug) else onPlayEpisode(h.card.slug, 1) }
+    val hold: (AnimeSearchResult, Boolean) -> Unit = { a, media -> projecting = HeroItem(a, media) }
 
     Box(
         Modifier
@@ -200,7 +257,8 @@ fun HomeScreen(
             isRefreshing = refreshing,
             onRefresh = { viewModel.loadContent() },
             state = refreshState,
-            modifier = Modifier.fillMaxSize(),
+            // the Hold to project scrim blurs Home behind the lifted card (API 31+; plain scrim below)
+            modifier = Modifier.fillMaxSize().blur(if (projecting != null) 14.dp else 0.dp),
             indicator = {
                 PullToRefreshDefaults.Indicator(
                     state = refreshState,
@@ -233,39 +291,50 @@ fun HomeScreen(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(bottom = Space.xxxl)
                     ) {
-                        if (hero.isNotEmpty()) {
-                            item(key = "hero", contentType = "hero") {
-                                Hero(
-                                    items = hero,
-                                    myList = uiState.myList,
-                                    listState = listState,
-                                    onPlay = { h -> if (h.media) onMediaClick(h.card.slug) else onPlayEpisode(h.card.slug, 1) },
-                                    onToggleList = { viewModel.toggleMyList(it.card) },
-                                    onDetails = openHero
-                                )
+                        item(key = "topSpace") {
+                            Column {
+                                Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+                                Spacer(Modifier.height(TOP_BAR_HEIGHT))
                             }
-                        } else {
-                            item(key = "topSpace") {
-                                Column {
-                                    Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
-                                    Spacer(Modifier.height(TOP_BAR_HEIGHT))
+                        }
+                        item(key = "filters", contentType = "filters") {
+                            FilterChips(
+                                selected = filter,
+                                hidden = hidden,
+                                showLive = ContentPrefs.LIVE !in hidden,
+                                onSelect = { filter = it },
+                                onLive = onLiveTvClick
+                            )
+                        }
+                        if (showReel) {
+                            item(key = "reel", contentType = "reel") {
+                                ReelRow(reel, seen) { reelAt = it }
+                            }
+                        }
+                        if (fHero.isNotEmpty()) {
+                            item(key = "hero", contentType = "hero") {
+                                // re-key on the filter so the pager starts over on the filtered titles
+                                androidx.compose.runtime.key(filter) {
+                                    LivingHero(
+                                        items = fHero,
+                                        myList = uiState.myList,
+                                        listState = listState,
+                                        paused = projecting != null || reelAt != null,
+                                        vm = viewModel,
+                                        onPlay = playHero,
+                                        onToggleList = { viewModel.toggleMyList(it.card) },
+                                        onDetails = openHero
+                                    )
                                 }
                             }
                         }
 
-                        if (uiState.continueWatching.isNotEmpty()) {
+                        if (continueWatching.isNotEmpty()) {
                             item(key = "cw", contentType = "cw") {
                                 Section("Continue watching") {
-                                    LazyRow(
-                                        contentPadding = PaddingValues(horizontal = Space.lg),
-                                        horizontalArrangement = Arrangement.spacedBy(Space.md)
-                                    ) {
-                                        items(uiState.continueWatching, key = { it.animeSlug }) { h ->
-                                            ResumeCard(h, onRemove = { viewModel.removeHistory(h.animeSlug) }) {
-                                                if (h.kind == "media") onMediaClick(h.detailId)
-                                                else onPlayEpisode(h.animeSlug, h.resumeEpisode())
-                                            }
-                                        }
+                                    TicketStrip(continueWatching, onRemove = { viewModel.removeHistory(it.animeSlug) }) { h ->
+                                        if (h.kind == "media") onMediaClick(h.detailId)
+                                        else onPlayEpisode(h.animeSlug, h.resumeEpisode())
                                     }
                                 }
                             }
@@ -281,26 +350,27 @@ fun HomeScreen(
                             }
                         }
 
-                        animePicks.forEach { (title, items) ->
+                        fAnimePicks.forEach { (title, items) ->
                             item(key = "fy-a-$title", contentType = "row") {
-                                Section(title) { AnimeCarousel(items = items, onAnimeClick = { onAnimeClick(it.slug) }) }
+                                Section(title) { HoldCarousel(items, onClick = { onAnimeClick(it.slug) }, onHold = { hold(it, false) }) }
                             }
                         }
-                        mediaPicks.forEachIndexed { i, (title, items) ->
+                        fMediaPicks.forEachIndexed { i, (title, items) ->
                             item(key = "fy-m-$title", contentType = "row") {
-                                Section(if (animePicks.any { it.first == title }) "$title in Movies & TV" else title) {
-                                    AnimeCarousel(items = items, onAnimeClick = { onMediaClick(it.slug) })
+                                Section(if (fAnimePicks.any { it.first == title }) "$title in Movies & TV" else title) {
+                                    HoldCarousel(items, onClick = { onMediaClick(it.slug) }, onHold = { hold(it, true) })
                                     // TMDB's terms ask for attribution wherever their data shows
-                                    if (i == mediaPicks.lastIndex) {
+                                    if (i == fMediaPicks.lastIndex) {
                                         Text("Data from TMDB", style = AppType.caption, modifier = Modifier.padding(start = Space.lg, top = Space.sm))
                                     }
                                 }
                             }
                         }
 
-                        rows.forEachIndexed { i, row ->
+                        val showLiveRow = filter == PhoneFilter.All && uiState.channels.isNotEmpty()
+                        fRows.forEachIndexed { i, row ->
                             // live TV sits a few rows down, after the first anime and movie rows
-                            if (i == LIVE_ROW_AT && uiState.channels.isNotEmpty()) liveRow(uiState.channels, onLiveTvClick) { ch ->
+                            if (i == LIVE_ROW_AT && showLiveRow) liveRow(uiState.channels, onLiveTvClick) { ch ->
                                 viewModel.playChannel(ch)
                                 onPlayLive()
                             }
@@ -311,16 +381,20 @@ fun HomeScreen(
                                     else -> null
                                 }
                                 Section(row.title, seeAll) {
-                                    AnimeCarousel(items = row.items, onAnimeClick = { if (row.media) onMediaClick(it.slug) else onAnimeClick(it.slug) })
+                                    HoldCarousel(
+                                        row.items,
+                                        onClick = { if (row.media) onMediaClick(it.slug) else onAnimeClick(it.slug) },
+                                        onHold = { hold(it, row.media) }
+                                    )
                                 }
                             }
                         }
-                        if (rows.size <= LIVE_ROW_AT && uiState.channels.isNotEmpty()) liveRow(uiState.channels, onLiveTvClick) { ch ->
+                        if (fRows.size <= LIVE_ROW_AT && showLiveRow) liveRow(uiState.channels, onLiveTvClick) { ch ->
                             viewModel.playChannel(ch)
                             onPlayLive()
                         }
 
-                        val pool = rows.flatMap { r -> r.items.map { it to r.media } }
+                        val pool = fRows.flatMap { r -> r.items.map { it to r.media } }
                         if (pool.isNotEmpty()) {
                             item(key = "end") {
                                 EndOfFeed(onSurprise = {
@@ -336,12 +410,51 @@ fun HomeScreen(
 
         HomeTopBar(
             listState = listState,
-            solid = mode != HomeMode.Content || hero.isEmpty(),
+            solid = mode != HomeMode.Content,
             onSearchClick = onSearchClick,
             onGenresClick = onGenresClick,
             onScheduleClick = onScheduleClick,
             onMenuClick = onMenuClick
         )
+    }
+
+    projecting?.let { p ->
+        ProjectCard(
+            item = p, vm = viewModel, inList = p.card.slug in uiState.myList,
+            onDismiss = { projecting = null },
+            onPlay = { projecting = null; playHero(p) },
+            onToggleList = { viewModel.toggleMyList(p.card) },
+            onDetails = { projecting = null; openHero(p) }
+        )
+    }
+    reelAt?.let { start ->
+        ReelFeed(
+            items = reel, start = start, vm = viewModel, myList = uiState.myList,
+            onSeen = { seen = seen + it },
+            onDismiss = { reelAt = null },
+            onPlay = { reelAt = null; playHero(it) },
+            onToggleList = { viewModel.toggleMyList(it.card) }
+        )
+    }
+}
+
+/** All / Movies / Series / Anime filter Home in place (kinds hidden in "What you watch" drop out); Live TV opens its tab. */
+@Composable
+private fun FilterChips(selected: PhoneFilter, hidden: Set<String>, showLive: Boolean, onSelect: (PhoneFilter) -> Unit, onLive: () -> Unit) {
+    val shown = PhoneFilter.entries.filter {
+        when (it) {
+            PhoneFilter.All -> true
+            PhoneFilter.Movies -> ContentPrefs.MOVIES !in hidden
+            PhoneFilter.Series -> ContentPrefs.SERIES !in hidden
+            PhoneFilter.Anime -> ContentPrefs.ANIME !in hidden
+        }
+    }
+    LazyRow(
+        contentPadding = PaddingValues(start = Space.lg, end = Space.lg, bottom = Space.md),
+        horizontalArrangement = Arrangement.spacedBy(Space.sm)
+    ) {
+        items(shown, key = { it.name }) { f -> PillChip(f.label, selected = f == selected, onClick = { onSelect(f) }) }
+        if (showLive) item(key = "live") { PillChip("Live TV", selected = false, onClick = onLive) }
     }
 }
 
@@ -439,199 +552,6 @@ private fun HomeTopBar(
     }
 }
 
-/**
- * "The projector": the backdrop crossfades to the current title and drifts slower than the page (parallax),
- * while title and actions slide with the pager. The active dash fills amber until the next title.
- */
-@Composable
-private fun Hero(
-    items: List<HeroItem>,
-    myList: Set<String>,
-    listState: LazyListState,
-    onPlay: (HeroItem) -> Unit,
-    onToggleList: (HeroItem) -> Unit,
-    onDetails: (HeroItem) -> Unit
-) {
-    val pagerState = rememberPagerState { items.size }
-    val timer = remember { Animatable(0f) }
-
-    // Auto-advance; restarts whenever the user swipes or a page settles.
-    LaunchedEffect(pagerState.settledPage, pagerState.isScrollInProgress, items.size) {
-        timer.snapTo(0f)
-        if (items.size < 2 || pagerState.isScrollInProgress) return@LaunchedEffect
-        timer.animateTo(1f, tween(HERO_INTERVAL_MS, easing = LinearEasing))
-        pagerState.animateScrollToPage(
-            (pagerState.settledPage + 1) % items.size,
-            animationSpec = tween(600, easing = Motion.emphasized)
-        )
-    }
-
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .aspectRatio(4f / 5f)
-            .clipToBounds()
-    ) {
-        Crossfade(
-            targetState = items[pagerState.currentPage.coerceIn(0, items.lastIndex)],
-            animationSpec = tween(Motion.PROJECTOR, easing = Motion.emphasized),
-            label = "heroBackdrop",
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    if (listState.firstVisibleItemIndex == 0) translationY = listState.firstVisibleItemScrollOffset * 0.45f
-                }
-        ) { item ->
-            ArtworkImage(
-                url = item.card.posterUrl,
-                contentDescription = null,
-                alignment = Alignment.TopCenter,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-        // Scrims stay put while pages slide, so the text always sits on the same dusk.
-        Box(Modifier.fillMaxWidth().height(140.dp).background(Bg.scrimTop))
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.62f)
-                .align(Alignment.BottomCenter)
-                .background(Bg.scrim)
-        )
-        HorizontalPager(
-            state = pagerState,
-            key = { items[it].card.slug },
-            modifier = Modifier.fillMaxSize()
-        ) { page ->
-            val item = items[page]
-            HeroPage(
-                item = item,
-                inList = item.card.slug in myList,
-                onPlay = { onPlay(item) },
-                onToggleList = { onToggleList(item) },
-                onDetails = { onDetails(item) }
-            )
-        }
-        if (items.size > 1) {
-            Row(
-                Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = Space.lg, bottom = Space.sm),
-                horizontalArrangement = Arrangement.spacedBy(Space.xs),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                repeat(items.size) { i ->
-                    val selected = pagerState.currentPage == i
-                    val w by animateDpAsState(if (selected) 24.dp else 6.dp, Motion.standard(), label = "dash")
-                    Box(
-                        Modifier
-                            .height(4.dp)
-                            .width(w)
-                            .clip(Radius.pill)
-                            .background(Ink.faint)
-                            .drawBehind {
-                                if (selected) drawRect(Accent.main, size = size.copy(width = size.width * timer.value))
-                            }
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun HeroPage(item: HeroItem, inList: Boolean, onPlay: () -> Unit, onToggleList: () -> Unit, onDetails: () -> Unit) {
-    val anime = item.card
-    Box(
-        Modifier
-            .fillMaxSize()
-            .clickable(onClick = onDetails)
-    ) {
-        Column(
-            Modifier
-                .align(Alignment.BottomStart)
-                .fillMaxWidth()
-                .padding(start = Space.lg, end = Space.lg, bottom = Space.xl + Space.sm)
-        ) {
-            val meta = if (item.media) listOf(anime.type, anime.year?.toString())
-            else listOf("Anime", anime.type, anime.year?.toString())
-            MetaChips(meta)
-            Spacer(Modifier.height(Space.sm))
-            Text(anime.title, style = AppType.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(Space.lg))
-            Row(horizontalArrangement = Arrangement.spacedBy(Space.sm), verticalAlignment = Alignment.CenterVertically) {
-                PrimaryButton(text = "Play", onClick = onPlay, icon = Icons.Rounded.PlayArrow)
-                SecondaryButton(
-                    text = if (inList) "In My List" else "My List",
-                    onClick = onToggleList,
-                    icon = if (inList) Icons.Rounded.Check else Icons.Rounded.Add
-                )
-                IconButton(
-                    onClick = onDetails,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(Bg.badge, Radius.round)
-                ) {
-                    Icon(Icons.Outlined.Info, contentDescription = "Details", tint = Ink.high)
-                }
-            }
-        }
-    }
-}
-
-/** 16:9 resume card for anime and Movies & TV: artwork, play glyph, amber progress edge, title + where you are. */
-@Composable
-private fun ResumeCard(history: WatchHistory, onRemove: () -> Unit, onClick: () -> Unit) {
-    var menu by remember { mutableStateOf(false) }
-    Column(
-        Modifier
-            .width(240.dp)
-            .clip(Radius.md)
-            .pressClickable(onLongClick = { menu = true }, onClick = onClick)
-    ) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .aspectRatio(16f / 9f)
-                .clip(Radius.md)
-                .border(1.dp, Ink.hairline, Radius.md)
-        ) {
-            ArtworkImage(history.posterUrl, history.animeTitle, alignment = Alignment.TopCenter, modifier = Modifier.fillMaxSize())
-            Box(Modifier.fillMaxWidth().fillMaxHeight(0.6f).align(Alignment.BottomCenter).background(Bg.scrim))
-            Box(
-                Modifier
-                    .align(Alignment.Center)
-                    .size(44.dp)
-                    .background(Bg.badge, Radius.round),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(Icons.Rounded.PlayArrow, contentDescription = "Resume", tint = Ink.high, modifier = Modifier.size(26.dp))
-            }
-            Box(
-                Modifier
-                    .align(Alignment.BottomStart)
-                    .fillMaxWidth()
-                    .height(3.dp)
-                    .background(Ink.ghost)
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxWidth(history.watchProgress.coerceIn(0f, 1f))
-                        .fillMaxHeight()
-                        .background(Accent.main)
-                )
-            }
-        }
-        Spacer(Modifier.height(Space.sm))
-        Text(history.animeTitle, style = AppType.captionStrong, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        val where = if (history.kind == "media") history.subtitle else "Episode ${history.resumeEpisode()}"
-        if (!where.isNullOrBlank()) Text(where, style = AppType.numeric, maxLines = 1)
-        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-            DropdownMenuItem(text = { Text("Remove from history") }, onClick = { menu = false; onRemove() })
-        }
-    }
-}
-
 /** Channel logo on slate with the signal-green live dot; tap tunes in. */
 @Composable
 private fun ChannelTile(channel: Channel, onClick: () -> Unit) {
@@ -706,16 +626,21 @@ private fun EndOfFeed(onSurprise: () -> Unit) {
 @Composable
 private fun HomeSkeleton() {
     Column(Modifier.fillMaxSize()) {
+        Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+        Spacer(Modifier.height(TOP_BAR_HEIGHT + 48.dp))
         Box(
             Modifier
+                .padding(horizontal = Space.lg)
                 .fillMaxWidth()
                 .aspectRatio(4f / 5f)
+                .clip(Radius.xl)
         ) {
             LoadingShimmer(Modifier.fillMaxSize())
             Column(
                 Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = Space.lg, bottom = Space.xl + Space.sm)
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = Space.lg),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Box(Modifier.width(220.dp).height(28.dp).background(Bg.overlay, Radius.sm))
                 Spacer(Modifier.height(Space.lg))

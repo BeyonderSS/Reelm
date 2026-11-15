@@ -230,6 +230,8 @@ fun ReelmMenu(onDismiss: () -> Unit, onOpen: (PartyDestination) -> Unit, vm: Upd
             Text("Version ${vm.updates.versionName}", style = AppType.caption)
             if (party.client.enabled) MenuRow("Join party", "Watch along with a friend using their code") { joining = true }
             MenuRow(if (ui.checking) "Checking…" else "Check for updates", ui.status) { vm.updates.checkNow() }
+            // the setting pads itself by the 16dp gutter, which here lines up with the rows' inner padding
+            Box(Modifier.fillMaxWidth().background(Bg.overlay, Radius.md)) { com.anistream.core.trailer.PreviewTrailersSetting(vm.trailers) }
         }
     }
     if (joining) JoinPartyDialog(onDismiss = { joining = false }, onJoined = { joining = false; onDismiss(); onOpen(it) })
