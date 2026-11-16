@@ -2,7 +2,7 @@
 // Trailer previews on Home (TRAILER_CONTRACT §6): the one YouTube player, the lifted trailer card, Tonight's reel and its feed.
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Play, Star, Volume2, VolumeX, X } from "lucide-react";
+import { Play, Star, Volume2, VolumeX } from "lucide-react";
 import { Chips, FavButton, pill } from "@/components/app";
 import { get, watchHref, type CardData } from "@/lib/core";
 import { keyOf, loadYT, PeekCtx, trailerOf, useOverlayHold, usePreviewGate, type TKey, type Trailer } from "@/lib/trailer";
@@ -181,91 +181,4 @@ function PeekCard({ c, r, hold, close }: PeekAt & { close: () => void }) {
     </div>
   );
   return hold ? <div className="fixed inset-0 z-50 grid place-items-center bg-dusk/60 p-4 backdrop-blur-md" onClickCapture={swallow} onClick={(e) => e.target === e.currentTarget && close()}>{card}</div> : card;
-}
-
-type Pick = { c: CardData; t: Trailer };
-/** Tonight's reel: spinning reels from Top picks that have a trailer (hidden under 3); tap one for the full-screen feed. Watched reels go grey and still. */
-export function TonightsReel({ picks }: { picks: CardData[] }) {
-  const gate = usePreviewGate(), [ok, setOk] = useState<Pick[]>([]), [at, setAt] = useState<number | null>(null), [seen, setSeen] = useState<string[]>([]);
-  const list = picks.slice(0, 12), sig = list.map((c) => c.href).join();
-  useEffect(() => {
-    let live = true;
-    Promise.all(list.map((c) => trailerOf(keyOf(c)))).then((ts) => live && setOk(list.flatMap((c, i) => (ts[i]?.ytIds.length ? [{ c, t: ts[i]! }] : []))));
-    return () => { live = false; };
-  }, [sig]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (ok.length < 3 || !gate.demand) return null;
-  const go = (i: number) => { if (i >= ok.length) return setAt(null); const n = Math.max(0, i); setSeen((s) => [...s, ok[n].c.href]); setAt(n); };
-  return (
-    <>
-      <section aria-label="Tonight's reel" className="no-scrollbar flex gap-3 overflow-x-auto px-4 pb-4 md:px-10">
-        {ok.map(({ c }, i) => {
-          const done = seen.includes(c.href);
-          return (
-            <button key={c.href} type="button" onClick={() => go(i)} aria-label={`${c.title} trailer`} className="group grid w-[72px] flex-none justify-items-center gap-1.5 text-center text-[11px] leading-tight font-medium text-foreground/72">
-              <span className={cn("reel-disc", done && "seen")}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={c.poster} alt="" referrerPolicy="no-referrer" />
-              </span>
-              <span className="line-clamp-2">{c.title}</span>
-            </button>
-          );
-        })}
-      </section>
-      {at !== null && <Feed key={at} items={ok} i={at} go={go} close={() => setAt(null)} />}
-    </>
-  );
-}
-
-/** The full-screen feed: ↑/↓ or j/k (or swipe, or the wheel) move, M toggles sound, Esc closes; each trailer runs to its end, then the next starts. */
-function Feed({ items, i, go, close }: { items: Pick[]; i: number; go: (i: number) => void; close: () => void }) {
-  useOverlayHold(true);
-  const { c, t } = items[i], about = useAbout(c), [sound, setSound] = useState(false), [prog, setProg] = useState(0);
-  const y = useRef<number | null>(null), wheel = useRef(0);
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase();
-      if (k === "escape") close();
-      else if (k === "arrowdown" || k === "j") { e.preventDefault(); go(i + 1); }
-      else if (k === "arrowup" || k === "k") { e.preventDefault(); go(i - 1); }
-      else if (k === "m") setSound((s) => !s);
-    };
-    const o = document.body.style.overflow;
-    document.body.style.overflow = "hidden"; addEventListener("keydown", key);
-    return () => { document.body.style.overflow = o; removeEventListener("keydown", key); };
-  }, [i, go, close]);
-  const next = items[i + 1]?.c.title;
-  return (
-    <div role="dialog" aria-modal aria-label="Tonight's reel" className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-dusk"
-      onPointerDown={(e) => (y.current = e.clientY)} onPointerUp={(e) => { if (y.current !== null && Math.abs(y.current - e.clientY) > 40) go(i + (y.current > e.clientY ? 1 : -1)); y.current = null; }}
-      onWheel={(e) => { const n = Date.now(); if (Math.abs(e.deltaY) > 30 && n - wheel.current > 700) { wheel.current = n; go(i + Math.sign(e.deltaY)); } }}>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={t.backdrops[0] ?? c.poster} alt="" referrerPolicy="no-referrer" className="absolute -inset-10 size-[calc(100%+80px)] scale-110 object-cover blur-[28px] brightness-[.45]" />
-      <div className="relative z-10 grid gap-3 px-3.5 pt-[max(env(safe-area-inset-top),14px)] md:px-10">
-        <div className="flex gap-1">
-          {items.map((x, k) => <i key={x.c.href} className="h-[3px] flex-1 overflow-hidden rounded-full bg-white/25"><b className="block h-full bg-foreground" style={{ width: `${k < i ? 100 : k === i ? prog * 100 : 0}%` }} /></i>)}
-        </div>
-        <div className="flex justify-between">
-          <button type="button" aria-label="Close" onClick={close} className="beam grid size-9 place-items-center rounded-full bg-dusk/55 backdrop-blur-md"><X className="size-4" /></button>
-          <SoundButton on={sound} set={setSound} />
-        </div>
-      </div>
-      {/* the trailer takes whatever height is left, centred, 16:9 */}
-      <div className="relative grid min-h-0 flex-1 place-items-center py-4 [container-type:size] md:px-10">
-        <div className="relative aspect-video w-[min(100cqw,1100px,177.78cqh)] overflow-hidden bg-dusk md:rounded-[18px]">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          {t.backdrops[0] && <img src={t.backdrops[0]} alt="" referrerPolicy="no-referrer" className="absolute inset-0 size-full object-cover" />}
-          <TrailerSurface t={t} playing sound={sound} onProgress={setProg} onEnded={() => go(i + 1)} />
-        </div>
-      </div>
-      <div className="relative z-10 px-4 pb-[max(env(safe-area-inset-bottom),28px)] md:px-10" onPointerDown={(e) => e.stopPropagation()}>
-        <div className="mx-auto grid max-w-3xl gap-2.5">
-          <span className="text-xs text-foreground/52">{next ? `Next: ${next}` : "Last one tonight"}<span className="hidden md:inline">. Use ↑ and ↓ to move, M for sound, Esc to close.</span></span>
-          <Logo src={t.logo} title={c.title} className="h-13 max-w-[240px] object-left md:h-16" fallback={<p className="font-display text-2xl leading-tight font-bold">{c.title}</p>} />
-          <Meta rating={about.rating ?? c.rating} year={about.year} genres={about.genres ?? c.genres} />
-          {about.desc && <p className="line-clamp-2 text-sm leading-relaxed text-foreground/72">{about.desc}</p>}
-          <div className="flex flex-wrap gap-2"><Link href={playHref(c)} className={cn(pill.primary, "flex-1 md:flex-none")}><Play className="fill-current" />Play</Link><FavButton c={c} /></div>
-        </div>
-      </div>
-    </div>
-  );
 }

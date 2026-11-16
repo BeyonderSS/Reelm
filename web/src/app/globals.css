@@ -301,10 +301,3 @@ textarea.giant:focus-visible { outline: none; }
 @keyframes trace { to { stroke-dashoffset: 0; } }
 @keyframes peek-in { from { opacity: 0.4; transform: scale(0.6); } }
 .peek-in { animation: peek-in 340ms var(--ease-dusk); }
-/* Tonight's reel: a spinning reel with a sprocket ring; grey and still once seen */
-.reel-disc { width: 66px; height: 66px; border-radius: 50%; padding: 3px; background: repeating-conic-gradient(#f2b45a 0 13deg, transparent 13deg 22deg); animation: spin 10s linear infinite; }
-.reel-disc img { display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; border: 2.5px solid #15171f; animation: spin 10s linear infinite reverse; }
-.reel-disc.seen { background: repeating-conic-gradient(rgb(233 234 240 / 0.32) 0 13deg, transparent 13deg 22deg); animation: none; }
-.reel-disc.seen img { animation: none; }
-button:focus-visible > .reel-disc { outline: 2px solid #f2b45a; outline-offset: 2px; }
-@keyframes spin { to { transform: rotate(360deg); } }

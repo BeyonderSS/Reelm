@@ -3,13 +3,13 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { Info, Play } from "lucide-react";
 import { animeCard, ContinueStrip, Marquee, kidsOk, mediaCard, pill, Rail, Row, useContinue } from "@/components/app";
-import { Logo, Meta, PeekProvider, SoundButton, TonightsReel, TrailerSurface, useTrailer } from "@/components/trailers";
+import { Logo, Meta, PeekProvider, SoundButton, TrailerSurface, useTrailer } from "@/components/trailers";
 import { keyOf, useOverlayOpen, usePreviewGate } from "@/lib/trailer";
 import { audioLang, HomeRecs } from "@/components/home-recs";
 import { INDIAN } from "@/lib/recs-rank";
 import { ShimmerButton } from "@/components/ui/shimmer-button";
 import { useApi, useSession } from "@/lib/session";
-import { entryHref, entrySub, shows, syncFavs, watchHref, type CardData, type Entry } from "@/lib/core";
+import { entryHref, entrySub, shows, syncFavs, watchHref, type Entry } from "@/lib/core";
 import { cn } from "@/lib/utils";
 import { useRouter } from "next/navigation";
 
@@ -133,7 +133,7 @@ export default function HomePage() {
   const ind = useApi<{ country: string; rows: { title: string; items: any[] }[] }>(sh("movies") || sh("series") ? "india" : null);
   const [lang] = useState(audioLang); // "" on the server; only reorders rows that load client side
   const [cw, removeCw] = useContinue();
-  const [f, setF] = useState<Filter>("all"), [picks, setPicks] = useState<CardData[]>([]);
+  const [f, setF] = useState<Filter>("all");
   const k = s.profile?.kids;
   const is = (x: Filter) => f === "all" || f === x;
   // Indian rows lead for viewers in India or who chose an Indian audio language; otherwise they follow the Cinemeta rows
@@ -159,10 +159,9 @@ export default function HomePage() {
         {chips.map(([x, l]) => <button key={x} type="button" role="radio" aria-checked={f === x} onClick={() => setF(x)} className="opt flex-none">{l}</button>)}
         {sh("live") && <Link href="/live" className="opt flex-none">Live TV</Link>}
       </div>
-      <TonightsReel picks={picks} />
       {loading && !slides.length ? <div className="skel mx-4 h-[500px] rounded-[24px] md:mx-10 md:h-[min(620px,74vh)]" /> : slides.length ? <Hero slides={slides} /> : <div className="h-8" />}
       <div className="relative z-10 mt-6 md:mt-8"><ContinueStrip items={cw} onRemove={removeCw} /></div>
-      {f === "all" ? <HomeRecs onTop={setPicks} /> : null}
+      {f === "all" ? <HomeRecs /> : null}
       {indiaFirst && indian}
       {sh("anime") && is("anime") && <Row title="Trending anime" path="anime/home" map={(d) => d.trending.map(animeCard)} />}
       {sh("movies") && is("movies") && <Row title="Popular movies" path="movies/catalog?key=movie/top" map={(d) => d.map(mediaCard)} />}
