@@ -13,8 +13,11 @@ interface WatchHistoryDao {
     @Query("SELECT * FROM watch_history WHERE profileId = :profileId AND deleted = 0 ORDER BY lastWatchedTimestamp DESC")
     fun getAll(profileId: String): Flow<List<WatchHistoryEntity>>
 
-    /** movies (media rows with lastEpisodeWatched = 0) qualify until they're 95% watched */
-    @Query("SELECT * FROM watch_history WHERE profileId = :profileId AND deleted = 0 AND (lastEpisodeWatched > 0 OR (kind = 'media' AND watchProgress < 0.95)) AND (:kind IS NULL OR kind = :kind) ORDER BY lastWatchedTimestamp DESC")
+    /**
+     * Movies (media rows with lastEpisodeWatched = 0) qualify until finished: 95%, or 90% with ≤ 10 min left, since long
+     * end credits left The Dark Knight at 94.96%. Same rule as the web's `finished` (web/src/lib/eps.ts).
+     */
+    @Query("SELECT * FROM watch_history WHERE profileId = :profileId AND deleted = 0 AND (lastEpisodeWatched > 0 OR (kind = 'media' AND watchProgress < 0.95 AND NOT (watchProgress >= 0.9 AND durationMs > 1200000 AND (1 - watchProgress) * durationMs <= 600000))) AND (:kind IS NULL OR kind = :kind) ORDER BY lastWatchedTimestamp DESC")
     fun getContinueWatching(profileId: String, kind: String? = null): Flow<List<WatchHistoryEntity>>
 
     @Query("SELECT * FROM watch_history WHERE animeSlug = :slug AND profileId = :profileId AND deleted = 0")

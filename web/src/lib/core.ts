@@ -1,4 +1,4 @@
-import { epsKey, frac, mergeEps, type Eps } from "./eps";
+import { epsKey, finished, frac, mergeEps, type Eps } from "./eps";
 export const API = process.env.NEXT_PUBLIC_REELM_API_URL || "https://reelm-api.ssbeyonder.workers.dev";
 export const WS = API.replace(/^http/, "ws");
 
@@ -204,7 +204,7 @@ export function continueWatching(pid: string): Entry[] {
   const seen = new Set<string>();
   return Object.values(getHistory(pid)).filter((e) => !e.deleted && e.payload.kind !== "live").sort((a, b) => b.updatedAt - a.updatedAt)
     .filter((e) => { const s = `${e.payload.kind}:${e.payload.id}`; return !seen.has(s) && !!seen.add(s); })
-    .filter((e) => !e.duration || frac(e.position, e.duration) < 0.95);
+    .filter((e) => !e.duration || !finished(e.position, e.duration, !e.payload.episode));
 }
 const push = (pid: string, token: string | undefined, entries: Entry[]) => token && entries.length
   ? Promise.all(Array.from({ length: Math.ceil(entries.length / 100) }, (_, i) => reelm(`/v1/profiles/${pid}/history`, { method: "PUT", token, json: { entries: entries.slice(i * 100, i * 100 + 100) } }))).catch(() => {})

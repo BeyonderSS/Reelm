@@ -310,7 +310,9 @@ function Player() {
   // pull what other devices watched so a later save compares against it
   useEffect(() => { if (s.token) syncHistory(pid, s.token).catch(() => {}); }, [pid, s.token]);
   // progress: every 10 s and on leave
-  const save = useCallback(() => { const v = video.current; if (p && v && v.currentTime > 5 && isFinite(v.duration)) saveProgress(pid, s.token, p, v.currentTime, v.duration); }, [p, pid, s.token]);
+  // reaching the end credits finishes the title, however long they run
+  const creditsAt = skips.find((k) => k.type === "ed")?.s;
+  const save = useCallback(() => { const v = video.current; if (p && v && v.currentTime > 5 && isFinite(v.duration)) saveProgress(pid, s.token, p, creditsAt != null && v.currentTime >= creditsAt ? v.duration : v.currentTime, v.duration); }, [p, pid, s.token, creditsAt]);
   useEffect(() => { const i = setInterval(save, 10000); return () => { clearInterval(i); save(); }; }, [save]);
 
   // watch together

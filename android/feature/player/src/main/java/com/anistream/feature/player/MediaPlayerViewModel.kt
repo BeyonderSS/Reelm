@@ -604,7 +604,10 @@ class MediaPlayerViewModel @Inject constructor(
     private fun saveProgress(push: Boolean = false) {
         val duration = player.duration
         if (_uiState.value.isLoading || duration == C.TIME_UNSET || duration <= 0) return
-        persist((player.currentPosition.toFloat() / duration).coerceIn(0f, 1f), push, duration)
+        // reaching the end credits finishes the title, however long they run
+        val credits = _uiState.value.skips.firstOrNull { it.isCredits }?.startMs
+        val pos = player.currentPosition
+        persist(if (credits != null && pos >= credits) 1f else (pos.toFloat() / duration).coerceIn(0f, 1f), push, duration)
     }
 
     // outlives viewModelScope so the final save in onCleared still lands

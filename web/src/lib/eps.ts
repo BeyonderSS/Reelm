@@ -19,3 +19,10 @@ export function mergeEps(a?: Eps, b?: Eps): Eps {
 
 /** Progress as a 0..1 fraction. Entries hold seconds (web) or permille of 1000 (apps); only the ratio is meaningful. */
 export const frac = (position: number, duration: number) => (duration > 0 ? Math.min(1, Math.max(0, position / duration)) : 0);
+
+/**
+ * Done watching: 95%, or for a film 90% with ≤ 10 min left (long end credits left The Dark Knight at 94.96%).
+ * Same rule as the apps' WatchHistoryDao. Durations ≤ 20 min skip the minutes test (older rows hold permille of 1000).
+ */
+export const finished = (pos: number, dur: number, film = false) =>
+  frac(pos, dur) >= 0.95 || (film && dur > 1200 && frac(pos, dur) >= 0.9 && dur - pos <= 600);
