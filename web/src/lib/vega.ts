@@ -88,6 +88,8 @@ export function pickQualities(ll: Link[]) {
 }
 /** Provider "streams" that are really player configs or pages (autoEmbed hands back config-*.json); some hosts serve them as octet-stream. */
 export const NOT_MEDIA = /\.(json|txt|xml)(\?|#|$)/i;
+/** Trial clips a provider labels itself (castle: "… - 1080p - preview"): a few minutes, not the film. Same as Android's VegaPick. */
+export const TRIAL = /\b(preview|sample)\b/i;
 export const pickEpisode = (eps: { title: string; link: string }[], e: number) =>
   eps.find((x) => { const m = x.title.match(/(?:^|[^a-z])E0*(\d+)\b|\bepisode[\s._-]*0*(\d+)\b|^\s*0*(\d+)\b/i); return m && +(m[1] ?? m[2] ?? m[3]) === e; }) ?? eps.filter((x) => !/\bpack\b/i.test(x.title))[e - 1]; // "Episode-01 2.9 GB" (4khdhub); a lone "Season Pack" is no episode
 
@@ -179,7 +181,7 @@ async function resolve(base: string, p: string, r: Req, ctx: any, f: F, at: (s: 
     const list = ((await stream.getStream({ link, type: m?.type ?? t, signal: sig, providerContext: ctx, isDownload: false })) as any[]) ?? [];
     console.debug(`[vega] ${p} ${l.title.slice(0, 30)}: ${list.length} files from ${link.slice(0, 80)}`, list.map((s) => `${s.server} ${String(s.link).slice(8, 50)}`));
     for (const s of list) {
-      if (!/^https:/.test(s.link ?? "") || NOT_MEDIA.test(s.link)) continue;
+      if (!/^https:/.test(s.link ?? "") || NOT_MEDIA.test(s.link) || TRIAL.test(String(s.server ?? ""))) continue;
       const hls = s.type === "m3u8" || /\.m3u8(\?|$)/.test(s.link);
       if (hls && !helperCors()) continue; // hls.js needs CORS from every host: Helper 1.3+
       const hd = s.headers ?? {};

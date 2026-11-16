@@ -374,8 +374,12 @@ internal object VegaPick {
     /** Player configs or pages handed back as "streams" (autoEmbed's config-*.json), sometimes served as octet-stream. */
     private val NOT_MEDIA = Regex("\\.(json|txt|xml)([?#]|$)", RegexOption.IGNORE_CASE)
 
+    /** Trial clips a provider labels itself (castle: "… - 1080p - preview"): a few minutes, not the film. Same as web's vega.ts. */
+    private val TRIAL = Regex("\\b(preview|sample)\\b", RegexOption.IGNORE_CASE)
+
     fun toStream(s: JsonObject, entry: JsonObject, provider: String): MediaStream? {
         val url = s.str("link").takeIf { it.startsWith("http") && !NOT_MEDIA.containsMatchIn(it) } ?: return null
+        if (TRIAL.containsMatchIn(s.str("server"))) return null
         val type = s.str("type").lowercase()
         val m3u8 = type == "m3u8" || url.substringBefore('?').endsWith(".m3u8")
         val h = s.str("quality").let { q -> q.toIntOrNull()?.takeIf { it in 144..4320 } ?: Stremio.parseHeight(q) }

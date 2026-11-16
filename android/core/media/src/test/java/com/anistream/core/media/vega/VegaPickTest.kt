@@ -87,4 +87,12 @@ class VegaPickTest {
         assertEquals("Kill Bill: Vol. 2 (2004)", pick("Kill Bill: Vol. 2", 2004, "Kill Bill: Vol. 1 (2003)", "Kill Bill: Vol. 2 (2004)"))
         assertEquals("Ocean's Eleven (2001)", pick("Ocean's Eleven", null, "Ocean's Twelve (2004)", "Ocean's Eleven (2001)"))
     }
+
+    @Test
+    fun dropsTrialClips() {
+        val entry = o("""{"title":"1080p"}""")
+        // castle labels the few-minute trial file "… - preview"; Gangs of Wasseypur auto-played one on the web
+        assertNull(VegaPick.toStream(o("""{"server":"Gangs of Wasseypur - Hindi - 1080p - preview","link":"https://x.y/v.mp4","quality":"1080"}"""), entry, "Castle"))
+        assertEquals(1080, VegaPick.toStream(o("""{"server":"Gangs of Wasseypur - Hindi - 1080p","link":"https://x.y/v.mp4","quality":"1080"}"""), entry, "Castle")?.height)
+    }
 }

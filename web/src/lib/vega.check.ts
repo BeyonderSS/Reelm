@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { makeAxios, makeFetch, pickSeason, pickQualities, pickEpisode, NOT_MEDIA, kindOf, casesFor, checkProvider, order, enough, tripped, nextBreaker, fanOut } from "./vega.ts";
+import { makeAxios, makeFetch, pickSeason, pickQualities, pickEpisode, NOT_MEDIA, TRIAL, kindOf, casesFor, checkProvider, order, enough, tripped, nextBreaker, fanOut } from "./vega.ts";
 assert.ok(NOT_MEDIA.test("https://x.y/config-ab12.json") && !NOT_MEDIA.test("https://x.y/f.mkv?t=1") && !NOT_MEDIA.test("https://pixeldrain.com/api/file/abc"));
+assert.ok(TRIAL.test("Gangs of Wasseypur - Hindi - 1080p - preview") && !TRIAL.test("Gangs of Wasseypur - Hindi - 1080p") && !TRIAL.test("Dhurandhar - Hindi, Tamil, Telugu - 720p")); // castle trial clips
 const R = (status: number, url: string, text = "", headers = {}) => ({ status, url, text, headers });
 const calls: any[] = [];
 const f = async (u: string, o: any = {}) => { calls.push([u, o]);
