@@ -73,4 +73,18 @@ class VegaPickTest {
         assertEquals("anime", VegaSources.kindOf("anikoto", "anime"))
         assertEquals("global", VegaSources.kindOf("vega", null))
     }
+
+    @Test
+    fun sequelNumbersMustMatch() {
+        fun pick(title: String, year: Int?, vararg posts: String) =
+            VegaPick.post(title, year, false, 1, posts.map { o("""{"title":"$it","link":"x"}""") })?.t()
+        // no year: "Part Two" used to win for "Part One" (TV played Dune: Part Two for Dune: Part One)
+        assertNull(pick("Dune: Part One", null, "Dune: Part Two (2024) 4K HDR", "Dune Part 2 (2024) 1080p"))
+        assertEquals("Dune (2021) 1080p", pick("Dune: Part One", null, "Dune: Part Two (2024) 4K HDR", "Dune (2021) 1080p"))
+        assertNull(pick("Dune", null, "Dune: Part Two (2024)"))
+        assertNull(pick("Toy Story 3", null, "Toy Story 4 (2019) BluRay"))
+        assertEquals("X-Men 2 (2003) DD 5.1", pick("X-Men 2", null, "X-Men 2 (2003) DD 5.1"))
+        assertEquals("Kill Bill: Vol. 2 (2004)", pick("Kill Bill: Vol. 2", 2004, "Kill Bill: Vol. 1 (2003)", "Kill Bill: Vol. 2 (2004)"))
+        assertEquals("Ocean's Eleven (2001)", pick("Ocean's Eleven", null, "Ocean's Twelve (2004)", "Ocean's Eleven (2001)"))
+    }
 }

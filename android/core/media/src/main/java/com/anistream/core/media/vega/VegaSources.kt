@@ -319,7 +319,7 @@ internal object VegaPick {
 
     fun post(title: String, year: Int?, series: Boolean, season: Int, posts: List<JsonObject>): JsonObject? = posts
         .map { it to cleanTitle(it.str("title")) }
-        .filter { (_, clean) -> clean.isNotEmpty() && minOf(titleScore(title, clean), titleScore(clean, title)) >= 0.6 }
+        .filter { (_, clean) -> clean.isNotEmpty() && minOf(titleScore(title, clean), titleScore(clean, title)) >= 0.6 && sequel(clean) == sequel(title) }
         .filter { (p, _) ->
             val t = p.str("title")
             val y = postYear(p)
@@ -331,6 +331,18 @@ internal object VegaPick {
             titleScore(title, clean) + titleScore(clean, title) + (if (series && season in seasons(p.str("title"))) 0.5 else 0.0) +
                 (if (sameYear) 0.25 else 0.0)
         }?.first
+
+    private val SEQUEL_WORDS = listOf("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve")
+        .withIndex().associate { (i, w) -> w to i + 1 } +
+        listOf("first", "second", "third", "fourth", "fifth").withIndex().associate { (i, w) -> w to i + 1 } +
+        listOf("ii", "iii", "iv", "v", "vi", "vii", "viii", "ix").withIndex().associate { (i, w) -> w to i + 2 }
+
+    /**
+     * Which instalment a title names ("Part Two", "3", "Vol. 2", "III"); 1 when it names none. Title similarity alone
+     * let "Dune: Part Two" stand in for "Dune: Part One" when the year was unknown. Lone "i"/"x" aren't counted (X-Men).
+     */
+    fun sequel(t: String): Int = t.lowercase().split(Regex("[^\\p{L}\\p{N}]+"))
+        .firstNotNullOfOrNull { SEQUEL_WORDS[it] ?: it.toIntOrNull()?.takeIf { n -> n in 2..99 } } ?: 1
 
     /** Year in the post's title, else its tag when that is a bare year (NetMirror). */
     private fun postYear(p: JsonObject) = (YEAR.find(p.str("title")) ?: YEAR.matchEntire(p.str("tag").trim()))?.value?.toInt()
