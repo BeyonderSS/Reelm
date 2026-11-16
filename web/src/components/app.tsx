@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { motion } from "motion/react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { X, Search, Tv, Library, CalendarDays, Home, Play, Heart, ChevronLeft, ChevronRight, Star, Users, Popcorn, LogOut, ShieldCheck } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { BlurFade } from "@/components/ui/blur-fade";
@@ -11,6 +11,7 @@ import { TvBar } from "@/components/play-on-tv";
 import { frac } from "@/lib/eps";
 import { avatarUrl, cardShown, continueWatching, KINDS, kindOf, shows, type Kind, type Profile, EMOJI_GROUPS, entryHref, entrySub, getFavs, kids, syncFavs, recSeeds, removeHistory, syncHistory, toggleFav, type CardData, type Entry } from "@/lib/core";
 import { useApi, useSession } from "@/lib/session";
+import { PeekCtx, setPreviewMode, usePreviewMode, type PreviewMode } from "@/lib/trailer";
 import { cn } from "@/lib/utils";
 
 /** Link/button looks (a Link must not wrap a <button>). */
@@ -112,6 +113,7 @@ export function Nav() {
               <div className="flex items-center gap-3 px-3 py-3"><Avatar id={s.profile!.avatar} size={44} /><div className="min-w-0"><p className="truncate font-semibold">{s.profile!.name}</p><p className="truncate text-xs text-foreground/52">{s.user ? `@${s.user.username}` : "Guest, history stays in this browser"}</p></div></div>
               <div className="my-1 h-px bg-white/8" />
               <WhatYouWatch compact hide={s.profile!.hide ?? []} onChange={(h) => setHide(h).catch(() => {})} />
+              <PreviewTrailers />
               <div className="my-1 h-px bg-white/8" />
               <Link role="menuitem" href="/profiles" className={item}><Users className="size-4 text-foreground/60" />Switch profile</Link>
               <form className="px-3 py-2" onSubmit={(e) => { e.preventDefault(); const c = code.trim().toUpperCase(); if (c) router.push(`/watch?room=${encodeURIComponent(c)}`); }}>
@@ -131,6 +133,19 @@ export function Nav() {
         </div>
       </div>
     </header>
+  );
+}
+
+/** "Preview trailers" (TRAILER_CONTRACT §6): On / Wi-Fi only / Off, per browser. Wi-Fi only treats Data Saver or a cellular connection as Off. */
+function PreviewTrailers() {
+  const mode = usePreviewMode();
+  return (
+    <div className="px-3 py-2">
+      <p className="mb-2 text-sm font-medium">Preview trailers</p>
+      <div role="radiogroup" aria-label="Preview trailers" className="seg">
+        {([["on", "On"], ["wifi", "Wi-Fi only"], ["off", "Off"]] as [PreviewMode, string][]).map(([v, l]) => <button key={v} type="button" role="radio" aria-checked={mode === v} onClick={() => setPreviewMode(v)}>{l}</button>)}
+      </div>
+    </div>
   );
 }
 
@@ -172,12 +187,36 @@ const Img = ({ src, className }: { src?: string; className?: string }) => {
   return src && ok ? <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setOk(false)} className={className} /> : <div className={cn("grid place-items-center bg-gradient-to-br from-haze to-slate", className)}><ReelMark className="size-8 opacity-30" /></div>;
 };
 
+/** Pointer handlers for Home's trailer card (PeekCtx): a mouse resting 600 ms, or a touch held 380 ms while an amber line traces the poster. */
+function usePeek(c: CardData) {
+  const peek = useContext(PeekCtx), [holding, setHolding] = useState(false), timer = useRef(0), held = useRef(false);
+  if (!peek) return { holding: false, on: false, props: {} };
+  const cancel = () => { clearTimeout(timer.current); setHolding(false); };
+  return {
+    holding, on: true,
+    props: {
+      onPointerEnter: (e: React.PointerEvent<HTMLElement>) => { if (e.pointerType !== "mouse") return; const el = e.currentTarget; clearTimeout(timer.current); timer.current = window.setTimeout(() => peek(c, el, false), 600); },
+      onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
+        if (e.pointerType === "mouse") return;
+        const el = e.currentTarget; held.current = false; setHolding(true);
+        timer.current = window.setTimeout(() => { setHolding(false); held.current = true; peek(c, el, true); }, 380);
+      },
+      onPointerUp: cancel, onPointerCancel: cancel, onPointerLeave: cancel,
+      // a hold is not a tap: no navigation, no context menu
+      onClickCapture: (e: React.MouseEvent) => { if (held.current) { e.preventDefault(); e.stopPropagation(); held.current = false; } },
+      onContextMenu: (e: React.MouseEvent) => { if (held.current || holding) e.preventDefault(); },
+    },
+  };
+}
+
 export function PosterCard({ c, wide, fill }: { c: CardData; wide?: boolean; fill?: boolean }) {
+  const pk = usePeek(c);
   return (
-    <div className={cn("group/rm relative shrink-0 snap-start", fill ? "w-full" : wide ? "w-64 sm:w-72" : "w-32 sm:w-40 lg:w-44")}>
-    <Link href={c.href} className="group block w-full rounded-xl outline-none">
+    <div {...pk.props} className={cn("group/rm relative shrink-0 snap-start", fill ? "w-full" : wide ? "w-64 sm:w-72" : "w-32 sm:w-40 lg:w-44", pk.on && "[-webkit-touch-callout:none]")}>
+    <Link href={c.href} className={cn("group block w-full rounded-xl outline-none transition-transform duration-200 ease-dusk", pk.holding && "scale-95")}>
       <div className={cn("beam relative overflow-hidden rounded-xl bg-slate shadow-[0_8px_24px_rgb(10_12_18/0.5)] outline-offset-3 group-hover:outline-2 group-hover:outline-primary group-focus-visible:outline-2 group-focus-visible:outline-primary", wide ? "aspect-video" : "aspect-[2/3]")}>
         <Img src={c.poster} className="size-full object-cover transition-transform duration-500 ease-dusk group-hover:scale-[1.06]" />
+        {pk.on && <svg aria-hidden data-on={pk.holding || undefined} className="hold-ring" viewBox="0 0 112 164" preserveAspectRatio="none"><rect x="1" y="1" width="110" height="162" rx="14" pathLength="100" /></svg>}
         {c.rating && <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-dusk/80 px-2 py-0.5 text-[11px] font-semibold backdrop-blur"><Star className="size-3 fill-primary text-primary" />{c.rating}</span>}
         {/* hover preview: the lamp comes on over the poster */}
         <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-dusk via-dusk/60 to-transparent p-3 opacity-0 transition-opacity duration-300 group-hover:opacity-100 group-focus-visible:opacity-100">

@@ -36,7 +36,7 @@ function body(pid: string) {
 }
 
 /** "Top picks for you" plus up to two "Because you watched X" rows, cached per profile until history changes or 6 h pass. */
-export function HomeRecs() {
+export function HomeRecs({ onTop }: { onTop?: (top: CardData[]) => void } = {}) {
   const { s } = useSession(), p = s.profile;
   const c = useMemo(() => { try { return p ? JSON.parse(localStorage.getItem(`reelm.recs.${p.id}`) ?? "null") as { sig: string; at: number; items: Rec[] } | null : null; } catch { return null; } }, [p]);
   const [got, setGot] = useState<{ pid: string; items: Rec[] }>(), items = got && got.pid === p?.id ? got.items : c?.items ?? []; // stale picks while fresh ones load
@@ -76,6 +76,8 @@ export function HomeRecs() {
     rest.forEach((c) => used.add(c.href));
     because.push({ t, items: rest });
   }
+  const sig = top.map((c) => c.href).join();
+  useEffect(() => { onTop?.(top); }, [sig]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <>
       <Rail title="Top picks for you" items={top} />

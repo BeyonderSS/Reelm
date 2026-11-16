@@ -288,3 +288,23 @@ textarea.giant:focus-visible { outline: none; }
 .ticket .shade { position: absolute; inset: 0; background: linear-gradient(135deg, rgb(20 21 28 / 0.15), rgb(16 17 24 / 0.75)); }
 .track-bar { height: 4px; border-radius: 99px; background: rgb(236 234 242 / 0.16); overflow: hidden; }
 .track-bar > i { display: block; height: 100%; border-radius: 99px; background: #f2b45a; }
+
+/* ---- trailer previews (components/trailers.tsx) ---- */
+/* the YouTube iframe covers its box like object-fit: cover, then a little more, so YouTube's title bar and logo sit outside the frame */
+.yt { overflow: hidden; container-type: size; }
+.yt iframe { position: absolute; left: 50%; top: 50%; width: max(100cqw, 177.78cqh); height: max(100cqh, 56.25cqw); border: 0; transform: translate(-50%, -50%) scale(1.2); }
+/* hold to project: an amber line traces the poster's edge while the finger stays down */
+.hold-ring { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; pointer-events: none; opacity: 0; overflow: visible; }
+.hold-ring rect { fill: none; stroke: #f2b45a; stroke-width: 3; stroke-dasharray: 100; stroke-dashoffset: 100; }
+.hold-ring[data-on] { opacity: 1; }
+.hold-ring[data-on] rect { animation: trace 380ms linear forwards; }
+@keyframes trace { to { stroke-dashoffset: 0; } }
+@keyframes peek-in { from { opacity: 0.4; transform: scale(0.6); } }
+.peek-in { animation: peek-in 340ms var(--ease-dusk); }
+/* Tonight's reel: a spinning reel with a sprocket ring; grey and still once seen */
+.reel-disc { width: 66px; height: 66px; border-radius: 50%; padding: 3px; background: repeating-conic-gradient(#f2b45a 0 13deg, transparent 13deg 22deg); animation: spin 10s linear infinite; }
+.reel-disc img { display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; border: 2.5px solid #15171f; animation: spin 10s linear infinite reverse; }
+.reel-disc.seen { background: repeating-conic-gradient(rgb(233 234 240 / 0.32) 0 13deg, transparent 13deg 22deg); animation: none; }
+.reel-disc.seen img { animation: none; }
+button:focus-visible > .reel-disc { outline: 2px solid #f2b45a; outline-offset: 2px; }
+@keyframes spin { to { transform: rotate(360deg); } }
