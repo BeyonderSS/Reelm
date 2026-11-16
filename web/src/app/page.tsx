@@ -62,10 +62,10 @@ function Hero({ slides }: { slides: Slide[] }) {
     return () => clearTimeout(d);
   }, [cur.key, can]);
   useEffect(() => {
-    if (hold || go || slides.length < 2) return;
+    if (hold || go || over || slides.length < 2) return;
     const t = setTimeout(() => setI((x) => (x + 1) % slides.length), SLIDE_MS);
     return () => clearTimeout(t);
-  }, [i, hold, go, slides.length]);
+  }, [i, hold, go, over, slides.length]);
   const desc = cur.desc ?? detail?.synopsis, art = t?.backdrops[0] ?? cur.backdrop;
   return (
     <section aria-roledescription="carousel" aria-label="Featured" onMouseEnter={() => setHold(true)} onMouseLeave={() => setHold(false)} onFocus={() => setHold(true)} onBlur={() => setHold(false)}
@@ -109,7 +109,7 @@ function Hero({ slides }: { slides: Slide[] }) {
                 <button key={sl.key} role="tab" aria-selected={k === i % slides.length} aria-label={sl.title} onClick={() => setI(k)} className="group h-6 flex-1 py-2.5">
                   <span className="block h-1 overflow-hidden rounded-full bg-white/20 group-hover:bg-white/35">
                     {k < i % slides.length && <span className="block h-full bg-foreground/70" />}
-                    {k === i % slides.length && <span className="block h-full origin-left bg-primary" style={{ animation: `fill ${SLIDE_MS}ms linear`, animationPlayState: hold || go ? "paused" : "running" }} />}
+                    {k === i % slides.length && <span className="block h-full origin-left bg-primary" style={{ animation: `fill ${SLIDE_MS}ms linear`, animationPlayState: hold || go || over ? "paused" : "running" }} />}
                   </span>
                 </button>
               ))}

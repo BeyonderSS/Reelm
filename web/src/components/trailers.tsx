@@ -21,10 +21,13 @@ export function useTrailer(k?: TKey | null) {
   return got?.sig === sig ? got.t : undefined;
 }
 
+// YouTube shows its title bar, logo and a pause bezel for about 3 s after a video starts, even with controls=0, and no crop hides
+// them in a 16:9 box; the art stays up until they're gone.
+const CHROME_MS = 3000;
 // One player page-wide: a surface that starts stops whichever one was playing.
 let active: (() => void) | null = null;
 
-/** Muted YouTube trailer filling its parent. Invisible until PLAYING, then fades in; walks ytIds past dead/blocked ones;
+/** Muted YouTube trailer filling its parent. Invisible until PLAYING (and YouTube's start-up chrome has gone), then fades in; walks ytIds past dead/blocked ones;
  *  stops at 30 s or the end (no loop) and calls onEnded once. Cropped a little so YouTube's title bar and logo stay out of frame. */
 export function TrailerSurface({ t, playing, sound, onLive, onProgress, onEnded }: {
   t: Trailer; playing: boolean; sound: boolean; onLive?: (b: boolean) => void; onProgress?: (f: number) => void; onEnded?: () => void;
@@ -35,11 +38,11 @@ export function TrailerSurface({ t, playing, sound, onLive, onProgress, onEnded 
   useEffect(() => {
     const el = host.current;
     if (!playing || !t.ytIds.length || !el) return;
-    let dead = false, i = 0, tick = 0;
+    let dead = false, i = 0, tick = 0, reveal = 0;
     const shown = (b: boolean) => { setLive(b); cb.current.onLive?.(b); };
     const stop = () => {
       if (dead) return;
-      dead = true; clearInterval(tick);
+      dead = true; clearInterval(tick); clearTimeout(reveal);
       try { player.current?.destroy(); } catch {}
       player.current = null; el.replaceChildren(); delete el.dataset.state; shown(false);
       if (active === stop) active = null;
@@ -56,7 +59,7 @@ export function TrailerSurface({ t, playing, sound, onLive, onProgress, onEnded 
           playerVars: { autoplay: 1, mute: 1, controls: 0, playsinline: 1, rel: 0, start: t.startAt, enablejsapi: 1, disablekb: 1, fs: 0, iv_load_policy: 3, origin: location.origin },
           events: {
             onReady: (e: any) => { if (dead) return; if (cb.current.sound) e.target.unMute(); else e.target.mute(); e.target.playVideo(); },
-            onStateChange: (e: any) => { if (dead) return; el.dataset.state = String(e.data); if (e.data === 1) shown(true); else if (e.data === 0) end(); },
+            onStateChange: (e: any) => { if (dead) return; el.dataset.state = String(e.data); if (e.data === 1 && !reveal) reveal = window.setTimeout(() => shown(true), CHROME_MS); else if (e.data === 0) end(); },
             // 100 removed, 101/150 embedding blocked, 2/5 bad id or player: try the next id
             onError: (e: any) => {
               if (dead) return;
@@ -140,6 +143,10 @@ function PeekCard({ c, r, hold, close }: PeekAt & { close: () => void }) {
     const w = Math.min(innerWidth - 32, Math.max(380, r.width * 2.2)), h = w * 0.5625 + 230;
     return { width: w, left: Math.min(innerWidth - w - 16, Math.max(16, r.left + r.width / 2 - w / 2)), top: Math.min(innerHeight - h - 16, Math.max(16, r.top + r.height / 2 - h / 2)) };
   });
+  // the finger that held the poster lifts over the card: that lift's click is not a tap on Play
+  const up = useRef(0);
+  useEffect(() => { const f = () => (up.current = Date.now()); addEventListener("pointerup", f, { once: true }); return () => removeEventListener("pointerup", f); }, []);
+  const swallow = (e: React.MouseEvent) => { if (hold && (!up.current || Date.now() - up.current < 400)) { e.preventDefault(); e.stopPropagation(); } };
   useEffect(() => {
     const key = (e: KeyboardEvent) => e.key === "Escape" && close();
     // hover card: leaving both the card and the poster under it closes it, and so does scrolling
@@ -173,7 +180,7 @@ function PeekCard({ c, r, hold, close }: PeekAt & { close: () => void }) {
       </div>
     </div>
   );
-  return hold ? <div className="fixed inset-0 z-50 grid place-items-center bg-dusk/60 p-4 backdrop-blur-md" onClick={(e) => e.target === e.currentTarget && close()}>{card}</div> : card;
+  return hold ? <div className="fixed inset-0 z-50 grid place-items-center bg-dusk/60 p-4 backdrop-blur-md" onClickCapture={swallow} onClick={(e) => e.target === e.currentTarget && close()}>{card}</div> : card;
 }
 
 type Pick = { c: CardData; t: Trailer };
@@ -228,22 +235,29 @@ function Feed({ items, i, go, close }: { items: Pick[]; i: number; go: (i: numbe
   }, [i, go, close]);
   const next = items[i + 1]?.c.title;
   return (
-    <div role="dialog" aria-modal aria-label="Tonight's reel" className="fixed inset-0 z-50 overflow-hidden bg-dusk"
+    <div role="dialog" aria-modal aria-label="Tonight's reel" className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-dusk"
       onPointerDown={(e) => (y.current = e.clientY)} onPointerUp={(e) => { if (y.current !== null && Math.abs(y.current - e.clientY) > 40) go(i + (y.current > e.clientY ? 1 : -1)); y.current = null; }}
       onWheel={(e) => { const n = Date.now(); if (Math.abs(e.deltaY) > 30 && n - wheel.current > 700) { wheel.current = n; go(i + Math.sign(e.deltaY)); } }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={t.backdrops[0] ?? c.poster} alt="" referrerPolicy="no-referrer" className="absolute -inset-10 size-[calc(100%+80px)] scale-110 object-cover blur-[28px] brightness-[.45]" />
-      <div className="absolute top-1/2 left-1/2 aspect-video w-[min(100%,1100px,calc((100dvh-320px)*16/9))] -translate-x-1/2 -translate-y-[62%] overflow-hidden bg-dusk md:rounded-[18px]">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        {t.backdrops[0] && <img src={t.backdrops[0]} alt="" referrerPolicy="no-referrer" className="absolute inset-0 size-full object-cover" />}
-        <TrailerSurface t={t} playing sound={sound} onProgress={setProg} onEnded={() => go(i + 1)} />
+      <div className="relative z-10 grid gap-3 px-3.5 pt-[max(env(safe-area-inset-top),14px)] md:px-10">
+        <div className="flex gap-1">
+          {items.map((x, k) => <i key={x.c.href} className="h-[3px] flex-1 overflow-hidden rounded-full bg-white/25"><b className="block h-full bg-foreground" style={{ width: `${k < i ? 100 : k === i ? prog * 100 : 0}%` }} /></i>)}
+        </div>
+        <div className="flex justify-between">
+          <button type="button" aria-label="Close" onClick={close} className="beam grid size-9 place-items-center rounded-full bg-dusk/55 backdrop-blur-md"><X className="size-4" /></button>
+          <SoundButton on={sound} set={setSound} />
+        </div>
       </div>
-      <div className="absolute inset-x-3.5 top-[max(env(safe-area-inset-top),14px)] z-10 flex gap-1 md:inset-x-10">
-        {items.map((x, k) => <i key={x.c.href} className="h-[3px] flex-1 overflow-hidden rounded-full bg-white/25"><b className="block h-full bg-foreground" style={{ width: `${k < i ? 100 : k === i ? prog * 100 : 0}%` }} /></i>)}
+      {/* the trailer takes whatever height is left, centred, 16:9 */}
+      <div className="relative grid min-h-0 flex-1 place-items-center py-4 [container-type:size] md:px-10">
+        <div className="relative aspect-video w-[min(100cqw,1100px,177.78cqh)] overflow-hidden bg-dusk md:rounded-[18px]">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          {t.backdrops[0] && <img src={t.backdrops[0]} alt="" referrerPolicy="no-referrer" className="absolute inset-0 size-full object-cover" />}
+          <TrailerSurface t={t} playing sound={sound} onProgress={setProg} onEnded={() => go(i + 1)} />
+        </div>
       </div>
-      <button type="button" aria-label="Close" onClick={close} className="beam absolute top-[max(calc(env(safe-area-inset-top)+28px),42px)] left-3.5 z-10 grid size-9 place-items-center rounded-full bg-dusk/55 backdrop-blur-md md:left-10"><X className="size-4" /></button>
-      <SoundButton on={sound} set={setSound} className="absolute top-[max(calc(env(safe-area-inset-top)+28px),42px)] right-3.5 md:right-10" />
-      <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-dusk from-40% to-transparent px-4 pt-12 pb-[max(env(safe-area-inset-bottom),28px)] md:px-10" onPointerDown={(e) => e.stopPropagation()}>
+      <div className="relative z-10 px-4 pb-[max(env(safe-area-inset-bottom),28px)] md:px-10" onPointerDown={(e) => e.stopPropagation()}>
         <div className="mx-auto grid max-w-3xl gap-2.5">
           <span className="text-xs text-foreground/52">{next ? `Next: ${next}` : "Last one tonight"}<span className="hidden md:inline">. Use ↑ and ↓ to move, M for sound, Esc to close.</span></span>
           <Logo src={t.logo} title={c.title} className="h-13 max-w-[240px] object-left md:h-16" fallback={<p className="font-display text-2xl leading-tight font-bold">{c.title}</p>} />
