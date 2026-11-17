@@ -30,6 +30,7 @@ dependencies {
     implementation(project(":core:common"))
     implementation(project(":core:ui"))
     implementation(project(":core:trailer"))
+    implementation(project(":feature:movies"))
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

@@ -280,6 +280,8 @@ internal fun LivingHero(
         if (allowed) value = vm.trailer(cur.card, cur.media)
     }
     val dwell = key(cur.card.slug) { rememberDwell(allowed && settled && visible && !paused, DWELL_MS) }
+    // settled on a movie/series long enough to start its trailer: Watch is the likely next tap
+    LaunchedEffect(cur.card.slug, dwell) { if (dwell && cur.media) vm.prefetch(cur.card.slug) }
     var live by remember(cur.card.slug) { mutableStateOf(false) }
     var ended by remember(cur.card.slug) { mutableStateOf(false) }
     var sound by remember(cur.card.slug) { mutableStateOf(false) }

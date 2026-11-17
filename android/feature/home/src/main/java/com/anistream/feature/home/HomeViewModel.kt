@@ -99,6 +99,7 @@ class HomeViewModel @Inject constructor(
     private val history: com.anistream.domain.repository.WatchHistoryRepository,
     private val anime: AnidbRepository,
     val trailers: TrailerRepository,
+    private val playPrefetch: com.anistream.feature.movies.PlayPrefetch,
     recommendations: RecommendationsRepository,
     sync: HistorySync
 ) : ViewModel() {
@@ -172,6 +173,11 @@ class HomeViewModel @Inject constructor(
             ).getOrNull() ?: return@launch
             _uiState.update { it.copy(myList = if (added) it.myList + item.slug else it.myList - item.slug) }
         }
+    }
+
+    /** A movie/series the user is lingering on: warm the lookup its detail page's Play makes (once per title per 4 min). */
+    fun prefetch(mediaId: String) {
+        viewModelScope.launch { playPrefetch.title(mediaId) }
     }
 
     private val extras = ConcurrentHashMap<String, Deferred<TitleExtra?>>()

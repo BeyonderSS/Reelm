@@ -49,4 +49,6 @@ dependencies {
     implementation(libs.coroutines.android)
 
     implementation(libs.coil.compose)
+
+    testImplementation(libs.junit)
 }

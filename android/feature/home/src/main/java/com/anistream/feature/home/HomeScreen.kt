@@ -212,6 +212,9 @@ fun HomeScreen(
         mediaPicks.map { (t, l) -> t to l.filter { filter.keeps(true, it.type) } }.filter { it.second.isNotEmpty() }
     }
     val continueWatching = remember(uiState.continueWatching, filter) { uiState.continueWatching.filter(filter::keeps) }
+    // the likeliest next tap is the first Continue-watching card: warm its Play once Home has settled
+    val firstCw = continueWatching.firstOrNull()?.takeIf { it.kind == "media" }?.detailId
+    LaunchedEffect(firstCw) { if (firstCw != null) { kotlinx.coroutines.delay(1_500); viewModel.prefetch(firstCw) } }
 
     // Tonight's reel: Top picks (anime and Movies & TV interleaved); the hero's titles stand in until there are 3 picks
     val previewMode by viewModel.trailers.mode.collectAsStateWithLifecycle()

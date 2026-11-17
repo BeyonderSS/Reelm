@@ -144,6 +144,8 @@ data class TvItem(
     val onLongClick: (() -> Unit)? = null,
     /** what to look the trailer up by (Home previews); null = no preview */
     val trailer: com.anistream.core.trailer.TrailerKey? = null,
+    /** movie/series id its detail page opens with: a resting focus warms that page's Play (Home) */
+    val mediaId: String? = null,
     val onClick: () -> Unit
 )
 

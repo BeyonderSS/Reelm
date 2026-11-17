@@ -237,7 +237,7 @@ internal fun MarqueeDetail(
     wash: String?, poster: String?, title: String, meta: List<String>, synopsis: String?, note: String?,
     actions: @Composable RowScope.() -> Unit,
     seasons: List<Int>, season: Int, onSeason: (Int) -> Unit, seasonNote: String?,
-    stubs: List<Stub>, initial: Int, onStub: (Int) -> Unit,
+    stubs: List<Stub>, initial: Int, onStub: (Int) -> Unit, onStubFocus: (Int) -> Unit = {},
     below: (@Composable () -> Unit)? = null
 ) {
     val u = cqw()
@@ -287,7 +287,7 @@ internal fun MarqueeDetail(
             Spacer(Modifier.weight(1f))
             // the strip's row is taller than the black film (stubs pop out); the numerals sit on the film's top edge
             Box(Modifier.offset(y = u * 2.5f).zIndex(1f)) { Seasons(seasons, season, onSeason, seasonNote) }
-            if (stubs.isNotEmpty()) androidx.compose.runtime.key(season) { Strip(stubs, initial, rememberShowTint(poster), onStub) }
+            if (stubs.isNotEmpty()) androidx.compose.runtime.key(season) { Strip(stubs, initial, rememberShowTint(poster), onStub, onStubFocus) }
         }
         }
         if (below != null) Box(Modifier.onFocusChanged { f -> scope.launch { scroll.animateScrollTo(if (f.hasFocus) scroll.maxValue else 0) } }) { below() }
@@ -325,7 +325,7 @@ private fun Seasons(seasons: List<Int>, selected: Int, onSeason: (Int) -> Unit, 
 /** Black 35mm strip, tilted -1°, sprocket holes drawn once top and bottom; the row is taller than the strip so the focused stub pops out. */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-private fun Strip(stubs: List<Stub>, initial: Int, tint: Color, onStub: (Int) -> Unit) {
+private fun Strip(stubs: List<Stub>, initial: Int, tint: Color, onStub: (Int) -> Unit, onStubFocus: (Int) -> Unit) {
     val u = cqw()
     // the episode before the current one stays in view, as in the mockup
     val state = rememberLazyListState(initialFirstVisibleItemIndex = (initial - 1).coerceIn(0, stubs.size - 1))
@@ -350,7 +350,7 @@ private fun Strip(stubs: List<Stub>, initial: Int, tint: Color, onStub: (Int) ->
                 state = state, modifier = Modifier.fillMaxSize().focusRestorer { currentReq }.onFocusChanged { inStrip = it.hasFocus }, contentPadding = PaddingValues(horizontal = u * 7), horizontalArrangement = Arrangement.spacedBy(u * 1.3f),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                itemsIndexed(stubs, key = { _, s -> s.n }) { _, s -> StubCard(s, tint, lit = !inStrip && s.n == current, if (s.n == current) Modifier.focusRequester(currentReq) else Modifier) { onStub(s.n) } }
+                itemsIndexed(stubs, key = { _, s -> s.n }) { _, s -> StubCard(s, tint, lit = !inStrip && s.n == current, (if (s.n == current) Modifier.focusRequester(currentReq) else Modifier).onFocusChanged { if (it.hasFocus) onStubFocus(s.n) }) { onStub(s.n) } }
             }
         }
     }
