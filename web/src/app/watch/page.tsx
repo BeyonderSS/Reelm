@@ -1,8 +1,8 @@
 "use client";
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { selectControls, usePlayer } from "@videojs/react";
+import { selectControls, useMediaAttach, usePlayer } from "@videojs/react";
 import { HlsJsVideo } from "@videojs/react/media/hlsjs-video";
 import { Video, VideoPlayer, VideoSkin } from "@videojs/react/video";
 import "@videojs/react/video/skin.css";
@@ -17,10 +17,10 @@ import { get, getHistory, epKey, playKey, proxied, reelm, saveProgress, syncHist
 import { track } from "@/lib/telemetry";
 import { helperVega, helperVersion } from "@/lib/bridge";
 import { bitrate, dv, getBandwidth, getPin, pickStream, risky, saveBandwidth, setPin } from "@/lib/pick-stream";
-import { fallbackOrder, loadStats, qualities, recordStat, slowStart } from "@/lib/src-rank";
+import { fallbackOrder, langRank, loadStats, qualities, recordStat, slowStart } from "@/lib/src-rank";
 import { useApi, useSession } from "@/lib/session";
 import { languageName, trackLabel, useAudioTracks, useLibavAudio } from "@/lib/use-libav-audio";
-import { iso1 } from "@/lib/langs";
+import { iso1, origLangs } from "@/lib/langs";
 import { cn } from "@/lib/utils";
 type Source = { src: string; hls: boolean; label: string; codec?: string; dolby?: boolean; height?: number; langs?: string[] };
 type Sub = { url: string; label: string; lang: string; default?: boolean };
@@ -37,6 +37,8 @@ const pickFor = (all: Source[], lang: string, pin?: number) => {
 };
 const ALL_KEY = "reelm.allSources";
 const SLOW_SWITCH_MS = 6000;
+// 4K step-up: the 4K copy buffers this far ahead of the picture, and is given up after STEP_UP_MS
+const STEP_LEAD_S = 6, STEP_UP_MS = 30_000;
 /** AniSkip and TheIntroDB (same shape from /api/introdb); no end = the end of the video */
 const toSkips = (d: any): Skip[] => (d.results ?? []).map((x: any) => ({ s: x.interval.startTime, e: x.interval.endTime ?? Infinity, type: x.skipType }));
 const parse = (v: string | null) => { try { return toPlay(JSON.parse(v ?? "")); } catch { return null; } };
@@ -101,6 +103,13 @@ function SkipButton({ k, onSkip, children }: { k: string; onSkip: () => void; ch
   return <button onClick={onSkip} className={cn(pill.secondary, "absolute right-4 bottom-28 z-10 bg-dusk/80 ring-1 ring-white/15 backdrop-blur transition-opacity duration-300 md:right-8", !fresh && !controls && "pointer-events-none opacity-0")}>{children}</button>;
 }
 
+/** Keeps the skin on the playing element: the hidden 4K copy registers itself when it mounts, and an element leaving unregisters. */
+function Attach({ media }: { media: () => unknown }) {
+  const set = useMediaAttach();
+  useEffect(() => { const m = media(); if (m) set?.(m as never); });
+  return null;
+}
+
 /** Fades the overlay with the skin's own controls (they hide while playing). */
 function Fade({ className, children }: { className?: string; children: React.ReactNode }) {
   const on = usePlayer(selectControls)?.controlsVisible ?? true;
@@ -135,7 +144,13 @@ function Player() {
   // left for a faster source before their first frame (still working: tried again last), and the source picked by hand (never left)
   const slowLeft = useRef(new Set<number>()), picked = useRef(-1), slowRef = useRef<() => void>(() => {});
   /** best-ranked source of height `h` (fallbacks start over from there) */
-  const choose = (list: Source[], lang: string, h: number) => { target.current = h; tried.current = new Set(); slowLeft.current = new Set(); exhausted.current = ""; setNote(""); return fallbackOrder(list, { lang, height: h, stats: loadStats() })[0]; };
+  const orig = useRef<string[]>([]); // the title's original languages (dub-safe picking), from its detail's country
+  const choose = (list: Source[], lang: string, h: number) => { target.current = h; tried.current = new Set(); slowLeft.current = new Set(); exhausted.current = ""; setNote(""); return fallbackOrder(list, { lang, orig: orig.current, height: h, stats: loadStats() })[0]; };
+  // 4K step-up: armed while auto-picking (no pinned quality, no hand pick, no room); `up`: the 4K sources to prepare, the first one in the hidden element
+  const armed = useRef(false), [up, setUp] = useState<number[]>([]), upAt = useRef(0), prep = useRef<HTMLVideoElement | null>(null), medias = useRef<Record<number, unknown>>({});
+  const swapAt = useRef(0), resume = useRef(false);
+  const prepRef = useCallback((el: HTMLVideoElement | null) => { prep.current = el; if (el) el.muted = true; }, []);
+  const mrefs = useRef<Record<number, (m: unknown) => void>>({}), mref = (i: number) => (mrefs.current[i] ??= (m: unknown) => { if (m) medias.current[i] = m; });
   const pid = s.profile?.id ?? "guest", pkey = p ? JSON.stringify(p) : "";
   const extra = room ? `&room=${room}` : "";
 
@@ -144,7 +159,7 @@ function Player() {
     if (!p) return;
     let live = true;
     setErr(""); setSources([]); setSubs([]); setSkips([]); setCur(0); setDur(0); setSi(-1); setTag({ i: -1, pin: 0 }); setQsel(0); setMore(false); keep.current = 0;
-    target.current = 0; tried.current = new Set(); slowLeft.current = new Set(); picked.current = -1; exhausted.current = ""; setNote("");
+    target.current = 0; tried.current = new Set(); slowLeft.current = new Set(); picked.current = -1; exhausted.current = ""; setNote(""); armed.current = false; setUp([]);
     // TheIntroDB for movies and series: by IMDb id (Cinemeta), else the TMDB id
     const sid = p.kind === "movie" ? (/^tt\d+$/.test(p.id) ? p.id : p.id.match(/^tmdb:(?:movie|tv):(\d+)$/)?.[1]) : undefined;
     if (sid) get(`introdb?id=${sid}&s=${p.season ?? 0}&e=${p.episode ?? 0}`).then((d) => live && setSkips(toSkips(d))).catch(() => {});
@@ -177,7 +192,12 @@ function Player() {
       const begin = () => {
         if (started || !live || !acc.length) return;
         started = true; clearTimeout(grace);
-        const pin = getPin(playKey(p)) ?? 0, lang = savedLang(), h = acc[pickFor(acc, lang, pin)].height ?? 0, i = choose(acc, lang, h);
+        const pin = getPin(playKey(p)) ?? 0, lang = savedLang(), saver = !!(navigator as any).connection?.saveData;
+        let h = acc[pickFor(acc, lang, pin)].height ?? 0;
+        // auto: start 4K titles at 1080p (starts faster) and step up once a 4K copy has buffered in the background; Data Saver stays at 1080p
+        armed.current = !pin && !room && !saver;
+        if ((armed.current || (!pin && saver)) && h >= 2160 && acc.some((x) => x.height === 1080)) h = 1080;
+        const i = choose(acc, lang, h);
         setQsel(pin ? h : 0); setSi(i); setTag({ i, pin: pin && acc[i].height === pin ? pin : 0 });
         console.debug(`[stream] start ${acc[i].label} (of ${acc.length}) after ${Date.now() - tl} ms`);
       };
@@ -222,25 +242,26 @@ function Player() {
   // every language a source is tagged with or the playing file carries; picking one moves to a source that has it
   const langList = [...new Set([...sources.flatMap((x) => x.langs ?? []), ...tracks.map((t) => iso1(t.lang)).filter((l) => languageName(l))])];
   const pickLang = (l: string) => {
-    saveLang(l); setPick(null); // the track follows `want` (chosen above) once the file's tracks are read
+    saveLang(l); setPick(null); armed.current = false; setUp([]); // the track follows `want` (chosen above) once the file's tracks are read
     if (!l || src?.langs?.includes(l) || tracks.some((t) => iso1(t.lang) === l) || !sources.some((x) => x.langs?.includes(l))) return;
-    setEmbed(false); setSi(choose(sources, l, sources[pickFor(sources, l, p?.kind === "movie" ? getPin(playKey(p)) : undefined)].height ?? 0));
+    const i = choose(sources, l, sources[pickFor(sources, l, p?.kind === "movie" ? getPin(playKey(p)) : undefined)].height ?? 0);
+    handPick(i); setEmbed(false); setSi(i);
   };
   // a quality chip (0 = Auto, the connection-aware pick); remembered like a picked source
   const pickQ = (h: number) => {
     if (p?.kind !== "movie" || !sources.length) return;
     setPin(playKey(p), h); setQsel(h); setEmbed(false); setPick(null);
     const i = choose(sources, want, h || (sources[pickFor(sources, want, 0)].height ?? 0));
-    setSi(i); setTag({ i, pin: h });
+    handPick(i); setSi(i); setTag({ i, pin: h });
   };
   const pickOne = (i: number) => {
     const h = sources[i].height ?? 0;
-    setEmbed(false); choose(sources, want, h); setSi(i); setQsel(h); picked.current = i;
+    handPick(i); setEmbed(false); choose(sources, want, h); setSi(i); setQsel(h); picked.current = i;
     if (p?.kind === "movie" && h) { setPin(playKey(p), h); setTag({ i, pin: h }); }
   };
   const quals = p?.kind === "movie" ? qualities(sources, langList.includes(want) ? want : "") : [];
   // "Show all sources": every source, grouped under its height (best first), ranked within it
-  const listed = panel === "watch" && allSrc ? fallbackOrder(sources, { height: Infinity, stats: loadStats() }) : [];
+  const listed = panel === "watch" && allSrc ? fallbackOrder(sources, { orig: orig.current, height: Infinity, stats: loadStats() }) : [];
   // Dolby/DTS audio Chrome can't decode, or a track the browser won't switch to: libav.js decodes it in a worker in sync with the video
   const audioNote = useLibavAudio(video, fileUrl, !!src?.dolby, srcKey, atrack, report);
   // MovieBox often ships HEVC only; browsers without HEVC decode (most Chrome/Firefox on Linux) can't play it
@@ -252,7 +273,7 @@ function Player() {
       quality: src?.label, codec: src?.dolby ? `${src.codec ?? ""} dolby`.trim() : src?.codec, host };
   };
   const startedAt = useRef(0);
-  useEffect(() => { startedAt.current = src ? Date.now() : 0; }, [src]);
+  useEffect(() => { startedAt.current = src ? swapAt.current || Date.now() : 0; swapAt.current = 0; }, [src]); // a 4K step-up counts from when its copy started loading
   // refine the bandwidth estimate ~10 s into a direct file: buffered seconds x bitrate / wall time
   useEffect(() => {
     if (!src || src.hls || p?.kind !== "movie") return;
@@ -274,13 +295,14 @@ function Player() {
     track("source_used", { ...info(), ttff: Date.now() - startedAt.current });
     recordStat(src?.label, { ok: true, ttff: Date.now() - startedAt.current }, src?.src);
     startedAt.current = 0;
+    tryUp();
   };
   useEffect(() => {
     const i = setInterval(() => { const v = video.current; if (src && v && !v.paused) track("heartbeat", { ...info(), position: Math.round(v.currentTime), duration: Math.round(v.duration || 0) }); }, 60_000);
     return () => clearInterval(i);
   }); // eslint-disable-line react-hooks/exhaustive-deps
   // fall over: the next-ranked source of the same height, then the nearest lower one (with a note); late sources count too
-  const next1 = () => { const o = fallbackOrder(sources, { lang: want, height: target.current, stats: loadStats() }); return o.find((i) => !tried.current.has(i)) ?? o.find((i) => slowLeft.current.has(i)); };
+  const next1 = () => { const o = fallbackOrder(sources, { lang: want, orig: orig.current, height: target.current, stats: loadStats() }); return o.find((i) => !tried.current.has(i)) ?? o.find((i) => slowLeft.current.has(i)); };
   const fail = (m: string) => {
     if (src) { track("play_error", { ...info(), error: m }); recordStat(src.label, { fail: true }); }
     tried.current.add(si); slowLeft.current.delete(si);
@@ -290,6 +312,7 @@ function Player() {
     const h = sources[nx].height ?? 0, t = target.current;
     if (t && h < t && h !== (src?.height ?? 0)) { const n = `${t}p didn't load — playing ${h ? `${h}p` : "another source"}`; setNote(n); setToast(n); }
     console.debug(`[stream] fallback ${src?.label} -> ${sources[nx].label}: ${m}`);
+    if (nx === upI) takeOver();
     setSi(nx);
   };
   failRef.current = fail;
@@ -304,7 +327,7 @@ function Player() {
   const unsure = (x: Source) => dv(x) || !!x.dolby || risky({ ...x, url: x.src });
   slowRef.current = () => {
     if (!src || !startedAt.current || (video.current?.readyState ?? 0) >= 2 || picked.current === si) return;
-    const st = loadStats(), nx = fallbackOrder(sources, { lang: want, height: target.current, stats: st })
+    const st = loadStats(), nx = fallbackOrder(sources, { lang: want, orig: orig.current, height: target.current, stats: st })
       .find((i) => i !== si && !tried.current.has(i) && (sources[i].height ?? 0) === (src.height ?? 0) && !slowStart(sources[i], st) && (unsure(src) || !unsure(sources[i])));
     if (nx === undefined) return;
     console.debug(`[stream] slow start ${src.label} -> ${sources[nx].label}`);
@@ -322,6 +345,56 @@ function Player() {
     const t = setTimeout(() => { if (startedAt.current && (video.current?.readyState ?? 0) < 3) failRef.current("No picture after 40 s."); }, 40_000);
     return () => clearTimeout(t);
   }, [srcKey, remote, embed]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 4K step-up: once the picture is up, if auto would pick a 4K copy above what plays, buffer it in a hidden element at the position, then swap.
+  // Not after a hand pick, in a room, while a TV plays it, with Dolby Vision / Dolby audio copies (libav would restart the sound), or across languages.
+  const tryUp = () => {
+    if (!armed.current || up.length || room || remote || embed || !src || startedAt.current || p?.kind !== "movie") return;
+    const h = sources[pickFor(sources, want, 0)]?.height ?? 0;
+    if (h < 2160 || (src.height ?? 0) >= h) return;
+    const lr = langRank(src, orig.current), c = fallbackOrder(sources, { lang: want, orig: orig.current, height: h, stats: loadStats() })
+      .filter((i) => sources[i].height === h && !tried.current.has(i) && !dv(sources[i]) && !sources[i].dolby && langRank(sources[i], orig.current) <= lr && (!want || !src.langs?.includes(want) || !!sources[i].langs?.includes(want)));
+    if (!c.length) return;
+    console.debug(`[stream] step-up: preparing ${sources[c[0]].label}`);
+    upAt.current = Date.now(); setUp(c.slice(0, 3));
+  };
+  useEffect(tryUp, [sources.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  const upI = up[0] ?? -1;
+  /** the prepared copy becomes the playing element (it keeps its key, so it isn't reloaded): the picture's position, volume, speed, play state */
+  const takeOver = () => {
+    const h = prep.current, m = video.current;
+    armed.current = false; setUp([]);
+    if (!h || !m) return;
+    h.currentTime = keep.current = m.currentTime; h.volume = m.volume; h.muted = m.muted; h.playbackRate = m.playbackRate;
+    resume.current = !m.paused; setDur(h.duration || 0);
+  };
+  /** a hand pick ends the step-up; picking the very copy being prepared takes it over */
+  const handPick = (i: number) => { if (i === upI && i !== si) takeOver(); armed.current = false; setUp([]); };
+  useEffect(() => { if (upI < 0 && upAt.current) armed.current = false; }, [upI]); // one try per playback: every 4K copy failed or it swapped
+  useEffect(() => {
+    if (upI < 0) return;
+    const quit = (why: string) => { console.debug(`[stream] step-up gave up: ${why}`); armed.current = false; setUp([]); };
+    const bufEnd = (v: HTMLVideoElement, t: number) => { for (let k = 0; k < v.buffered.length; k++) if (v.buffered.start(k) <= t + 0.1 && t < v.buffered.end(k)) return v.buffered.end(k); return -1; };
+    let aimed = false;
+    const iv = setInterval(() => {
+      const h = prep.current, m = video.current;
+      if (!armed.current || room || remote || embed) return quit("not wanted now");
+      if (Date.now() - upAt.current > STEP_UP_MS) return quit(`not ready in ${STEP_UP_MS / 1000} s`);
+      if (!h || !m || h.readyState < 1) return;
+      const a = m.currentTime, end = bufEnd(h, a);
+      // aim just ahead of the picture; again when the picture got past the copy unbuffered, seeked back, or moved while paused
+      const off = end < 0 && (m.paused ? Math.abs(h.currentTime - a) > 1 : a > h.currentTime + 0.5 || a < h.currentTime - STEP_LEAD_S - 2);
+      if (!aimed || off) { if (!h.seeking) { h.currentTime = m.paused ? a : a + STEP_LEAD_S; aimed = true; } return; }
+      if (end - a < 3 || h.readyState < 3 || h.seeking) return;
+      // only for a sharper picture (width: letterboxing varies the height): an adaptive 4K copy starts on a low rung, or is capped to the window; follow the picture while it climbs
+      if (h.videoWidth <= m.videoWidth) { if (Math.abs(h.currentTime - a) > 1) h.currentTime = a + 0.5; return; }
+      // swap: the 4K element takes over at the picture's position with its volume and speed; the old one leaves the page (which stops it)
+      console.debug(`[stream] step-up: switching to ${sources[upI].label} at ${a.toFixed(1)} s, ${Date.now() - upAt.current} ms after it started loading`);
+      swapAt.current = upAt.current; takeOver(); setSi(upI); setTag({ i: upI, pin: 0 }); setToast(`Switched to ${h.videoWidth >= 3000 ? "4K" : `${h.videoWidth >= 1800 ? 1080 : h.videoHeight}p`}`); // an adaptive copy may be capped to the window
+    }, 250);
+    return () => clearInterval(iv);
+  }, [upI, room, remote, embed]); // eslint-disable-line react-hooks/exhaustive-deps
+  // the swapped-in element plays right after the old one has left the page (no doubled sound)
+  useLayoutEffect(() => { if (resume.current) { resume.current = false; video.current?.play().catch(() => {}); } }, [si]);
   const onMeta = (v: HTMLVideoElement) => {
     if (p?.kind === "live") return;
     const hist = p && epKey(getHistory(pid)[playKey(p)]?.payload ?? p) === epKey(p) ? getHistory(pid)[playKey(p)] : undefined;
@@ -387,6 +460,7 @@ function Player() {
   // next episode
   // what the pause marquee shows: the title's detail, and for series the season's episodes (same cached paths as the show page)
   const det = useApi(p?.kind === "movie" ? `movies/detail?id=${encodeURIComponent(p.id)}&type=${p.type ?? "movie"}` : p?.kind === "anime" ? `anime/detail?slug=${p.id}` : null).data;
+  orig.current = origLangs(det?.country);
   const series = p?.kind === "movie" && p.type === "series" ? det : null;
   const season = useApi(series ? `movies/episodes?id=${encodeURIComponent(p!.id)}&season=${p!.season}&title=${encodeURIComponent(series.title)}&year=${series.year ?? ""}` : null).data;
   const next: P | null = useMemo(() => {
@@ -497,22 +571,25 @@ function Player() {
     onError: () => fail("The video failed to load."),
     onPlaying: () => { setPaused(false); onPlaying(); },
     onPlay: (e: React.SyntheticEvent<HTMLVideoElement>) => { if (remote) return e.currentTarget.pause(); setPaused(false); if (!applying.current) sendRoom({ type: "play", position: pos() }); },
-    onPause: () => { setPaused(true); save(); if (!applying.current) sendRoom({ type: "pause", position: pos() }); },
+    onPause: (e: React.SyntheticEvent<HTMLVideoElement>) => { if (e.currentTarget !== video.current) return; setPaused(true); save(); if (!applying.current) sendRoom({ type: "pause", position: pos() }); }, // not the element a 4K step-up replaced
     onSeeked: () => !applying.current && sendRoom({ type: "seek", position: pos() }),
-    onTimeUpdate: (e: React.SyntheticEvent<HTMLVideoElement>) => { keep.current = e.currentTarget.currentTime; setCur(keep.current); },
+    onTimeUpdate: (e: React.SyntheticEvent<HTMLVideoElement>) => { if (e.currentTarget !== video.current) return; keep.current = e.currentTarget.currentTime; setCur(keep.current); },
     onWaiting: (e: React.SyntheticEvent<HTMLVideoElement>) => { const v = e.currentTarget; if (!startedAt.current && !v.seeking && v.currentTime > 1 && stalled.current !== srcKey) { stalled.current = srcKey; recordStat(src?.label, { stall: true }); } },
     onDurationChange: (e: React.SyntheticEvent<HTMLVideoElement>) => setDur(e.currentTarget.duration || 0),
     onEnded: () => { save(); if (next) go(next); },
     children: subs.map((t, i) => <track key={t.url} kind="subtitles" src={t.url} label={t.label} srcLang={t.lang || "en"} default={i === subIdx} />),
   };
-  const Media = src?.hls ? HlsJsVideo : Video;
 
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-black" style={{ "--cue-size": SUB_SIZE[pref.size] } as React.CSSProperties}
       onKeyDown={(e) => { if (e.key === "Escape" && panel) { e.stopPropagation(); setPanel(null); } }}>
       <VideoPlayer>
         <VideoSkin className="reelm-skin size-full" style={{ "--media-accent-color": "#F2B45A", "--media-accent-text-color": "#15171F", "--media-border-radius": "0", "--media-border-color": "transparent", "--media-object-fit": FIT[pref.fit], "--media-font-family": "var(--font-figtree), sans-serif" } as React.CSSProperties}>
-          {src && <Media key={`v${si}${pkey}${nonce}`} src={src.src} crossOrigin={src.hls ? "anonymous" : undefined} {...(common as object)} />}
+          {/* the playing element, and while a 4K step-up prepares, its hidden muted copy (same key once it takes over: no reload) */}
+          {[si, upI].filter((i, k) => sources[i] && (k === 0 || i !== si)).map((i) => { const x = sources[i], M = x.hls ? HlsJsVideo : Video; return (
+            <M key={`v${i}${pkey}${nonce}`} src={x.src} crossOrigin={x.hls ? "anonymous" : undefined} mediaRef={mref(i)}
+              {...((i === si ? common : { ref: prepRef, preload: "auto", playsInline: true, referrerPolicy: "no-referrer", className: "pointer-events-none absolute inset-0 size-full opacity-0", onError: () => { console.debug(`[stream] step-up: ${x.label} failed`); setUp((u) => u.slice(1)); } }) as object)} />); })}
+          <Attach media={() => src && medias.current[si]} />
           {src && !src.dolby && p?.kind !== "live" && <SeekPreview key={`p${si}${pkey}${nonce}`} src={src.src} hls={src.hls} duration={() => video.current?.duration ?? 0} />}
           {!src && !err && <div className="pointer-events-none absolute inset-0 grid place-items-center"><div className="flex flex-col items-center gap-4"><ReelMark className="size-14 animate-spin [animation-duration:1.6s]" /><p className="text-sm text-foreground/72">{p ? "Finding a stream" : "Joining the room"}</p></div></div>}
 

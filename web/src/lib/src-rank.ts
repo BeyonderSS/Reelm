@@ -43,13 +43,17 @@ export function recordStat(label: string | undefined, e: { ok?: boolean; fail?: 
   } catch {}
 }
 
+/** Audio within a height, lower first: original (`orig`; untagged files nearly always are), English, multi-audio, then one other language (a regional dub). */
+export const langRank = (x: Pickable, orig: string[] = []) => { const l = x.langs ?? []; return !l.length || l.some((c) => orig.includes(c)) ? 0 : l.includes("en") ? 1 : l.length > 1 ? 2 : 3; };
+
 /** Indexes of `list` to try, in order: the chosen language's sources first; `height` itself, then each lower height (nearest first), then higher;
- *  within a height: what the browser can decode, then what starts fast (slowStart last), then provider reliability, then list order. */
-export function fallbackOrder(list: Pickable[], o: { lang?: string; height: number; stats: Stats; now?: number }): number[] {
-  const now = o.now ?? Date.now(), has = (x: Pickable) => !o.lang || !!x.langs?.includes(o.lang), anyLang = list.some(has);
+ *  within a height: never a single-language dub of another original first, what the browser can decode, the audio (langRank),
+ *  then what starts fast (slowStart last), then provider reliability, then list order. `orig`: the title's original languages (origLangs). */
+export function fallbackOrder(list: Pickable[], o: { lang?: string; orig?: string[]; height: number; stats: Stats; now?: number }): number[] {
+  const now = o.now ?? Date.now(), has = (x: Pickable) => !o.lang || !!x.langs?.includes(o.lang), anyLang = list.some(has), og = [...(o.orig ?? []), ...(o.lang ? [o.lang] : [])];
   const key = (i: number) => {
-    const x = list[i], h = x.height ?? 0;
-    return [anyLang && !has(x) ? 1 : 0, h === o.height ? 0 : h < o.height ? 1 : 2, h < o.height ? -h : h, dv(x) ? 2 : risky(x) || x.dolby ? 1 : 0, slowStart(x, o.stats) ? 1 : 0, -score(o.stats[provider(x.label)], now), i];
+    const x = list[i], h = x.height ?? 0, lr = langRank(x, og);
+    return [anyLang && !has(x) ? 1 : 0, h === o.height ? 0 : h < o.height ? 1 : 2, h < o.height ? -h : h, lr === 3 ? 1 : 0, dv(x) ? 2 : risky(x) || x.dolby ? 1 : 0, lr, slowStart(x, o.stats) ? 1 : 0, -score(o.stats[provider(x.label)], now), i];
   };
   const keys = list.map((_, i) => key(i));
   return list.map((_, i) => i).sort((a, b) => { for (let k = 0; k < keys[a].length; k++) if (keys[a][k] !== keys[b][k]) return keys[a][k] - keys[b][k]; return 0; });

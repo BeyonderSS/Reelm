@@ -20,3 +20,17 @@ export function langs(text: string): string[] {
 const ISO2: Record<string, string> = { hin: "hi", eng: "en", tam: "ta", tel: "te", mal: "ml", kan: "kn", ben: "bn", mar: "mr", guj: "gu", pan: "pa", urd: "ur",
   jpn: "ja", kor: "ko", spa: "es", fre: "fr", fra: "fr", ger: "de", deu: "de", ita: "it", por: "pt", rus: "ru", chi: "zh", zho: "zh", ara: "ar", tha: "th", ind: "id", tur: "tr" };
 export const iso1 = (code: string) => { const c = code.toLowerCase(); return ISO2[c] ?? c; };
+
+// Original audio from a title's country ("United Kingdom, United States" -> ["en"]); India -> every Indian language (the country can't tell which)
+const INDIAN = ["hi", "ta", "te", "ml", "kn", "bn", "mr", "pa", "gu"];
+let REGION: Map<string, string> | undefined;
+export function origLangs(country = ""): string[] {
+  if (/\bindia\b/i.test(country)) return INDIAN;
+  if (!REGION) {
+    REGION = new Map();
+    const dn = new Intl.DisplayNames(["en"], { type: "region" });
+    for (let a = 65; a < 91; a++) for (let b = 65; b < 91; b++) { const c = String.fromCharCode(a, b); try { const n = dn.of(c); if (n && n !== c) REGION.set(n.toLowerCase(), c); } catch {} }
+  }
+  const out = country.split(",").map((s) => REGION!.get(s.trim().toLowerCase())).filter((c): c is string => !!c).map((c) => new Intl.Locale(`und-${c}`).maximize().language);
+  return [...new Set(out)];
+}
