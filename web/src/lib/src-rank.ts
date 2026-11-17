@@ -15,25 +15,41 @@ export const score = (s: Stat | undefined, now = Date.now()) => {
   return (d.ok + 1) / (d.ok + d.fail + d.stall / 2 + 2) - Math.min(d.ttff / 1e5, 0.2); // 10 s to first frame costs 0.1
 };
 export const loadStats = (): Stats => { try { return JSON.parse(localStorage.getItem(KEY) ?? "{}") ?? {}; } catch { return {}; } };
-export function recordStat(label: string | undefined, e: { ok?: boolean; fail?: boolean; stall?: boolean; ttff?: number }) {
+/** Stats key for a host's start time: "@pixeldrain.dev" (random worker / bucket subdomains share their site's). */
+export const hostKey = (url = "") => { const h = /^\w+:\/\/([^/:?#]+)/.exec(url)?.[1]; return h ? "@" + h.toLowerCase().split(".").slice(-2).join(".") : undefined; };
+/** Starts slowly: this browser's own first-frame average for the host when it has one, else what measured slow
+ *  (2026-11-17, first 2 MB / first HLS segment): Google "download only" 1.8–6 s, Pixeldrain ?download, adaptive 4K HLS 4.4–6.1 s. */
+export const slowStart = (x: Pickable, stats: Stats) => {
+  const u = (x.url ?? x.src ?? "").toLowerCase(), k = hostKey(u), seen = k ? stats[k]?.ttff : 0;
+  if (seen) return seen > 4000;
+  return /download only/i.test(x.label ?? "") || u.includes("video-downloads.googleusercontent.com") || (u.includes("pixeldrain") && u.includes("download")) || (!!x.hls && (x.height ?? 0) >= 2160);
+};
+/** Updates the provider's record; a first-frame time also goes to the host's (`url`) for slowStart. */
+export function recordStat(label: string | undefined, e: { ok?: boolean; fail?: boolean; stall?: boolean; ttff?: number }, url?: string) {
   try {
-    const all = loadStats(), p = provider(label), now = Date.now(), s = decay(all[p] ?? { ok: 0, fail: 0, stall: 0, ttff: 0, t: now }, now);
-    if (e.ok) s.ok++;
-    if (e.fail) s.fail++;
-    if (e.stall) s.stall++;
-    if (e.ttff) s.ttff = s.ttff ? 0.7 * s.ttff + 0.3 * e.ttff : e.ttff;
-    all[p] = s;
+    const all = loadStats(), now = Date.now();
+    const bump = (p: string, e: { ok?: boolean; fail?: boolean; stall?: boolean; ttff?: number }) => {
+      const s = decay(all[p] ?? { ok: 0, fail: 0, stall: 0, ttff: 0, t: now }, now);
+      if (e.ok) s.ok++;
+      if (e.fail) s.fail++;
+      if (e.stall) s.stall++;
+      if (e.ttff) s.ttff = s.ttff ? 0.7 * s.ttff + 0.3 * e.ttff : e.ttff;
+      all[p] = s;
+    };
+    bump(provider(label), e);
+    const k = hostKey(url);
+    if (e.ttff && k) bump(k, { ttff: e.ttff });
     localStorage.setItem(KEY, JSON.stringify(all));
   } catch {}
 }
 
 /** Indexes of `list` to try, in order: the chosen language's sources first; `height` itself, then each lower height (nearest first), then higher;
- *  within a height: what the browser can decode, then provider reliability, then list order. */
+ *  within a height: what the browser can decode, then what starts fast (slowStart last), then provider reliability, then list order. */
 export function fallbackOrder(list: Pickable[], o: { lang?: string; height: number; stats: Stats; now?: number }): number[] {
   const now = o.now ?? Date.now(), has = (x: Pickable) => !o.lang || !!x.langs?.includes(o.lang), anyLang = list.some(has);
   const key = (i: number) => {
     const x = list[i], h = x.height ?? 0;
-    return [anyLang && !has(x) ? 1 : 0, h === o.height ? 0 : h < o.height ? 1 : 2, h < o.height ? -h : h, dv(x) ? 2 : risky(x) || x.dolby ? 1 : 0, -score(o.stats[provider(x.label)], now), i];
+    return [anyLang && !has(x) ? 1 : 0, h === o.height ? 0 : h < o.height ? 1 : 2, h < o.height ? -h : h, dv(x) ? 2 : risky(x) || x.dolby ? 1 : 0, slowStart(x, o.stats) ? 1 : 0, -score(o.stats[provider(x.label)], now), i];
   };
   const keys = list.map((_, i) => key(i));
   return list.map((_, i) => i).sort((a, b) => { for (let k = 0; k < keys[a].length; k++) if (keys[a][k] !== keys[b][k]) return keys[a][k] - keys[b][k]; return 0; });

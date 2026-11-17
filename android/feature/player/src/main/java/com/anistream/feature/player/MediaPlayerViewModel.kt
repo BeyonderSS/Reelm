@@ -50,6 +50,8 @@ private const val START_TIMEOUT_MS = 40_000L
 /** data is arriving (this much buffered) but no frame after [DECODE_TIMEOUT_MS]: the decoder, not the network */
 private const val DECODE_TIMEOUT_MS = 12_000L
 private const val DECODE_BUFFERED_MS = 5_000L
+/** no first frame yet: move to a fast-starting source of the same height (the slow one stays listed and comes back last) */
+private const val SLOW_SWITCH_MS = 6_000L
 /** next-episode prefetch this close to the end when the credits aren't known (inside the 4 min stream cache) */
 private const val NEXT_PREFETCH_MS = 3 * 60_000L
 /** a provider's stand-in clip (NetMirror's "Too Many Requests") instead of the title: its fault, recorded as a failure */
@@ -186,6 +188,10 @@ class MediaPlayerViewModel @Inject constructor(
      */
     private var target = 0
     private val tried = mutableSetOf<String>()
+    /** left for a faster source before their first frame: still working, so tried again once everything else has been */
+    private val slowLeft = mutableSetOf<String>()
+    /** the source the viewer picked by hand: never left for being slow */
+    private var picked: String? = null
     private fun isTried(i: Int) = _uiState.value.request?.streams?.getOrNull(i)?.url in tried
     private fun order(r: PlaybackRequest, height: Int) =
         SourceRank.fallbackOrder(r.streams, prefLang(r), height, SourceRank.load(appContext), System.currentTimeMillis(), canPlay, undecodable)
@@ -427,8 +433,20 @@ class MediaPlayerViewModel @Inject constructor(
             fun waiting() = _uiState.value.request.let { r ->
                 startedAt > 0 && _uiState.value.streamIndex == index && !isTried(index) && r != null && order(r, target).any { it != index && !isTried(it) }
             }
+            delay(SLOW_SWITCH_MS)
+            if (waiting() && stream.url != picked && player.totalBufferedDuration < DECODE_BUFFERED_MS) _uiState.value.request?.let { r ->
+                val stats = SourceRank.load(appContext)
+                order(r, target).firstOrNull { it != index && !isTried(it) && r.streams[it].height == stream.height && !SourceRank.slowStart(r.streams[it], stats) }?.let { next ->
+                    android.util.Log.d("Player", "slow start: no frame in ${SLOW_SWITCH_MS} ms from ${stream.label()}, trying ${r.streams[next].label()}")
+                    SourceRank.record(appContext, stream, ttff = SLOW_SWITCH_MS) // teaches slowStart about this host, without a failure
+                    tried += stream.url
+                    slowLeft += stream.url
+                    play(next, player.currentPosition)
+                    return@launch
+                }
+            }
             // the Fire TV Stick's MTK decoder takes 10-bit HEVC, buffers it and never outputs a frame
-            delay(DECODE_TIMEOUT_MS)
+            delay(DECODE_TIMEOUT_MS - SLOW_SWITCH_MS)
             if (waiting() && player.totalBufferedDuration >= DECODE_BUFFERED_MS) return@launch handleError(PlaybackException(
                 "No first frame in ${DECODE_TIMEOUT_MS / 1000} s with ${player.totalBufferedDuration / 1000} s buffered", null, PlaybackException.ERROR_CODE_DECODING_FAILED))
             delay(START_TIMEOUT_MS - DECODE_TIMEOUT_MS)
@@ -448,7 +466,8 @@ class MediaPlayerViewModel @Inject constructor(
             return
         }
         if (!s.isLive && !decoder) SourceRank.record(appContext, s.stream, fail = true)
-        s.stream?.url?.let { tried += it }
+        s.stream?.url?.let { tried += it; slowLeft -= it }
+        if (nextUntried(request) == null) { tried -= slowLeft; slowLeft.clear() } // the slow starters that were left behind still play
         val next = nextUntried(request)
         if (next != null) {
             val h = request.streams[next].height
@@ -468,13 +487,14 @@ class MediaPlayerViewModel @Inject constructor(
         _uiState.value.request?.let { r -> r.streams.getOrNull(index)?.let {
             if (!r.isLive) QualityPick.pin(appContext, pinKey(r), it.height)
             tried -= it.url // an explicit pick gets another go
+            picked = it.url
             choose(r, it.height) // the fallback chain continues from its height
             _uiState.update { u -> u.copy(quality = it.height) }
         } }
         play(index, if (_uiState.value.isLive) null else player.currentPosition)
     }
 
-    fun retry() = tried.clear().let { play(_uiState.value.streamIndex, if (_uiState.value.isLive) null else player.currentPosition) }
+    fun retry() = tried.clear().also { slowLeft.clear() }.let { play(_uiState.value.streamIndex, if (_uiState.value.isLive) null else player.currentPosition) }
 
     /** Upsert the history row so Continue Watching sees it; resume when it's the same season/episode. */
     private suspend fun recordStart(request: PlaybackRequest) {
@@ -544,7 +564,7 @@ class MediaPlayerViewModel @Inject constructor(
                     }
                     val next = ordered(r.copy(streams = res.data, season = season, episode = episode, subtitle = "S$season · E$episode", seasonEpisodeCount = count))
                     NowPlaying.request = next
-                    tried.clear()
+                    tried.clear(); slowLeft.clear()
                     _uiState.update { it.copy(request = next, downloadStarted = false, skips = emptyList()) }
                     loadSkips(next)
                     recordStart(next)

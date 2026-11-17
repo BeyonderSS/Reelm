@@ -44,6 +44,23 @@ class SourceRankTest {
         assertEquals(SrcStat(1.0, 1.0, 0.0, 3400.0, now), r)
     }
 
+    /** Inception 2160p as measured 2026-11-17: Movy's adaptive 4K, Google "download only", Pixeldrain. */
+    @Test
+    fun fastStartFirstWithinHeight() {
+        val k = listOf(
+            MediaStream(url = "https://moon.goldenkite.top/m.m3u8", qualityLabel = "Movy - Miami (Multi/4K)", height = 2160, sourceName = "autoEmbed", isDirectFile = false), // 0
+            MediaStream(url = "https://video-downloads.googleusercontent.com/x", qualityLabel = "GDrive (download only) 2160p", height = 2160, sourceName = "MoviesDrive"), // 1
+            MediaStream(url = "https://pixeldrain.dev/api/file/abc", qualityLabel = "Pixeldrain 2160p", height = 2160, sourceName = "MoviesDrive"), // 2
+            MediaStream(url = "https://bcdnxw.hakunaymatata.com/a.mp4", qualityLabel = "1080p", height = 1080, sourceName = "MovieBox"), // 3
+        )
+        // the fast one first, the slow starters after it; the height (the viewer's quality) never changes
+        assertEquals(listOf(2, 0, 1, 3), SourceRank.fallbackOrder(k, null, 2160, emptyMap(), now))
+        // this device's own first-frame times win over the defaults: Pixeldrain slow here, Movy fast
+        val seen = mapOf("@pixeldrain.dev" to SrcStat(ttff = 7000.0, t = now), "@goldenkite.top" to SrcStat(ttff = 1500.0, t = now))
+        assertEquals(listOf(0, 1, 2, 3), SourceRank.fallbackOrder(k, null, 2160, seen, now))
+        assertEquals("@workers.dev", SourceRank.hostKey("https://small-dew-a3b5.becini95037599.workers.dev/f.mkv"))
+    }
+
     @Test
     fun chips() {
         assertEquals(listOf(2160 to 1, 1080 to 3, 720 to 2, 480 to 1), SourceRank.qualities(l, null))

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fallbackOrder, provider, qualities, score } from "./src-rank.ts";
+import { fallbackOrder, hostKey, provider, qualities, score } from "./src-rank.ts";
 const now = 1e12, day = 864e5;
 const L = [
   { height: 1080, label: "VegaMovies · VCloud 1080p" }, // 0
@@ -25,4 +25,15 @@ assert.ok(score(old, now) > 0.45 && score({ ...old, t: now }, now) < 0.1);
 assert.deepEqual(qualities(L), [{ h: 2160, n: 1 }, { h: 1080, n: 3 }, { h: 720, n: 2 }, { h: 480, n: 1 }]);
 assert.deepEqual(qualities(L, "hi"), [{ h: 720, n: 1 }]);
 assert.deepEqual(qualities(L, "ta"), qualities(L));
+// within a height the fast starter goes first (Inception 2160p, 2026-11-17); this browser's own first-frame times win over the defaults
+const K = [
+  { height: 2160, hls: true, label: "autoEmbed · Movy Miami (Multi/4K) 2160p", src: "https://moon.goldenkite.top/m.m3u8" },
+  { height: 2160, label: "MoviesDrive · GDrive (download only) 2160p", src: "https://video-downloads.googleusercontent.com/x" },
+  { height: 2160, label: "MoviesDrive · Pixeldrain 2160p", src: "https://pixeldrain.dev/api/file/abc" },
+  { height: 1080, label: "MovieBox · 1080p", src: "https://bcdnxw.hakunaymatata.com/a.mp4" },
+];
+assert.deepEqual(fallbackOrder(K, { height: 2160, stats: {}, now }), [2, 0, 1, 3]);
+const seen = { "@pixeldrain.dev": { ok: 0, fail: 0, stall: 0, ttff: 7000, t: now }, "@goldenkite.top": { ok: 0, fail: 0, stall: 0, ttff: 1500, t: now } };
+assert.deepEqual(fallbackOrder(K, { height: 2160, stats: seen, now }), [0, 1, 2, 3]);
+assert.equal(hostKey("https://small-dew-a3b5.becini95037599.workers.dev/f.mkv"), "@workers.dev");
 console.log("ok");

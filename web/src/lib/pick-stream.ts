@@ -1,4 +1,4 @@
-export type Pickable = { height?: number; hls?: boolean; codec?: string; dolby?: boolean; label?: string; url?: string; langs?: string[] };
+export type Pickable = { height?: number; hls?: boolean; codec?: string; dolby?: boolean; label?: string; url?: string; src?: string; langs?: string[] };
 const MBPS: [number, number][] = [[2160, 16], [1440, 9], [1080, 5], [720, 2.5], [480, 1.2], [0, 0.7]];
 /** Bits/s a stream needs; HLS adapts, so it fits anywhere. Sizes and durations aren't in the stream objects, so height stands in. */
 export const bitrate = (x: Pickable) => x.hls ? 0 : (MBPS.find(([h]) => (x.height ?? 0) >= h)![1]) * 1e6;

@@ -51,9 +51,26 @@ internal object SourceRank {
     fun isMain10(codecs: String?, mime: String?, hdr: Boolean): Boolean =
         hdr || mime == "video/dolby-vision" || (codecs != null && MAIN10.containsMatchIn(codecs))
 
+    /** Stats key for a host's start time: "@pixeldrain.dev" (random worker / bucket subdomains share their site's). */
+    fun hostKey(url: String): String? = Regex("""^\w+://([^/:?#]+)""").find(url)?.groupValues?.get(1)?.lowercase()?.split('.')?.takeLast(2)?.joinToString(".", "@")
+
+    private const val SLOW_START_MS = 4_000.0
+
+    /**
+     * Starts slowly (seconds before the first frame): this device's own first-frame average for the host when it has one,
+     * else what measured slow from here (2026-11-17, first 2 MB / first HLS segment): Google's "download only" files
+     * 1.8–6 s, Pixeldrain's ?download, adaptive 4K HLS 4.4–6.1 s; CF Storage, MovieBox and castle took 0.3–2 s.
+     */
+    fun slowStart(s: MediaStream, stats: Map<String, SrcStat>): Boolean {
+        hostKey(s.url)?.let { stats[it] }?.ttff?.takeIf { it > 0 }?.let { return it > SLOW_START_MS }
+        val u = s.url.lowercase()
+        return "download only" in s.qualityLabel.lowercase() || "video-downloads.googleusercontent.com" in u ||
+            ("pixeldrain" in u && "download" in u) || (!s.isDirectFile && s.height >= 2160)
+    }
+
     /**
      * Indexes of [list] to try, in order: [lang]'s sources first; within them what this device can decode at all ([undecodable] last, whatever its height); [height] itself, then each lower height (nearest first), then higher;
-     * within a height: what this device can decode, then provider reliability, then list order.
+     * within a height: what this device can decode, then what starts fast ([slowStart] last), then provider reliability, then list order.
      */
     fun fallbackOrder(list: List<MediaStream>, lang: String?, height: Int, stats: Map<String, SrcStat>, now: Long, canPlay: (MediaStream) -> Boolean = { true }, undecodable: (MediaStream) -> Boolean = { false }): List<Int> {
         val anyLang = lang != null && list.any { lang in it.languages }
@@ -63,6 +80,7 @@ internal object SourceRank {
             { list[it].height.let { h -> if (h == height) 0 else if (h < height) 1 else 2 } },
             { list[it].height.let { h -> if (h < height) -h else h } },
             { if (canPlay(list[it])) 0 else 1 },
+            { if (slowStart(list[it], stats)) 1 else 0 },
             { -score(stats[provider(list[it])], now) }
         ))
     }
@@ -105,10 +123,16 @@ internal object SourceRank {
         }
     }.toMap()
 
+    /** Updates the provider's record; a first-frame time also goes to the host's ([hostKey]) for [slowStart]. */
     fun record(c: Context, s: MediaStream?, ok: Boolean = false, fail: Boolean = false, stall: Boolean = false, ttff: Long = 0) {
         val p = s?.let(::provider)?.takeIf { it.isNotBlank() } ?: return
-        val n = add(load(c)[p], System.currentTimeMillis(), ok, fail, stall, ttff)
-        prefs(c).edit().putString(p, "${n.ok},${n.fail},${n.stall},${n.ttff},${n.t}").apply()
+        val all = load(c)
+        val now = System.currentTimeMillis()
+        val e = prefs(c).edit()
+        fun put(k: String, n: SrcStat) = e.putString(k, "${n.ok},${n.fail},${n.stall},${n.ttff},${n.t}")
+        put(p, add(all[p], now, ok, fail, stall, ttff))
+        if (ttff > 0) hostKey(s.url)?.let { put(it, add(all[it], now, ttff = ttff)) }
+        e.apply()
     }
 
     /** "Show all sources" (advanced, per device) */

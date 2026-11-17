@@ -17,7 +17,7 @@ import { get, getHistory, epKey, playKey, proxied, reelm, saveProgress, syncHist
 import { track } from "@/lib/telemetry";
 import { helperVega, helperVersion } from "@/lib/bridge";
 import { bitrate, dv, getBandwidth, getPin, pickStream, risky, saveBandwidth, setPin } from "@/lib/pick-stream";
-import { fallbackOrder, loadStats, qualities, recordStat } from "@/lib/src-rank";
+import { fallbackOrder, loadStats, qualities, recordStat, slowStart } from "@/lib/src-rank";
 import { useApi, useSession } from "@/lib/session";
 import { languageName, trackLabel, useAudioTracks, useLibavAudio } from "@/lib/use-libav-audio";
 import { iso1 } from "@/lib/langs";
@@ -36,6 +36,7 @@ const pickFor = (all: Source[], lang: string, pin?: number) => {
   return pool[pickStream(pool.map((i) => all[i]), { bandwidthBps: getBandwidth(), pinnedHeight: pin })];
 };
 const ALL_KEY = "reelm.allSources";
+const SLOW_SWITCH_MS = 6000;
 /** AniSkip and TheIntroDB (same shape from /api/introdb); no end = the end of the video */
 const toSkips = (d: any): Skip[] => (d.results ?? []).map((x: any) => ({ s: x.interval.startTime, e: x.interval.endTime ?? Infinity, type: x.skipType }));
 const parse = (v: string | null) => { try { return toPlay(JSON.parse(v ?? "")); } catch { return null; } };
@@ -131,8 +132,10 @@ function Player() {
   const [allSrc, setAllSrc] = useState(false);
   useEffect(() => { try { setAllSrc(localStorage.getItem(ALL_KEY) === "1"); } catch {} }, []);
   const target = useRef(0), tried = useRef(new Set<number>()), exhausted = useRef(""), failRef = useRef<(m: string) => void>(() => {}), stalled = useRef("");
+  // left for a faster source before their first frame (still working: tried again last), and the source picked by hand (never left)
+  const slowLeft = useRef(new Set<number>()), picked = useRef(-1), slowRef = useRef<() => void>(() => {});
   /** best-ranked source of height `h` (fallbacks start over from there) */
-  const choose = (list: Source[], lang: string, h: number) => { target.current = h; tried.current = new Set(); exhausted.current = ""; setNote(""); return fallbackOrder(list, { lang, height: h, stats: loadStats() })[0]; };
+  const choose = (list: Source[], lang: string, h: number) => { target.current = h; tried.current = new Set(); slowLeft.current = new Set(); exhausted.current = ""; setNote(""); return fallbackOrder(list, { lang, height: h, stats: loadStats() })[0]; };
   const pid = s.profile?.id ?? "guest", pkey = p ? JSON.stringify(p) : "";
   const extra = room ? `&room=${room}` : "";
 
@@ -141,7 +144,7 @@ function Player() {
     if (!p) return;
     let live = true;
     setErr(""); setSources([]); setSubs([]); setSkips([]); setCur(0); setDur(0); setSi(-1); setTag({ i: -1, pin: 0 }); setQsel(0); setMore(false); keep.current = 0;
-    target.current = 0; tried.current = new Set(); exhausted.current = ""; setNote("");
+    target.current = 0; tried.current = new Set(); slowLeft.current = new Set(); picked.current = -1; exhausted.current = ""; setNote("");
     // TheIntroDB for movies and series: by IMDb id (Cinemeta), else the TMDB id
     const sid = p.kind === "movie" ? (/^tt\d+$/.test(p.id) ? p.id : p.id.match(/^tmdb:(?:movie|tv):(\d+)$/)?.[1]) : undefined;
     if (sid) get(`introdb?id=${sid}&s=${p.season ?? 0}&e=${p.episode ?? 0}`).then((d) => live && setSkips(toSkips(d))).catch(() => {});
@@ -232,7 +235,7 @@ function Player() {
   };
   const pickOne = (i: number) => {
     const h = sources[i].height ?? 0;
-    setEmbed(false); choose(sources, want, h); setSi(i); setQsel(h);
+    setEmbed(false); choose(sources, want, h); setSi(i); setQsel(h); picked.current = i;
     if (p?.kind === "movie" && h) { setPin(playKey(p), h); setTag({ i, pin: h }); }
   };
   const quals = p?.kind === "movie" ? qualities(sources, langList.includes(want) ? want : "") : [];
@@ -269,7 +272,7 @@ function Player() {
     if (!startedAt.current) return;
     track("play", info());
     track("source_used", { ...info(), ttff: Date.now() - startedAt.current });
-    recordStat(src?.label, { ok: true, ttff: Date.now() - startedAt.current });
+    recordStat(src?.label, { ok: true, ttff: Date.now() - startedAt.current }, src?.src);
     startedAt.current = 0;
   };
   useEffect(() => {
@@ -277,10 +280,10 @@ function Player() {
     return () => clearInterval(i);
   }); // eslint-disable-line react-hooks/exhaustive-deps
   // fall over: the next-ranked source of the same height, then the nearest lower one (with a note); late sources count too
-  const next1 = () => fallbackOrder(sources, { lang: want, height: target.current, stats: loadStats() }).find((i) => !tried.current.has(i));
+  const next1 = () => { const o = fallbackOrder(sources, { lang: want, height: target.current, stats: loadStats() }); return o.find((i) => !tried.current.has(i)) ?? o.find((i) => slowLeft.current.has(i)); };
   const fail = (m: string) => {
     if (src) { track("play_error", { ...info(), error: m }); recordStat(src.label, { fail: true }); }
-    tried.current.add(si);
+    tried.current.add(si); slowLeft.current.delete(si);
     const hevc = /hevc|h265/i.test(src?.codec ?? "") && !document.createElement("video").canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"');
     const nx = next1();
     if (nx === undefined) { exhausted.current = hevc ? "hevc" : m; return more ? setToast("Looking for another source…") : setErr(exhausted.current); } // late sources may still land
@@ -296,6 +299,21 @@ function Player() {
     if (nx !== undefined) { exhausted.current = ""; setErr(""); setSi(nx); } else if (exhausted.current && !more) setErr(exhausted.current);
   }, [sources.length, more]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 6000); return () => clearTimeout(t); }, [toast]);
+  // no picture after SLOW_SWITCH_MS: a fast-starting source of the same height takes over; the slow one stays listed and comes back last
+  slowRef.current = () => {
+    if (!src || !startedAt.current || (video.current?.readyState ?? 0) >= 2 || picked.current === si) return;
+    const st = loadStats(), nx = fallbackOrder(sources, { lang: want, height: target.current, stats: st })
+      .find((i) => i !== si && !tried.current.has(i) && (sources[i].height ?? 0) === (src.height ?? 0) && !slowStart(sources[i], st));
+    if (nx === undefined) return;
+    console.debug(`[stream] slow start ${src.label} -> ${sources[nx].label}`);
+    recordStat(src.label, { ttff: SLOW_SWITCH_MS }, src.src); // teaches slowStart about this host, without a failure
+    tried.current.add(si); slowLeft.current.add(si); setSi(nx);
+  };
+  useEffect(() => {
+    if (!src || p?.kind !== "movie" || remote || embed) return;
+    const t = setTimeout(() => slowRef.current(), SLOW_SWITCH_MS);
+    return () => clearTimeout(t);
+  }, [srcKey, remote, embed]); // eslint-disable-line react-hooks/exhaustive-deps
   // no first frame in 40 s (a host that hangs instead of failing): next source. Not when autoplay was blocked (the data is there).
   useEffect(() => {
     if (!src || p?.kind === "live" || remote || embed) return;
