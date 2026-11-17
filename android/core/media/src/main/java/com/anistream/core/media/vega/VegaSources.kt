@@ -318,7 +318,9 @@ internal suspend fun VegaEngine.streams(
         fun convert(i: Int, streams: JsonElement?): List<MediaStream> {
             val pick = picks[i]
             val langs = ReleaseLanguages.parse("${(post["title"] as? JsonPrimitive)?.contentOrNull} ${(pick.first["title"] as? JsonPrimitive)?.contentOrNull}", title)
-            return (streams as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.let { s -> VegaPick.toStream(s, pick.first, name)?.copy(languages = langs) } }
+            // a file's own label wins: castle names its dubs per file ("Inception - Tamil") under a post that names none
+            return (streams as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.let { s -> VegaPick.toStream(s, pick.first, name)?.let { m ->
+                m.copy(languages = ReleaseLanguages.parse(m.qualityLabel, title).ifEmpty { langs }) } } }
         }
         // Both qualities resolve concurrently inside the one runtime; a failed one comes back as []. Each is handed to
         // onQuality as it lands, so the first can play without waiting for the second.

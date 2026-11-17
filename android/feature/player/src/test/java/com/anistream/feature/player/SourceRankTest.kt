@@ -115,6 +115,38 @@ class SourceRankTest {
         assertTrue(!SourceRank.isPlaceholder(0, 45, movie = true)) // duration not known yet
     }
 
+    /** Languages are what ReleaseLanguages parses from the real labels (see ReleaseLanguagesTest). */
+    @Test
+    fun dubSafe() {
+        val stats = mapOf("castle" to SrcStat(30.0, 0.0, 0.0, 800.0, now), "4khdhub" to SrcStat(1.0, 3.0, 0.0, 5000.0, now))
+        fun first(list: List<MediaStream>, country: String?, lang: String? = null) =
+            list[SourceRank.fallbackOrder(list, lang, 1080, stats, now, origin = SourceRank.origin(country, list)).first()].sourceName
+        // castle · Inception - Tamil - 1080p: the most reliable provider, still never over the English files
+        val inception = listOf(s(1080, "castle", langs = listOf("ta")), s(1080, "4khdhub"), s(1080, "hdhub4u", langs = listOf("hi", "en")), s(2160, "4khdhub"))
+        assertEquals("hdhub4u", first(inception, "United States, United Kingdom")) // carries the original English
+        assertEquals("4khdhub", first(inception, null)) // country unknown: unlabelled (the original audio) first
+        assertEquals("castle", first(inception, "United States", lang = "ta")) // the viewer asked for Tamil
+        assertEquals(SourceRank.Origin("en", false), SourceRank.origin("United States, United Kingdom", inception))
+        assertEquals(4, SourceRank.dubRank(inception[0], SourceRank.origin(null, inception)))
+        // step-up from the Hindi + English file: to an unlabelled 4K yes, to the Tamil dub no
+        val us = SourceRank.origin("United States", inception)
+        assertTrue(SourceRank.keepsAudio(inception[3], inception[2], us))
+        assertTrue(!SourceRank.keepsAudio(inception[0], inception[2], us))
+        // a single-language dub loses to a multi-audio file too
+        assertEquals("multi", first(listOf(s(1080, "castle", langs = listOf("ta")), s(1080, "multi", langs = listOf("hi", "ta", "te"))), "South Korea"))
+        // Gangs of Wasseypur - Hindi - 1080p: a Hindi original, so Hindi is right
+        val gangs = listOf(s(1080, "castle", langs = listOf("ta")), s(1080, "vega", langs = listOf("hi")))
+        assertEquals("vega", first(gangs, "India"))
+        assertEquals(SourceRank.Origin("hi", true), SourceRank.origin(null, gangs)) // every source Indian: an Indian original
+        // Dhurandhar - Hindi, Tamil, Telugu - 720p (an Indian original's multi-audio) is fine
+        val dhurandhar = listOf(s(720, "castle", langs = listOf("ta")), s(720, "uhd", langs = listOf("hi", "ta", "te")), s(720, "mod", langs = listOf("hi")))
+        assertEquals(0, SourceRank.dubRank(dhurandhar[1], SourceRank.origin("India", dhurandhar)))
+        assertEquals("uhd", dhurandhar[SourceRank.fallbackOrder(dhurandhar, null, 720, emptyMap(), now, origin = SourceRank.origin("India", dhurandhar)).first()].sourceName)
+        // Squid Game: Korean original, a Hindi-only dub last; Dual Audio with Korean first
+        val squid = listOf(s(1080, "castle", langs = listOf("hi")), s(1080, "drive"), s(1080, "hdhub4u", langs = listOf("hi", "ko")))
+        assertEquals(listOf("hdhub4u", "drive", "castle"), SourceRank.fallbackOrder(squid, null, 1080, stats, now, origin = SourceRank.origin("South Korea", squid)).map { squid[it].sourceName })
+    }
+
     @Test
     fun fallbackNeverLoops() {
         var list = listOf(s(1080, "4KHDHub", codec = "HEVC"), s(1080, "4KHDHub", codec = "H.264").copy(url = "4KHDHub1080b"), s(540, "Dramachi"))
