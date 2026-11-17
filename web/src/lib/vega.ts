@@ -261,9 +261,9 @@ export async function fanOut<T>(ps: string[], one: (p: string) => Promise<T[]>, 
   let stop = false;
   const worker = async (w: number) => {
     for (let p; !(stop && w >= o.after) && (p = q.shift()) !== undefined;) {
-      let t: ReturnType<typeof setTimeout> | undefined;
-      const x = await Promise.race([one(p), new Promise<T[]>((ok) => (t = setTimeout(() => ok([]), o.deadline - (Date.now() - t0))))]).finally(() => clearTimeout(t));
-      if (Date.now() - t0 >= o.deadline) return;
+      let t: ReturnType<typeof setTimeout> | undefined, out = false;
+      const x = await Promise.race([one(p), new Promise<T[]>((ok) => (t = setTimeout(() => { out = true; ok([]); }, o.deadline - (Date.now() - t0))))]).finally(() => clearTimeout(t));
+      if (out || Date.now() - t0 >= o.deadline) return; // the timer can fire a ms before Date.now() shows the deadline
       if (x.length) { got.push(...x); o.on(x); }
       stop ||= o.enough(got);
     }
