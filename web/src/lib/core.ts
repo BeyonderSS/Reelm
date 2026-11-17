@@ -14,6 +14,12 @@ export function get<T = any>(path: string): Promise<T> {
     if (key !== "movies/stream") { memo.set(path, p); p.catch(() => memo.delete(path)); }
     return p;
   }
+  // TheIntroDB limits each IP (30 per 10 s, 5000 a day) and shared server egress runs out (Vercel: 403, Cloudflare: 429); it allows CORS, so ask from here
+  if (typeof window !== "undefined" && key === "introdb") {
+    const q = new URLSearchParams(qs), p = import("./server/misc").then((m) => m.introdb(q.get("id")!, q.get("s"), q.get("e"))) as Promise<T>;
+    memo.set(path, p); p.catch(() => memo.delete(path));
+    return p;
+  }
   const p = fetch(`/api/${path}`).then(async (r) => {
     const d = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
     if (!r.ok) throw new Error(d.error ?? `HTTP ${r.status}`);

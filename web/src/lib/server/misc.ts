@@ -63,7 +63,8 @@ const INTRODB_TYPES = { intro: "op", recap: "recap", credits: "ed", preview: "pr
 export async function introdb(id: string, season: string | null, episode: string | null) {
   const q = new URLSearchParams(/^tt\d+$/.test(id) ? { imdb_id: id } : { tmdb_id: id });
   if (Number(season) && Number(episode)) { q.set("season", season!); q.set("episode", episode!); }
-  const r = await fetch(`https://api.theintrodb.org/v4/media?${q}`, { headers: { "User-Agent": "Mozilla/5.0 Reelm" } });
+  // in the browser (core.get) no User-Agent header: it isn't CORS-safelisted, so Firefox would preflight and TheIntroDB doesn't allow it
+  const r = await fetch(`https://api.theintrodb.org/v4/media?${q}`, typeof window === "undefined" ? { headers: { "User-Agent": "Mozilla/5.0 Reelm" } } : {});
   if (r.status === 404) return { results: [] };
   if (!r.ok) throw new Error(`HTTP ${r.status} from theintrodb`);
   const d = await r.json() as Record<string, { start_ms: number | null; end_ms: number | null }[]>;
