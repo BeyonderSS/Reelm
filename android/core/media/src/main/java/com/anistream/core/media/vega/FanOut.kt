@@ -1,6 +1,7 @@
 package com.anistream.core.media.vega
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -30,6 +31,19 @@ internal object FanOut {
         return "$n,${if (n >= TRIP) now + COOL_MS else 0}"
     }
 
+    /**
+     * Probes [batch] all at once and [send]s what passed in up to two parts: what answered within [capMs], then the
+     * slower ones and the [later] ones (never waited for) when they answer. Dead links are dropped either way, but the
+     * slowest host no longer holds back the rest (a GDrive file took 2–4.6 s to answer while the others took 0.5).
+     */
+    suspend fun <T> verify(batch: List<T>, capMs: Long, later: (T) -> Boolean, ok: suspend (T) -> Boolean, send: suspend (List<T>) -> Unit) = coroutineScope {
+        val checks = batch.map { async { ok(it) } }
+        withTimeoutOrNull(capMs) { batch.indices.filter { !later(batch[it]) }.forEach { checks[it].join() } }
+        val (now, slow) = batch.indices.partition { !later(batch[it]) && checks[it].isCompleted }
+        now.filter { checks[it].await() }.takeIf { it.isNotEmpty() }?.let { send(it.map(batch::get)) }
+        slow.filter { checks[it].await() }.takeIf { it.isNotEmpty() }?.let { send(it.map(batch::get)) }
+    }
+
     /** SourceRank.score (feature/player) over its stored "ok,fail,stall,ttff,t" line; 0.5 when unknown. */
     fun reliability(stat: String?, now: Long): Double {
         val p = stat?.split(',')?.mapNotNull { it.toDoubleOrNull() }?.takeIf { it.size == 5 } ?: return 0.5
@@ -40,11 +54,12 @@ internal object FanOut {
     /**
      * Runs [one] over [ps] in [scope], at most [limit] at a time. Returns what's in once [enough] holds, all are done, or
      * [returnMs] passes; after that only [after] workers keep going and each later result goes to [late]. Nothing runs
-     * past [deadlineMs]. [one] must not throw.
+     * past [deadlineMs]. [one] must not throw; it may hand more results afterwards through its second argument
+     * (they count like its own, or go to [late] once returned).
      */
     suspend fun <T> run(
         ps: List<String>, scope: CoroutineScope, limit: Int, after: Int, returnMs: Long, deadlineMs: Long,
-        enough: (List<T>) -> Boolean, late: suspend (List<T>) -> Unit, one: suspend (String) -> List<T>
+        enough: (List<T>) -> Boolean, late: suspend (List<T>) -> Unit, one: suspend (String, suspend (List<T>) -> Unit) -> List<T>
     ): List<T> {
         val queue = ConcurrentLinkedQueue(ps)
         val lock = Mutex()
@@ -52,22 +67,22 @@ internal object FanOut {
         var returned = false
         val result = CompletableDeferred<List<T>>()
         suspend fun hand(): List<T>? = lock.withLock { if (returned) null else { returned = true; got.toList() } }
+        suspend fun deliver(x: List<T>) {
+            var isLate = false
+            val ready = lock.withLock {
+                isLate = returned
+                if (!returned) got += x
+                if (!returned && enough(got)) got.toList().also { returned = true } else null
+            }
+            ready?.let(result::complete)
+            if (isLate && x.isNotEmpty()) late(x)
+        }
         scope.launch {
             withTimeoutOrNull(deadlineMs) {
                 coroutineScope {
                     repeat(limit) { w ->
                         launch {
-                            while (true) {
-                                val x = one(lock.withLock { if (w >= after && returned) null else queue.poll() } ?: break)
-                                var isLate = false
-                                val ready = lock.withLock {
-                                    isLate = returned
-                                    if (!returned) got += x
-                                    if (!returned && enough(got)) got.toList().also { returned = true } else null
-                                }
-                                ready?.let(result::complete)
-                                if (isLate && x.isNotEmpty()) late(x)
-                            }
+                            while (true) deliver(one(lock.withLock { if (w >= after && returned) null else queue.poll() } ?: break, ::deliver))
                         }
                     }
                 }

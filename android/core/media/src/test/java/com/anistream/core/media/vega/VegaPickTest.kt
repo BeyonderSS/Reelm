@@ -95,4 +95,20 @@ class VegaPickTest {
         assertNull(VegaPick.toStream(o("""{"server":"Gangs of Wasseypur - Hindi - 1080p - preview","link":"https://x.y/v.mp4","quality":"1080"}"""), entry, "Castle"))
         assertEquals(1080, VegaPick.toStream(o("""{"server":"Gangs of Wasseypur - Hindi - 1080p","link":"https://x.y/v.mp4","quality":"1080"}"""), entry, "Castle")?.height)
     }
+
+    /** drive's real "Squid Game" search: the 2023 reality spin-off must not stand in for the 2021 series. */
+    @Test
+    fun seriesPostHonoursYear() {
+        val posts = listOf(
+            o("""{"title":"Squid Game (Season 3) 2025 Dual Audio [Hindi (DD5.1) - English] Netflix Series 480p | 720p | 1080p | 4K 2160p WEB-DL","link":"s3"}"""),
+            o("""{"title":"Download Squid Game – Season 2 (2024) Multi Audio {Hindi-English-Korean} NetFlix Original WEB Series – 480p | 720p | 1080p | 2160p 4K WEB-DL","link":"s2"}"""),
+            o("""{"title":"Download Squid Game – Netflix Original (Season 1) Complete Dual-Audio {Hindi-English} Series 480p | 720p | 1080p WEB-DL","link":"s1"}"""),
+            o("""{"title":"Download Squid Game: The Challenge (2023) Season 1 [S01] – Netflix Original Dual Audio {Hindi-English} Series 480p | 720p | 1080p WEB-DL","link":"challenge"}""")
+        )
+        fun pick(year: Int?, season: Int) = VegaPick.post("Squid Game", year, true, season, posts)?.get("link")?.jsonPrimitive?.content
+        assertEquals("s1", pick(2021, 1))
+        assertEquals("s2", pick(2021, 2))
+        assertEquals("s3", pick(2021, 3))
+        assertEquals("challenge", VegaPick.post("Squid Game: The Challenge", 2023, true, 1, posts)!!["link"]!!.jsonPrimitive.content)
+    }
 }

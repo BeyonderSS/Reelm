@@ -53,8 +53,9 @@ class VegaEngine(
     fun kv(provider: String, key: String): String? = state.kv[provider]?.get(key)
 
     @Volatile private var runtimeBytecode: ByteArray? = null
-    private val urlsLock = Mutex()
-    @Volatile private var urlsJson: Pair<Long, String>? = null
+    /** url → (fetched at, response JSON) for [SHARED] GETs; one lock per url so parallel providers wait for one fetch. */
+    private val shared = ConcurrentHashMap<String, Pair<Long, String>>()
+    private val sharedLocks = ConcurrentHashMap<String, Mutex>()
     private val state by lazy { State.load(stateFile) }
 
     /**
@@ -67,7 +68,8 @@ class VegaEngine(
         val host = Host()
         try {
             if (memoryLimit > 0) js.memoryLimit = memoryLimit
-            bind(js, host, state.kv.getOrPut(provider) { ConcurrentHashMap() })
+            val session = Session(js) { host.fails.get() }
+            bind(js, host, state.kv.getOrPut(provider) { ConcurrentHashMap() }, session)
             // Parsing the 400 KB bundle is the slow part on a Fire TV stick; compile once, reuse the bytecode.
             val bytecode = runtimeBytecode ?: js.compile(runtimeJs(), "vega-runtime.js").also { runtimeBytecode = it }
             js.evaluate<Any?>(bytecode)
@@ -78,7 +80,7 @@ class VegaEngine(
                     "$name.js"
                 )
             }
-            return Session(js) { host.fails.get() }.block()
+            return session.block()
         } finally {
             // quickjs-kt's close() cancels in-flight host calls, whose completion then touches the freed context.
             // So first fail every host call fast, let the JS settle, and only close an idle runtime.
@@ -130,6 +132,9 @@ class VegaEngine(
         /** The provider's requests so far that failed (network, DNS) or answered 4xx/5xx. */
         val httpFails get() = fails()
 
+        /** Receives `__host_emit(i, json)` from JS during [call]: a partial result handed out before the whole call settles. */
+        @Volatile var onEmit: ((Int, String) -> Unit)? = null
+
         /** Awaits the JS expression [expr] and returns its value as JSON. */
         suspend fun call(expr: String): JsonElement {
             // evaluate() runs the event loop to idle but hands back the promise itself, so park the outcome in globals.
@@ -143,13 +148,15 @@ class VegaEngine(
         }
     }
 
-    private fun bind(js: QuickJs, host: Host, kv: MutableMap<String, String>) {
+    private fun bind(js: QuickJs, host: Host, kv: MutableMap<String, String>, session: Session) {
         js.function("__host_log") { args -> log(args.getOrNull(1)?.toString().orEmpty()); null }
+        js.function("__host_emit") { args -> session.onEmit?.invoke((args[0] as Number).toInt(), args[1] as String); null }
         // kvStore values go in and out as JSON text: get(k) -> json or null, set(k, json), delete(k), keys -> json array
         js.function("__host_kv") { args ->
             val k = args.getOrNull(1)?.toString().orEmpty()
             when (args[0]) {
-                "get" -> kv[k]
+                // providers' own TheIntroDB lookups (9 per series, 1.4–2.7 s) stay off unless set: the player fetches skip times itself
+                "get" -> kv[k] ?: if (k.endsWith("_skipTimings")) "false" else null
                 "set" -> { kv[k] = args[2] as String; state.dirty = true; null }
                 "delete" -> { state.dirty = kv.remove(k) != null || state.dirty; null }
                 "clear" -> { kv.clear(); state.dirty = true; null }
@@ -181,18 +188,20 @@ class VegaEngine(
                         timeoutMs = (args[5] as Number).toLong()
                     )
                 }
-                if (args[0] == "GET" && args[1] == URLS_JSON) sharedUrlsJson(get) else get()
+                val url = args[1] as String
+                if (args[0] == "GET" && SHARED.any(url::startsWith)) sharedGet(url, get) else get()
             }.getOrElse { e -> host.fails.incrementAndGet(); buildJsonObject { put("error", "${e.message ?: e::class.simpleName} (${args[1]})") }.toString() }
         }
     }
 
     /**
-     * Every provider first reads its site's address from [URLS_JSON]. The web shares one copy across providers; here
-     * each provider runs in its own runtime, and ten parallel fetches get throttled by GitHub (8–11 s, or a timeout).
+     * GETs every provider repeats, answered once an hour for all runtimes (each provider runs in its own): the site
+     * addresses in urls.json (ten parallel fetches got throttled by GitHub, 8–11 s) and Cinemeta metas (providers
+     * cache those in globalThis, which dies with the runtime: 0.25–0.9 s each). Only 200s are kept.
      */
-    private suspend fun sharedUrlsJson(get: suspend () -> String): String = urlsLock.withLock {
-        urlsJson?.takeIf { System.currentTimeMillis() - it.first < URLS_TTL_MS }?.second
-            ?: get().also { if (it.startsWith("{\"status\":200,")) urlsJson = System.currentTimeMillis() to it }
+    private suspend fun sharedGet(url: String, get: suspend () -> String): String = sharedLocks.getOrPut(url) { Mutex() }.withLock {
+        shared[url]?.takeIf { System.currentTimeMillis() - it.first < SHARED_TTL_MS }?.second
+            ?: get().also { if (it.startsWith("{\"status\":200,")) shared[url] = System.currentTimeMillis() to it }
     }
 
     private suspend fun http(host: Host, method: String, url: String, headers: JsonObject, body: String?, follow: Boolean, timeoutMs: Long): String {
@@ -327,8 +336,8 @@ class VegaEngine(
         /** Desktop Chrome: the providers' sites serve desktop markup to it. */
         const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
         private const val DRAIN_MS = 5_000L
-        private const val URLS_JSON = "https://raw.githubusercontent.com/Zenda-Cross/vega-providers/refs/heads/main/urls.json"
-        private const val URLS_TTL_MS = 3_600_000L // the providers' own cache TTL
+        private val SHARED = listOf("https://raw.githubusercontent.com/Zenda-Cross/vega-providers/refs/heads/main/urls.json", "https://v3-cinemeta.strem.io/meta/")
+        private const val SHARED_TTL_MS = 3_600_000L // the providers' own cache TTL
         private const val MAX_BODY = 8L * 1024 * 1024
         private val SKIP_HEADERS = setOf("accept-encoding", "content-length", "host", "connection")
         private val JSON = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; isLenient = true }

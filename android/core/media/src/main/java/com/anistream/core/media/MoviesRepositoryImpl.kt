@@ -35,7 +35,13 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import com.anistream.domain.repository.LateStreams
 import com.anistream.domain.repository.NowPlaying
+import com.anistream.core.common.LowEnd
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -296,7 +302,63 @@ class MoviesRepositoryImpl @Inject constructor(
         tmdbRow("/$tmdbId/recommendations", 0).filter { it.id != id }
     }.getOrDefault(emptyList())
 
-    override suspend fun streams(id: String, season: Int, episode: Int): Result<List<MediaStream>> = safeApiCall {
+    /**
+     * One lookup per title/episode, shared by [prefetch] and [streams] and kept [CACHE_MS] (stream links carry expiring
+     * tokens). Sources that land after it returned are kept in [late] too, so a player opened long after a prefetch
+     * still starts with everything found so far.
+     */
+    private inner class Lookup(key: String, id: String, season: Int, episode: Int) {
+        val at = System.currentTimeMillis()
+        val late = java.util.concurrent.CopyOnWriteArrayList<List<MediaStream>>()
+        @Volatile var failed = false
+        val result = this@MoviesRepositoryImpl.late.async(start = CoroutineStart.LAZY) {
+            resolve(id, season, episode) { batch -> late += batch; NowPlaying.late.emit(LateStreams(key, batch)) }.also { failed = it !is Result.Success }
+        }
+        fun fresh() = !failed && System.currentTimeMillis() - at < CACHE_MS
+
+        /** The result plus what came late, merged the way the player merges [NowPlaying.late] (by url). */
+        fun merged(r: List<MediaStream>) = late.fold(r) { acc, batch -> acc + batch.filter { m -> acc.none { it.url == m.url } } }
+    }
+
+    private val lookups = ConcurrentHashMap<String, Lookup>()
+
+    private fun lookup(id: String, season: Int, episode: Int): Lookup {
+        val key = NowPlaying.lateKey(id, season, episode)
+        lookups.keys.toList().forEach { k -> lookups[k]?.takeIf { !it.fresh() }?.let { lookups.remove(k, it) } }
+        return lookups.compute(key) { _, old -> old?.takeIf { it.fresh() } ?: Lookup(key, id, season, episode) }!!.also { it.result.start() }
+    }
+
+    override suspend fun streams(id: String, season: Int, episode: Int): Result<List<MediaStream>> {
+        Log.d("Sources", "streams $id $season:$episode")
+        val l = lookup(id, season, episode)
+        if (l.result.isCompleted) Log.d("Sources", "cached lookup for $id $season:$episode (${(System.currentTimeMillis() - l.at) / 1000} s old)")
+        return when (val r = l.result.await()) {
+            is Result.Success -> Result.success(l.merged(r.data))
+            else -> r
+        }
+    }
+
+    private val prefetchCap = if (LowEnd.isOn(context)) 1 else 2
+    private val prefetchSlots = Semaphore(prefetchCap)
+    private val prefetchGen = AtomicLong()
+
+    /**
+     * At most [prefetchCap] prefetched lookups at a time (on top of a lookup Play started); a queued one that has been
+     * overtaken by [prefetchCap] newer requests is dropped (the TV focus moved on).
+     */
+    override fun prefetch(id: String, season: Int, episode: Int) {
+        if (lookups[NowPlaying.lateKey(id, season, episode)]?.fresh() == true) return
+        val gen = prefetchGen.incrementAndGet()
+        late.launch {
+            prefetchSlots.withPermit {
+                if (prefetchGen.get() - gen >= prefetchCap) return@withPermit
+                Log.d("Sources", "prefetch $id $season:$episode")
+                lookup(id, season, episode).result.await()
+            }
+        }
+    }
+
+    private suspend fun resolve(id: String, season: Int, episode: Int, onLate: suspend (List<MediaStream>) -> Unit): Result<List<MediaStream>> = safeApiCall {
         val sid: String?
         val tt: String?
         val detail: MediaDetail?
@@ -326,7 +388,7 @@ class MoviesRepositoryImpl @Inject constructor(
             sources += { movieBoxStreams(sid, season, episode, dub = true) } // its own source, so dubs never delay the original
         }
         if (detail != null) titleSources.forEach { src ->
-            sources += { src.streams(detail.title, years?.first, type, season, episode) { NowPlaying.late.emit(LateStreams(NowPlaying.lateKey(id, season, episode), it)) } }
+            sources += { src.streams(detail.title, years?.first, type, season, episode, onLate) }
         }
         if (tt != null) {
             val videoId = if (type == MediaType.SERIES) "$tt:$season:$episode" else tt
@@ -343,10 +405,11 @@ class MoviesRepositoryImpl @Inject constructor(
         // network still auto-picks across MovieBox/HDHub4u/etc.; on a slow one the rest keep resolving in [late] and
         // reach the player through NowPlaying.late (a hard 15 s cut used to leave only Dramachi on a slow connection).
         // Order kept within what's returned: MovieBox, 4KHDHub, Dramachi, Vega, then addons (each already best-first).
-        val key = NowPlaying.lateKey(id, season, episode)
+        val t0 = System.currentTimeMillis()
         val got = firstWithGrace(sources, late, SOURCE_TIMEOUT_MS, GRACE_MS) {
-            Log.d("Sources", "late: ${it.size} from ${it.first().sourceName}"); NowPlaying.late.emit(LateStreams(key, it))
+            Log.d("Sources", "late: ${it.size} from ${it.first().sourceName}"); onLate(it)
         }
+        Log.d("Sources", "returned after ${System.currentTimeMillis() - t0} ms")
         Log.d("Sources", "${got.size}/${sources.size} in: " + got.joinToString { r -> r.fold({ l -> "${l.size}" }, { e -> "fail(${e.message?.take(60)})" }) })
         if (got.isNotEmpty() && got.all { it.isFailure } && got.size == sources.size) throw got.first().exceptionOrNull()!!
         got.flatMap { it.getOrNull().orEmpty() }
@@ -387,6 +450,7 @@ class MoviesRepositoryImpl @Inject constructor(
 
     private companion object {
         const val SOURCE_TIMEOUT_MS = 45_000L
+        const val CACHE_MS = 4 * 60_000L // a lookup's stream links are reused this long (they carry expiring tokens)
         const val GRACE_MS = 4_000L // after the first source with streams, how long the others get before playback starts
         const val SEARCH_TIMEOUT_MS = 6_000L
         const val MAX_DUBS = 6

@@ -19,8 +19,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -81,8 +80,8 @@ class VegaSources @Inject constructor(
         }
         val target = if (lowEnd) 720 else 1080
         Log.d("Vega", "asking ${providers.size}: ${providers.joinToString(" ")}")
-        return FanOut.run(providers, background, if (lowEnd) 2 else 4, if (lowEnd) 1 else 2, PROVIDER_TIMEOUT_MS, DEADLINE_MS, { late != null && FanOut.enough(it, target, MediaStream::height) }, late ?: {}) { p ->
-            one(reg.commit, p, title, year, type, season, episode, lowEnd)
+        return FanOut.run(providers, background, if (lowEnd) 2 else 4, if (lowEnd) 1 else 2, PROVIDER_TIMEOUT_MS, DEADLINE_MS, { late != null && FanOut.enough(it, target, MediaStream::height) }, late ?: {}) { p, emit ->
+            one(reg.commit, p, title, year, type, season, episode, lowEnd, emit)
         }.also { Log.d("Vega", "returned ${it.size} after ${System.currentTimeMillis() - now} ms") }
     }
 
@@ -95,26 +94,40 @@ class VegaSources @Inject constructor(
         if (n != null && FanOut.tripped(n, System.currentTimeMillis())) Log.w("Vega", "$p: search failed $TRIPS times in a row, skipped for 6 h")
     }
 
-    /** One provider: its playable streams, never throws. */
-    private suspend fun one(commit: String, p: String, title: String, year: Int?, type: MediaType, season: Int, episode: Int, lowEnd: Boolean): List<MediaStream> {
+    /**
+     * One provider's playable streams, handed to [emit] in parts as they're verified: each quality is probed the moment
+     * it resolves, and what answers within [PROBE_CAP_MS] goes out at once (see [FanOut.verify]). Returns when the
+     * provider is done (or after [PROVIDER_TIMEOUT_MS]); never throws.
+     */
+    private suspend fun one(commit: String, p: String, title: String, year: Int?, type: MediaType, season: Int, episode: Int, lowEnd: Boolean, emit: suspend (List<MediaStream>) -> Unit): List<MediaStream> {
         var searched = false
-        // the probe sits inside the provider's budget: probing after the slowest provider pushed the whole
-        // Vega source past the repository's per-source timeout, and every provider's streams were lost
-        return withTimeoutOrNull(PROVIDER_TIMEOUT_MS) {
-            runCatching {
-                val all = if (p !in UNLOCKS) provider(commit, p, title, year, type, season, episode, lowEnd) { searched = true }
-                // NetMirror's first lookup in 12 h spends ~35 s unlocking a session; past our budget it keeps
-                // going here so the token it earns is saved and the next lookup takes ~2 s
-                else background.async { withTimeout(UNLOCK_MS) { provider(commit, p, title, year, type, season, episode, lowEnd) { searched = true } } }.await()
-                coroutineScope { all.zip(all.map { async { playable(it) } }.awaitAll()).filter { it.second }.map { it.first } }
-            }.onFailure {
-                Log.w("Vega", "$p: ${it.message}")
-                if (it is VegaEngine.SearchFailed) breaker(p, true)
-            }.getOrNull()
-        }.orEmpty().also {
-            if (searched) breaker(p, false)
-            Log.d("Vega", "$p: ${it.size} playable")
+        var n = 0
+        val out = Channel<List<MediaStream>>(Channel.UNLIMITED)
+        // NetMirror's first lookup in 12 h spends ~35 s unlocking a session; past our budget it keeps going in the
+        // background so the token it earns is saved (and what it finds still arrives late)
+        val job = background.launch {
+            try {
+                // the probe sits inside the provider's budget: probing after the slowest provider pushed the whole
+                // Vega source past the repository's per-source timeout, and every provider's streams were lost
+                withTimeout(if (p in UNLOCKS) UNLOCK_MS else PROVIDER_TIMEOUT_MS) {
+                    coroutineScope {
+                        provider(commit, p, title, year, type, season, episode, lowEnd, { searched = true }) { quality ->
+                            launch { FanOut.verify(quality, PROBE_CAP_MS, ::slowHost, { playable(it) }) { out.send(it) } }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("Vega", "$p: ${e.message}")
+                if (e is VegaEngine.SearchFailed) breaker(p, true)
+            } finally { out.close() }
         }
+        try {
+            withTimeoutOrNull(PROVIDER_TIMEOUT_MS) { for (b in out) if (b.isNotEmpty()) { n += b.size; emit(b) } }
+                ?: background.launch { for (b in out) if (b.isNotEmpty()) emit(b) } // only an unlock outlives the budget
+        } finally { if (p !in UNLOCKS) job.cancel() }
+        if (searched) breaker(p, false)
+        Log.d("Vega", "$p: $n playable")
+        return emptyList()
     }
 
     /**
@@ -156,13 +169,17 @@ class VegaSources @Inject constructor(
     }
 
     private suspend fun provider(
-        commit: String, p: String, title: String, year: Int?, type: MediaType, season: Int, episode: Int, lowEnd: Boolean, searched: () -> Unit
+        commit: String, p: String, title: String, year: Int?, type: MediaType, season: Int, episode: Int, lowEnd: Boolean, searched: () -> Unit,
+        onQuality: (List<MediaStream>) -> Unit
     ): List<MediaStream> {
         // movies need episodes.js too: NetMirror's meta calls a film with seasons "series" and lists it via episodesLink
         val files = listOf("posts", "meta", "stream", "episodes")
             .mapNotNull { f -> file(commit, p, f)?.let { f to patch(it) } }.toMap()
-        return engine.streams(files, p, DISPLAY[p] ?: p, title, year, type, season, episode, lowEnd, searched)
+        return engine.streams(files, p, DISPLAY[p] ?: p, title, year, type, season, episode, lowEnd, searched, onQuality)
     }
+
+    /** Google's "download only" files: 2–4.6 s to the first byte and no seeking (NoRange.kt), so never waited for and listed last. */
+    private fun slowHost(s: MediaStream) = "download only" in s.qualityLabel.lowercase() || "video-downloads.googleusercontent.com" in s.url
 
     /** Provider file from the pinned commit, disk-cached; null when that provider doesn't ship it (404). */
     private suspend fun file(commit: String, p: String, f: String): String? = withContext(Dispatchers.IO) {
@@ -206,6 +223,8 @@ class VegaSources @Inject constructor(
         private const val CDN = "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers"
         private const val PROVIDER_TIMEOUT_MS = 40_000L // under MoviesRepositoryImpl's 45 s per-source budget (slow networks)
         private const val REGISTRY_TIMEOUT_MS = 3_000L
+        /** how long a provider's streams wait for the playability probe before going out; slower ones follow when they answer */
+        private const val PROBE_CAP_MS = 1_200L
         private const val UNLOCK_MS = 90_000L
         private const val DEADLINE_MS = 60_000L // nothing of one lookup runs longer (but a NetMirror unlock, which is saved)
         private const val REFRESH_MS = 11 * 3_600_000L // re-unlock an hour before the 12 h token expires
@@ -243,46 +262,73 @@ class VegaSources @Inject constructor(
     }
 }
 
-/** One provider's pipeline: search → best post → meta → season/episode → up to two qualities → streams. */
+/**
+ * A provider's search pick and meta per (provider, title, year, season), 1 h: a second lookup (the next episode, a
+ * prefetch then Play after the 4 min stream cache) only redoes the episode and stream steps. Stream links aren't kept:
+ * they carry expiring tokens.
+ */
+private object PostCache {
+    private const val TTL_MS = 3_600_000L
+    private val map = java.util.concurrent.ConcurrentHashMap<String, Triple<Long, JsonObject, JsonObject>>()
+    fun get(key: String) = map[key]?.takeIf { System.currentTimeMillis() - it.first < TTL_MS }?.let { it.second to it.third }
+    fun put(key: String, post: JsonObject, meta: JsonObject) { map[key] = Triple(System.currentTimeMillis(), post, meta) }
+}
+
+/**
+ * One provider's pipeline: search → best post → meta → season/episode → up to two qualities → streams.
+ * [onQuality] gets each quality's streams the moment that quality resolves (the other may still be working);
+ * the returned list is all of them.
+ */
 internal suspend fun VegaEngine.streams(
     files: Map<String, String>, p: String, name: String, title: String, year: Int?, type: MediaType, season: Int, episode: Int,
-    lowEnd: Boolean, searched: () -> Unit = {}
+    lowEnd: Boolean, searched: () -> Unit = {}, onQuality: (List<MediaStream>) -> Unit = {}
 ): List<MediaStream> {
     val series = type == MediaType.SERIES
     return session(files, p, if (lowEnd) LOW_END_HEAP else 0) {
-        val q = JsonPrimitive(Stremio.searchQuery(title))
-        val posts = try {
-            call("posts.getSearchPosts({searchQuery:$q,page:1,providerValue:${JsonPrimitive(p)},signal:new AbortController().signal,providerContext:ctx})")
-                .jsonArray.map { it.jsonObject }
-        } catch (e: VegaEngine.VegaException) { throw VegaEngine.SearchFailed(e.message) }
-        if (posts.isEmpty() && httpFails > 0) throw VegaEngine.SearchFailed("$httpFails search requests failed")
-        searched()
-        val post = VegaPick.post(title, year, series, season, posts) ?: return@session emptyList()
-        val meta = call("meta.getMeta({link:${post["link"]},provider:${JsonPrimitive(p)},providerContext:ctx})").jsonObject
+        val cacheKey = "$p|$title|$year|${if (series) season else 0}"
+        val (post, meta) = PostCache.get(cacheKey)?.also { searched() } ?: run {
+            val q = JsonPrimitive(Stremio.searchQuery(title))
+            val posts = try {
+                call("posts.getSearchPosts({searchQuery:$q,page:1,providerValue:${JsonPrimitive(p)},signal:new AbortController().signal,providerContext:ctx})")
+                    .jsonArray.map { it.jsonObject }
+            } catch (e: VegaEngine.VegaException) { throw VegaEngine.SearchFailed(e.message) }
+            if (posts.isEmpty() && httpFails > 0) throw VegaEngine.SearchFailed("$httpFails search requests failed")
+            searched()
+            val post = VegaPick.post(title, year, series, season, posts) ?: return@session emptyList()
+            val meta = call("meta.getMeta({link:${post["link"]},provider:${JsonPrimitive(p)},providerContext:ctx})").jsonObject
+            PostCache.put(cacheKey, post, meta)
+            post to meta
+        }
         val entries = (meta["linkList"] as? JsonArray).orEmpty().map { it.jsonObject }
             .let { if (series) VegaPick.forSeason(it, season) else it }
-        val picks = VegaPick.qualities(entries, lowEnd).mapNotNull { entry ->
+        val qualities = VegaPick.qualities(entries, lowEnd)
+        // the episode lists of both qualities in one go (was one after the other); a failed one is null
+        fun direct(e: JsonObject) = (e["directLinks"] as? JsonArray)?.takeIf { it.isNotEmpty() }
+        val lists = qualities.filter { direct(it) == null }.mapNotNull { it["episodesLink"] }
+        val eps = if (lists.isEmpty()) emptyMap() else runCatching {
+            lists.zip(call("Promise.all(${JsonArray(lists)}.map(url => (async () => episodes.getEpisodes({url,providerContext:ctx}))().catch(() => null)))").jsonArray).toMap()
+        }.getOrDefault(emptyMap())
+        val picks = qualities.mapNotNull { entry ->
             runCatching {
-                if (series) {
-                    val eps = (entry["directLinks"] as? JsonArray)?.map { it.jsonObject }
-                        ?: entry["episodesLink"]?.let { call("episodes.getEpisodes({url:$it,providerContext:ctx})").jsonArray.map { e -> e.jsonObject } }
-                    eps?.let { VegaPick.episode(it, season, episode) }?.get("link")
-                } else {
-                    (entry["directLinks"] as? JsonArray)?.firstOrNull()?.jsonObject?.get("link")
-                        ?: entry["episodesLink"]?.let { call("episodes.getEpisodes({url:$it,providerContext:ctx})").jsonArray.firstOrNull()?.jsonObject?.get("link") }
-                }
+                val list = (direct(entry) ?: entry["episodesLink"]?.let { eps[it] } as? JsonArray)?.map { it.jsonObject }
+                if (series) list?.let { VegaPick.episode(it, season, episode) }?.get("link") else list?.firstOrNull()?.get("link")
             }.getOrNull()?.let { entry to it }
         }
         if (picks.isEmpty()) return@session emptyList()
-        // Both qualities resolve concurrently inside the one runtime; a failed one comes back as [].
+        fun convert(i: Int, streams: JsonElement?): List<MediaStream> {
+            val pick = picks[i]
+            val langs = ReleaseLanguages.parse("${(post["title"] as? JsonPrimitive)?.contentOrNull} ${(pick.first["title"] as? JsonPrimitive)?.contentOrNull}", title)
+            return (streams as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.let { s -> VegaPick.toStream(s, pick.first, name)?.copy(languages = langs) } }
+        }
+        // Both qualities resolve concurrently inside the one runtime; a failed one comes back as []. Each is handed to
+        // onQuality as it lands, so the first can play without waiting for the second.
         // the Vega app passes the meta's own type (its player route carries info.type), not ours
         val kind = (meta["type"] as? JsonPrimitive)?.takeIf { it.isString } ?: JsonPrimitive(if (series) "series" else "movie")
         val links = JsonArray(picks.map { it.second })
-        call("Promise.all($links.map(link => stream.getStream({link,type:$kind,signal:new AbortController().signal,providerContext:ctx,isDownload:false}).catch(() => [])))")
-            .jsonArray.zip(picks).flatMap { (streams, pick) ->
-                val langs = ReleaseLanguages.parse("${(post["title"] as? JsonPrimitive)?.contentOrNull} ${(pick.first["title"] as? JsonPrimitive)?.contentOrNull}", title)
-                (streams as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.let { s -> VegaPick.toStream(s, pick.first, name)?.copy(languages = langs) } }
-            }
+        onEmit = { i, json -> runCatching { onQuality(convert(i, kotlinx.serialization.json.Json.parseToJsonElement(json))) } }
+        call("Promise.all($links.map((link, i) => stream.getStream({link,type:$kind,signal:new AbortController().signal,providerContext:ctx,isDownload:false})" +
+            ".catch(() => []).then(s => { __host_emit(i, JSON.stringify(s || [])); return s })))")
+            .jsonArray.withIndex().flatMap { (i, streams) -> convert(i, streams) }
     }
 }
 
@@ -318,12 +364,20 @@ internal object VegaPick {
     }
 
     fun post(title: String, year: Int?, series: Boolean, season: Int, posts: List<JsonObject>): JsonObject? = posts
-        .map { it to cleanTitle(it.str("title")) }
-        .filter { (_, clean) -> clean.isNotEmpty() && minOf(titleScore(title, clean), titleScore(clean, title)) >= 0.6 && sequel(clean) == sequel(title) }
+        .map { p ->
+            // "Squid Game – Netflix Original (Season 1)": a tagline after a spaced dash, when the whole doesn't match
+            val clean = cleanTitle(p.str("title"))
+            p to (clean.split(DASH, 2)[0].trim().takeIf { it.isNotEmpty() && !fits(title, clean) && fits(title, it) } ?: clean)
+        }
+        .filter { (_, clean) -> clean.isNotEmpty() && fits(title, clean) && sequel(clean) == sequel(title) }
         .filter { (p, _) ->
             val t = p.str("title")
             val y = postYear(p)
-            if (series) seasons(t).let { it.isEmpty() || season in it } else year == null || y == null || kotlin.math.abs(y - year) <= 1
+            if (!series) return@filter year == null || y == null || kotlin.math.abs(y - year) <= 1
+            val ss = seasons(t)
+            // a series post can't predate the show, and one for (at most) season 1 is dated within a year of its start:
+            // drive's "Squid Game: The Challenge (2023) Season 1" stood in for Squid Game (2021); later seasons carry later years
+            (ss.isEmpty() || season in ss) && (year == null || y == null || (y >= year - 1 && ((ss.maxOrNull() ?: season) > 1 || y <= year + 1)))
         }
         .maxByOrNull { (p, clean) ->
             // NetMirror lists "The Boys" the 2024 film and "The Boys" the 2019 series under one name; its tag has the year
@@ -332,7 +386,10 @@ internal object VegaPick {
                 (if (sameYear) 0.25 else 0.0)
         }?.first
 
-    private val SEQUEL_WORDS = listOf("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve")
+    private val DASH = Regex("""\s[–—-]\s""")
+    private fun fits(title: String, clean: String) = minOf(titleScore(title, clean), titleScore(clean, title)) >= 0.6
+
+    private val SEQUEL_WORDS =listOf("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve")
         .withIndex().associate { (i, w) -> w to i + 1 } +
         listOf("first", "second", "third", "fourth", "fifth").withIndex().associate { (i, w) -> w to i + 1 } +
         listOf("ii", "iii", "iv", "v", "vi", "vii", "viii", "ix").withIndex().associate { (i, w) -> w to i + 2 }

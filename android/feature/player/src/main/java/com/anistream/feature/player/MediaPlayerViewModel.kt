@@ -50,6 +50,8 @@ private const val START_TIMEOUT_MS = 40_000L
 /** data is arriving (this much buffered) but no frame after [DECODE_TIMEOUT_MS]: the decoder, not the network */
 private const val DECODE_TIMEOUT_MS = 12_000L
 private const val DECODE_BUFFERED_MS = 5_000L
+/** next-episode prefetch this close to the end when the credits aren't known (inside the 4 min stream cache) */
+private const val NEXT_PREFETCH_MS = 3 * 60_000L
 /** a provider's stand-in clip (NetMirror's "Too Many Requests") instead of the title: its fault, recorded as a failure */
 private const val ERROR_PLACEHOLDER = 1_000_001 // PlaybackException custom range (≥ 1 000 000)
 private const val DEFAULT_USER_AGENT =
@@ -287,6 +289,7 @@ class MediaPlayerViewModel @Inject constructor(
                         if (startedAt > 0) {
                             track("play")
                             track("source_used", "ttff" to System.currentTimeMillis() - startedAt)
+                            android.util.Log.d("Player", "first frame ${System.currentTimeMillis() - startedAt} ms after load: ${_uiState.value.stream?.label()}")
                             if (!_uiState.value.isLive) SourceRank.record(appContext, _uiState.value.stream, ok = true, ttff = System.currentTimeMillis() - startedAt)
                             startedAt = 0
                         }
@@ -347,6 +350,7 @@ class MediaPlayerViewModel @Inject constructor(
                     else request.mediaId?.let { movies.detail(it).exceptionOrNull() is KidsBlockedException } == true
                 if (blocked) return@launch _uiState.update { it.copy(request = null, isLoading = false, error = KidsPolicy.BLOCKED) }
                 recordStart(request)
+                android.util.Log.d("Player", "sources: ${request.streams.size} ${request.streams.groupingBy { "${SourceRank.provider(it)}:${it.height}" }.eachCount()}")
                 play(pick(request), null)
             }
             loadSkips(request)
@@ -355,7 +359,7 @@ class MediaPlayerViewModel @Inject constructor(
             viewModelScope.launch {
                 while (true) {
                     delay(10_000)
-                    if (player.isPlaying) saveProgress()
+                    if (player.isPlaying) { saveProgress(); prefetchNext() }
                     if (player.isPlaying && ++ticks % 6 == 0) track("heartbeat", "position" to player.currentPosition / 1000, "duration" to player.duration / 1000)
                 }
             }
@@ -371,6 +375,7 @@ class MediaPlayerViewModel @Inject constructor(
         if (fresh.isEmpty()) return
         val next = r.copy(streams = r.streams + if (lowEnd) lowEndOrder(fresh) else fresh)
         NowPlaying.request = next
+        android.util.Log.d("Player", "sources: ${next.streams.size} (+${fresh.size} late) ${next.streams.groupingBy { "${SourceRank.provider(it)}:${it.height}" }.eachCount()}")
         val ranOut = s.error?.startsWith("Playback failed") == true // every earlier source failed: try the newcomers
         _uiState.update { it.copy(request = next, error = if (ranOut) null else it.error, isLoading = ranOut || it.isLoading) }
         if (ranOut) nextUntried(next)?.let { play(it, player.currentPosition.takeIf { p -> p > 0 }) }
@@ -549,6 +554,23 @@ class MediaPlayerViewModel @Inject constructor(
                 is Result.Loading -> {}
             }
         }
+    }
+
+    private var prefetchedNext = ""
+
+    /** At the credits (or the last [NEXT_PREFETCH_MS]), look the next episode up so the countdown's Play finds it ready. */
+    private fun prefetchNext() {
+        val s = _uiState.value
+        val r = s.request ?: return
+        val id = r.mediaId ?: return
+        val dur = player.duration.takeIf { it > 0 && it != C.TIME_UNSET } ?: return
+        if (!s.hasNextEpisode || s.isLoading) return
+        val credits = s.skips.firstOrNull { it.isCredits }?.startMs
+        if ((credits == null || player.currentPosition < credits) && dur - player.currentPosition > NEXT_PREFETCH_MS) return
+        val key = NowPlaying.lateKey(id, r.season, r.episode + 1)
+        if (key == prefetchedNext) return
+        prefetchedNext = key
+        movies.prefetch(id, r.season, r.episode + 1)
     }
 
     fun dismissEnd() = _uiState.update { it.copy(ended = false) }
