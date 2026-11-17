@@ -8,7 +8,7 @@ import { EpisodeStrip, EpisodeStripSkeleton, type EpInfo } from "@/components/ep
 import { DetailHero, DetailSkeleton, SeasonNumerals } from "@/components/detail";
 import { PlayOnTv } from "@/components/play-on-tv";
 import { histMs } from "@/lib/hub";
-import { getHistory, playKey, kids, KIDS_BLOCKED, epProgress, syncHistory, watchHref, type Entry, type Play as P } from "@/lib/core";
+import { getHistory, playKey, kids, toPlay, KIDS_BLOCKED, epProgress, syncHistory, watchHref, type Entry, type Play as P } from "@/lib/core";
 import { useApi, useSession } from "@/lib/session";
 
 /** Seasons and the episode strip. TMDB stills and names when TMDB knows the season; numbered stubs otherwise. */
@@ -48,6 +48,19 @@ function Title({ id }: { id: string }) {
     read();
     if (m && s.token) syncHistory(pid, s.token).then(read).catch(() => {}); // pick up what the TV/phone watched since this device last synced
   }, [s.profile, s.token, id, m]);
+  // start the lookup Play would start while the page is read (after history settles: a resume plays another episode)
+  const playable = !!m && m.playable !== false && !(s.profile?.kids && !kids.media(m.genres, m.certification));
+  const target = !m ? null : last && (m.type !== "series" || last.payload.season) ? [last.payload.season ?? 0, last.payload.episode ?? 0]
+    : m.type === "series" ? [(m.seasons.find((x: any) => x.season === (season ?? last?.payload.season)) ?? m.seasons[0])?.season, 1] : [0, 0];
+  const tk = playable && target?.[0] !== undefined ? JSON.stringify(target) : "";
+  useEffect(() => {
+    if (!tk) return;
+    const [se, ep] = JSON.parse(tk), t = setTimeout(() => {
+      const p = toPlay({ kind: "movie", id, title: m.title, poster: m.poster, season: se, episode: ep, type: m.type, year: m.year });
+      if (p) import("@/lib/movies").then((x) => x.prefetchStream(p));
+    }, 400);
+    return () => clearTimeout(t);
+  }, [tk, id]); // eslint-disable-line react-hooks/exhaustive-deps
   if (error) return <Notice title="This title didn't load" body={error}><Link href="/" className={pill.secondary}>Go home</Link></Notice>;
   if (!m) return <DetailSkeleton />;
   if (s.profile?.kids && !kids.media(m.genres, m.certification)) return <Notice title={KIDS_BLOCKED} body="Switch profile to watch this."><Link href="/profiles" className={pill.secondary}>Switch profile</Link></Notice>;

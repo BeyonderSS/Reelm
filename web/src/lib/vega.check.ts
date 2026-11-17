@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { makeAxios, makeFetch, pickSeason, pickQualities, pickEpisode, NOT_MEDIA, TRIAL, kindOf, casesFor, checkProvider, order, enough, tripped, nextBreaker, fanOut } from "./vega.ts";
+import { makeAxios, makeFetch, pickSeason, pickQualities, pickEpisode, NOT_MEDIA, TRIAL, kindOf, casesFor, checkProvider, order, enough, tripped, nextBreaker, fanOut, remember, seriesYear } from "./vega.ts";
 assert.ok(NOT_MEDIA.test("https://x.y/config-ab12.json") && !NOT_MEDIA.test("https://x.y/f.mkv?t=1") && !NOT_MEDIA.test("https://pixeldrain.com/api/file/abc"));
 assert.ok(TRIAL.test("Gangs of Wasseypur - Hindi - 1080p - preview") && !TRIAL.test("Gangs of Wasseypur - Hindi - 1080p") && !TRIAL.test("Dhurandhar - Hindi, Tamil, Telugu - 720p")); // castle trial clips
 const R = (status: number, url: string, text = "", headers = {}) => ({ status, url, text, headers });
@@ -72,3 +72,14 @@ assert.equal(nextBreaker(e, false, 0), undefined); // a working search resets it
   const t = Date.now(), cut = await fanOut(["slow", "x"], async (p) => (p === "slow" ? new Promise<any[]>(() => {}) : [{ height: 720 }]), { limit: 1, after: 1, deadline: 50, enough, on: () => {} });
   assert.equal(cut.length, 0); assert.ok(Date.now() - t < 500); // nothing outlives the deadline
 }
+{ // remember: one call per key, failures and empty lists asked again, off = always asked
+  let n = 0; const one = (v: any) => () => (n++, v instanceof Error ? Promise.reject(v) : Promise.resolve(v));
+  await remember("k1", true, one([1])); await remember("k1", true, one([2]));
+  assert.deepEqual(await remember("k1", true, one([3])), [1]); assert.equal(n, 1);
+  await tx(remember("k2", true, one(new Error("x")))); await new Promise((r) => setTimeout(r)); assert.deepEqual(await remember("k2", true, one([4])), [4]);
+  await remember("k3", true, one([])); await new Promise((r) => setTimeout(r)); assert.deepEqual(await remember("k3", true, one([5])), [5]);
+  assert.deepEqual(await remember("k1", false, one([6])), [6]);
+}
+assert.ok(!seriesYear("Download Squid Game: The Challenge (2023) Season 1 [S01]", 2021, 1)); // another show
+assert.ok(seriesYear("Download Squid Game – Season 2 (2024) Multi Audio", 2021, 2) && seriesYear("Squid Game (Season 1) Dual Audio", 2021, 1) && seriesYear("Squid Game S01 2021", 2021, 1) && seriesYear("X 2023", 0, 1));
+assert.ok(seriesYear("Panchayat (Season 01-03) 2024 Complete Amazon Prime WEB-Series", 2020, 1) && !seriesYear("Panchayat (Season 1) 2025", 2020, 1)); // a pack carries its latest season's year

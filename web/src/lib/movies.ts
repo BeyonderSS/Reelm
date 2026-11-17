@@ -5,6 +5,7 @@ import * as tm from "@/lib/server/tmdb";
 import { bestTitle, rank, visible } from "@/lib/search-rank";
 import { bridge, helperOld, helperVega, helperVersion } from "@/lib/bridge";
 import { langs } from "@/lib/langs";
+import type { Play } from "@/lib/core";
 
 // MovieBox refuses datacenter IPs (Cloudflare, Vercel: HTTP 440) but allows CORS, so the browser runs these
 // from the viewer's own connection (see get() in core.ts). The API route keeps them for local dev.
@@ -88,4 +89,35 @@ export async function streamAll(q: URLSearchParams, on: (part: any[]) => void = 
   const list = r.flatMap((x) => (x.status === "fulfilled" ? (x.value as any[]) : []));
   if (!list.length) throw new Error((r.find((x) => x.status === "rejected") as PromiseRejectedResult | undefined)?.reason?.message ?? "No streams found");
   return list.sort((a, b) => +!!a.dolby - +!!b.dolby); // stable: Dolby releases (decoded in JS, see use-libav-audio) last, else Android order: MovieBox first, then the title sources (Dramachi, 4KHDHub), each best-first
+}
+
+// ---- start early, remember ----
+/** The lookup a Play payload starts; the watch page and prefetches build it here so they share one key. */
+export const streamQuery = (p: Play) => new URLSearchParams({ id: p.id, type: p.type ?? "movie", title: p.title, year: String(p.year ?? ""), s: String(p.season ?? 0), e: String(p.episode ?? 0) });
+type Run = { at: number; parts: any[][]; ons: Set<(part: any[]) => void>; done: Promise<any[]> };
+const runs = new Map<string, Run>(), TTL = 4 * 60e3; // stream URLs carry expiring tokens: never longer
+let prefetching = 0;
+/** streamAll, shared: a prefetch and the player asking for the same title run ONE lookup. `on` gets every part found so far (as one), then the late ones. `fresh` (Retry) starts over. */
+export function streamShared(q: URLSearchParams, on: (part: any[]) => void = () => {}, fresh = false) {
+  const k = q.toString(), now = Date.now();
+  let run = runs.get(k);
+  if (fresh || !run || now - run.at > TTL) {
+    for (const [x, r] of runs) if (now - r.at > TTL) runs.delete(x);
+    const r: Run = { at: now, parts: [], ons: new Set(), done: Promise.resolve([]) };
+    r.done = streamAll(q, (part) => { r.parts.push(part); r.ons.forEach((f) => f(part)); });
+    r.done.catch(() => runs.get(k) === r && runs.delete(k)); // a failed lookup isn't remembered
+    runs.set(k, (run = r));
+  }
+  const r = run;
+  if (r.parts.length) on(r.parts.flat());
+  r.ons.add(on);
+  return r.done.finally(() => r.ons.delete(on));
+}
+/** Start the lookup Play would start (a title's page, an episode's credits). Movies and series only, with the Helper; at most 2 at a time, the rest are dropped. */
+export function prefetchStream(p: Play) {
+  if (p.kind !== "movie" || !p.title || typeof document === "undefined" || !document.documentElement.dataset.reelmHelper || prefetching >= 2) return;
+  const q = streamQuery(p), r = runs.get(q.toString());
+  if (r && Date.now() - r.at < TTL) return;
+  prefetching++;
+  streamShared(q).catch(() => {}).finally(() => prefetching--);
 }

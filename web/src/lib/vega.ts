@@ -90,6 +90,12 @@ export function pickQualities(ll: Link[]) {
 export const NOT_MEDIA = /\.(json|txt|xml)(\?|#|$)/i;
 /** Trial clips a provider labels itself (castle: "… - 1080p - preview"): a few minutes, not the film. Same as Android's VegaPick. */
 export const TRIAL = /\b(preview|sample)\b/i;
+/** A series post's year is its (latest) season's: never before the show began, and a season-1 post's is the show's own (a "Season 01-03" pack's is season 3's).
+ * "Squid Game" (2021) S1 had picked "Squid Game: The Challenge (2023)". */
+export const seriesYear = (t: string, year: number, season: number) => {
+  const y = +(t.match(/\b(19|20)\d{2}\b/)?.[0] ?? 0), pack = /\bseasons?\s*0*\d+\s*(?:-|–|to)\s*0*\d+|\bS0*\d+\s*(?:-|–|to)\s*S?0*\d+\b/i.test(t);
+  return !y || !year || (y >= year - 1 && (season !== 1 || pack || y <= year + 1));
+};
 export const pickEpisode = (eps: { title: string; link: string }[], e: number) =>
   eps.find((x) => { const m = x.title.match(/(?:^|[^a-z])E0*(\d+)\b|\bepisode[\s._-]*0*(\d+)\b|^\s*0*(\d+)\b/i); return m && +(m[1] ?? m[2] ?? m[3]) === e; }) ?? eps.filter((x) => !/\bpack\b/i.test(x.title))[e - 1]; // "Episode-01 2.9 GB" (4khdhub); a lone "Season Pack" is no episode
 
@@ -114,6 +120,18 @@ const registry = async () => {
   } catch {}
   return { ...DEFAULT, base: cdn(DEFAULT.commit) };
 };
+/** Search results, metas and episode lists per provider: 1 h (they hold page links, not expiring stream URLs). Failures and empty searches aren't kept. */
+const memo = new Map<string, { t: number; v: Promise<any> }>(), HOUR = 36e5;
+export const remember = <T,>(k: string, on: boolean, f: () => Promise<T>): Promise<T> => {
+  const now = Date.now(), e = memo.get(k);
+  if (!on) return f();
+  if (e && now - e.t < HOUR) return e.v;
+  for (const [x, y] of memo) if (now - y.t >= HOUR) memo.delete(x);
+  const v = f();
+  memo.set(k, { t: now, v });
+  v.then((x) => { if (Array.isArray(x) && !x.length) memo.delete(k); }, () => memo.delete(k));
+  return v;
+};
 const tmo = <T,>(p: Promise<T>, ms: number) => Promise.race([p, new Promise<never>((_, no) => setTimeout(() => no(new Error("timeout")), ms))]);
 
 type Req = { title: string; year: number; type: "movie" | "series"; season: number; episode: number };
@@ -121,9 +139,10 @@ export type Stage = "load" | "search" | "meta" | "episodes" | "stream" | "done";
 const URLS = "https://raw.githubusercontent.com/Zenda-Cross/vega-providers/refs/heads/main/urls.json";
 let urls: Promise<Record<string, { url: string }>> | undefined;
 /** What the Vega app hands every provider (vega-app sandboxWorker.ts): getBaseUrl too (dramacool asks it first). */
-const context = async (f: F) => ({ axios: makeAxios(f), cheerio: await import("cheerio"), commonHeaders: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" },
+const context = async (f: F, p = "") => ({ axios: makeAxios(f), cheerio: await import("cheerio"), commonHeaders: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" },
   getBaseUrl: async (v: string) => ((await (urls ??= makeFetch(f)(URLS).then((r) => r.json()).catch((e) => { urls = undefined; throw e; })))[v]?.url ?? ""),
-  kvStore: (() => { const m = new Map<string, any>(); return { get: async (k: string) => m.get(k), set: async (k: string, v: any) => void m.set(k, v), delete: async (k: string) => m.delete(k), keys: async () => [...m.keys()], clear: async () => m.clear() }; })(),
+  // TheIntroDB skip times per episode (1.4-2.7 s per series lookup): off, the player asks TheIntroDB/AniSkip itself
+  kvStore: (() => { const m = new Map<string, any>([[`${p}_skipTimings`, false]]); return { get: async (k: string) => m.get(k), set: async (k: string, v: any) => void m.set(k, v), delete: async (k: string) => m.delete(k), keys: async () => [...m.keys()], clear: async () => m.clear() }; })(),
   openWebView: async () => { throw new Error("unsupported"); } });
 
 /** hls.js fetches the playlists and segments itself, so every host they live on needs CORS (Helper 1.3 adds it for Reelm's own requests) and the stream's Referer. */
@@ -144,20 +163,20 @@ async function hlsReady(url: string, hd: Record<string, string>, f: F) {
 }
 
 /** One provider, one title: search, meta, (episodes), stream, then probe each file the way a <video> asks. `at` reports each stage reached. */
-async function resolve(base: string, p: string, r: Req, ctx: any, f: F, at: (s: Stage) => void = () => {}) {
+async function resolve(base: string, p: string, r: Req, ctx: any, f: F, at: (s: Stage) => void = () => {}, onFile: (x: VegaFile) => void = () => {}, cache = true) {
   const { year, type, season, episode } = r, q = r.title.replace(/\s+(s\d{1,2}|season \d{1,2})\s*$/i, "").trim();
   const [posts, meta, stream, eps] = await Promise.all(["posts", "meta", "stream", "episodes"].map((n) => load(base, p, n, f).catch((e) => (n === "episodes" ? null : Promise.reject(e)))));
   const sig = new AbortController().signal, ctxBase = { providerValue: p, signal: sig, providerContext: ctx };
   at("search");
-  const res = (await posts.getSearchPosts({ searchQuery: q, page: 1, ...ctxBase })) as { title: string; link: string }[];
+  const res = (await remember(`${base}|${p}|search|${q}`, cache, () => posts.getSearchPosts({ searchQuery: q, page: 1, ...ctxBase }))) as { title: string; link: string }[];
   // "Download Breaking Bad (Season 1 – 5) Dual Audio…" → "Breaking Bad" (Android VegaPick.cleanTitle)
   const clean = (t: string) => { const x = t.replace(/^\s*(download\s+|\[[^\]]*\]\s*)+/i, ""), i = x.search(/[([{|]|\b(19|20)\d{2}\b|\bseason\b|\bS\d{1,2}\b/i); return (i < 0 ? x : x.slice(0, i)).trim(); };
   const found = res // both ways, as Android does: one way, "Breaking Bad" matched "Bad Cop" (0.63)
     .map((x) => ({ x, s: Math.min(score(q, clean(x.title)), score(clean(x.title), q)) + (year && x.title.includes(String(year)) ? 0.3 : 0) }))
-    .filter((e) => e.s >= 0.6 && (type !== "series" || pickSeason([e.x], season).length)).sort((a, b) => b.s - a.s)[0]?.x; // not a post for another season
+    .filter((e) => e.s >= 0.6 && (type !== "series" || (pickSeason([e.x], season).length && seriesYear(e.x.title, year, season)))).sort((a, b) => b.s - a.s)[0]?.x; // not a post for another season
   if (!found) { console.debug(`[vega] ${p}: no post matched "${q}"`, res.slice(0, 8).map((x) => x.title)); return []; }
   at("meta");
-  const m = await meta.getMeta({ link: found.link, provider: p, providerContext: ctx });
+  const m: any = await remember(`${base}|${p}|meta|${found.link}`, cache, () => meta.getMeta({ link: found.link, provider: p, providerContext: ctx }));
   console.debug(`[vega] ${p}: "${found.title.slice(0, 60)}" has ${m?.linkList?.length ?? 0} links`);
   const ll: Link[] = type === "series" ? pickSeason(m.linkList ?? [], season) : m.linkList ?? [];
   console.debug(`[vega] ${p}: links`, (m.linkList ?? []).map((l: Link) => `${l.title.slice(0, 50)}${l.episodesLink ? " [eps]" : ""}${l.directLinks?.length ? ` [${l.directLinks.length} dl: ${l.directLinks.slice(0, 3).map((d) => d.title).join("|")}]` : ""}`), `-> S${season}: ${ll.length}`);
@@ -166,7 +185,7 @@ async function resolve(base: string, p: string, r: Req, ctx: any, f: F, at: (s: 
     if (type === "series") {
       at("episodes"); // 4khdhub and autoEmbed list a season's episodes as its directLinks
       const el: { title: string; link: string }[] = l.directLinks?.length ? l.directLinks.map((d) => ({ title: d.title ?? "", link: d.link }))
-        : l.episodesLink && eps ? await eps.getEpisodes({ url: l.episodesLink, providerContext: ctx }) : [];
+        : l.episodesLink && eps ? await remember(`${base}|${p}|eps|${l.episodesLink}`, cache, () => eps.getEpisodes({ url: l.episodesLink, providerContext: ctx })) : [];
       const ep = pickEpisode(el, episode);
       console.debug(`[vega] ${p} ${l.title.slice(0, 30)}: ${el.length} episodes`, el.slice(0, 30).map((x: any) => x.title), `-> E${episode}: ${ep?.title}`);
       if (!ep) return null;
@@ -193,16 +212,20 @@ async function resolve(base: string, p: string, r: Req, ctx: any, f: F, at: (s: 
         if (!pr || (pr.status !== 200 && pr.status !== 206) || /text\/html|json|xml/.test(pr.headers["content-type"] ?? "")) { console.debug(`[vega] ${p}: dropped ${String(s.link).slice(8, 50)} (${pr ? pr.status + " " + pr.headers["content-type"] : "probe failed"})`); continue; }
       }
       const ht = h(l) || +(`${s.quality ?? ""}`.match(/\d{3,4}/)?.[0] ?? 0), ac = /ddp|dd\+|dd ?[257]\.1|e-?ac-?3|\bac-?3|dts|atmos|truehd/i.test(l.title) && !/aac|opus/i.test(l.title);
-      return { url: s.link as string, hls, height: ht, label: `${NAMES[p] ?? p} · ${String(s.server ?? "").split(" · ").filter((x) => x && x !== "Unknown" && !/^\d{3,4}p$/.test(x)).join(" ") || "Direct"}${ht ? " " + ht + "p" : ""}${ac ? " · Dolby audio" : ""}`, dolby: ac,
+      const file: VegaFile = { url: s.link as string, hls, height: ht, label: `${NAMES[p] ?? p} · ${String(s.server ?? "").split(" · ").filter((x) => x && x !== "Unknown" && !/^\d{3,4}p$/.test(x)).join(" ") || "Direct"}${ht ? " " + ht + "p" : ""}${ac ? " · Dolby audio" : ""}`, dolby: ac,
         codec: /av1/i.test(l.title) ? "AV1" : /hevc|x265|h\.?265/i.test(l.title) ? "HEVC" : /avc|x264|h\.?264/i.test(l.title) ? "H.264" : undefined,
         // the provider's own subtitle files (watch page shows them through /api/sub as WebVTT)
         subtitles: ((s.subtitles ?? []) as any[]).filter((t) => /^https?:/.test(t?.uri ?? "")).map((t) => ({ url: t.uri as string, label: String(t.title || t.language || "Subtitles"), lang: String(t.language ?? "") })),
         langs: langs(langs(l.title).length ? l.title : found.title) }; // the link names its own audio when it differs from the post (a Hindi-only 480p under a Dual Audio post)
+      onFile(file); // don't wait for the other quality
+      return file;
     }
     return null;
   }).map((x) => x.catch(() => null)));
   return out.filter((x) => !!x);
 }
+
+export type VegaFile = { url: string; hls: boolean; height: number; label: string; dolby: boolean; codec?: string; subtitles: { url: string; label: string; lang: string }[]; langs: string[] };
 
 // ---- what each provider carries ----
 /** The manifest's `type`, corrected where it says "global" for a niche catalog. */
@@ -249,16 +272,17 @@ export async function fanOut<T>(ps: string[], one: (p: string) => Promise<T[]>, 
   return got;
 }
 
-/** Every title provider, most reliable first, 5 at a time (2 once there's enough), each up to 45 s, all within 60 s. `on` gets each provider's files as soon as it has them. */
+/** Every title provider, most reliable first, 5 at a time (2 once there's enough), each up to 45 s, all within 60 s. `on` gets each file as soon as it's verified. */
 export async function streams(title: string, year: number, type: "movie" | "series", season: number, episode: number, f: F = vf, on: (x: Awaited<ReturnType<typeof resolve>>) => void = () => {}) {
   const reg = await registry(), kinds = await manifestTypes(reg.base), r = { title, year, type, season, episode }, stats = loadStats(), br = breakers(), now = Date.now();
   const ps = order(reg.enabled.filter((p) => !WEB_SKIP.includes(p) && !OFF_TITLE.includes(kindOf(p, kinds[p])) && !tripped(br[p], now)), (p) => reliability(stats[NAMES[p] ?? p], now));
-  const t0 = Date.now(), one = async (p: string) => {
+  const t0 = Date.now(), all: VegaFile[] = [], add = (x: VegaFile) => { if (Date.now() - t0 < 60000) { all.push(x); on([x]); } };
+  const one = async (p: string) => {
     // the provider's own fetches, so a search whose requests failed can be told from one that found nothing
     let stage = "load" as Stage, fails = 0;
     const g: F = (u, o) => stage !== "search" ? f(u, o) : f(u, o).then((x) => { if (x.status >= 400) fails++; return x; }, (e) => { fails++; throw e; });
     try {
-      const x = await tmo(resolve(reg.base, p, r, await context(g), g, (s) => { stage = s; }), 45000);
+      const x = await tmo(resolve(reg.base, p, r, await context(g, p), g, (s) => { stage = s; }, add), 45000);
       console.debug(`[vega] ${p}: ${x.length} in ${Date.now() - t0} ms`);
       if (stage !== "load") breaker(p, stage === "search" && !x.length && fails > 0);
       return x;
@@ -268,7 +292,8 @@ export async function streams(title: string, year: number, type: "movie" | "seri
       return [];
     }
   };
-  return (await fanOut(ps, one, { limit: 5, after: 2, deadline: 60000, enough, on })).sort((a, b) => b.height - a.height);
+  await fanOut(ps, one, { limit: 5, after: 2, deadline: 60000, enough, on: () => {} });
+  return all.sort((a, b) => b.height - a.height);
 }
 
 // ---- admin "Test update" ----
@@ -292,7 +317,7 @@ export async function checkProvider(commit: string, provider: string, c: CheckCa
   const title = `${req.title}${req.type === "series" ? ` S${req.season}E${req.episode}` : ` (${req.year})`}`;
   let stage = "load" as Stage;
   try {
-    const out = await tmo(resolve(cdn(commit), provider, req, await context(f), f, (s) => { if (ORDER.indexOf(s) > ORDER.indexOf(stage)) stage = s; }), ms);
+    const out = await tmo(resolve(cdn(commit), provider, req, await context(f, provider), f, (s) => { if (ORDER.indexOf(s) > ORDER.indexOf(stage)) stage = s; }, undefined, false), ms);
     if (out.length) return { ok: true, stage: "done", files: out.length, ms: Date.now() - t0, title };
     return { ok: false, stage, files: 0, ms: Date.now() - t0, error: stage === "search" ? "no search match" : "no playable file", title };
   } catch (e: any) { return { ok: false, stage, files: 0, ms: Date.now() - t0, error: String(e?.message ?? e), title }; }

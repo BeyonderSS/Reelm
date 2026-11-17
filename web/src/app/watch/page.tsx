@@ -140,7 +140,7 @@ function Player() {
   useEffect(() => {
     if (!p) return;
     let live = true;
-    setErr(""); setSources([]); setSubs([]); setSkips([]); setSi(-1); setTag({ i: -1, pin: 0 }); setQsel(0); setMore(false); keep.current = 0;
+    setErr(""); setSources([]); setSubs([]); setSkips([]); setCur(0); setDur(0); setSi(-1); setTag({ i: -1, pin: 0 }); setQsel(0); setMore(false); keep.current = 0;
     target.current = 0; tried.current = new Set(); exhausted.current = ""; setNote("");
     // TheIntroDB for movies and series: by IMDb id (Cinemeta), else the TMDB id
     const sid = p.kind === "movie" ? (/^tt\d+$/.test(p.id) ? p.id : p.id.match(/^tmdb:(?:movie|tv):(\d+)$/)?.[1]) : undefined;
@@ -165,10 +165,11 @@ function Player() {
         return [[{ src: proxied(r.master, r.referer), hls: true, label: "Auto" }], r.subtitles.map((x: Sub) => ({ ...x, url: proxied(x.url, r.referer) }))] as const;
       }
       if (!document.documentElement.dataset.reelmHelper) throw new Error("helper");
-      // progressive: sources join as each provider lands; play once the first ones are in plus a 4 s grace (or all are done), never switch for late ones.
-      // After the grace, wait for one this browser can surely decode (not HEVC/MKV/Dolby Vision), up to 15 s.
-      let acc: Source[] = [], started = false, grace: ReturnType<typeof setTimeout> | undefined, subbed = false, waited = false;
-      const ready = () => waited && acc.some((x) => !risky({ ...x, url: x.src }) && !dv(x));
+      // progressive: sources join as each provider lands (every one already verified); play as soon as one this browser can surely decode
+      // is in (not HEVC/MKV/Dolby Vision), else the best so far after 15 s or when all are done; never switch for late ones.
+      // A title page opened first has usually run this lookup already (prefetchStream): then everything found so far arrives at once.
+      let acc: Source[] = [], started = false, grace: ReturnType<typeof setTimeout> | undefined, subbed = false;
+      const ready = () => acc.some((x) => !risky({ ...x, url: x.src }) && !dv(x));
       const tl = Date.now();
       const begin = () => {
         if (started || !live || !acc.length) return;
@@ -178,16 +179,17 @@ function Player() {
         console.debug(`[stream] start ${acc[i].label} (of ${acc.length}) after ${Date.now() - tl} ms`);
       };
       setMore(true);
-      await (await import("@/lib/movies")).streamAll(new URLSearchParams({ id: p.id, type: p.type ?? "movie", title: p.title, year: String(p.year ?? ""), s: String(p.season ?? 0), e: String(p.episode ?? 0) }), (part) => {
+      const mv = await import("@/lib/movies");
+      await mv.streamShared(mv.streamQuery(p), (part) => {
         if (!live) return;
         acc = [...acc, ...part.map((x) => ({ src: x.url, hls: x.hls ?? /\.m3u8(\?|$)/.test(x.url), label: x.label, codec: x.codec, dolby: x.dolby, height: x.height, langs: x.langs }))];
         setSources(acc);
         console.debug(`[stream] +${part.length} = ${acc.length} at ${Date.now() - tl} ms`);
         const sb = part.find((x) => x.subtitles?.length)?.subtitles;
         if (sb && !subbed) { subbed = true; const b = sb.map((x: Sub) => ({ ...x, url: `/api/sub?u=${encodeURIComponent(x.url)}` })), d = b.findIndex((x: Sub) => x.default); setSubs(b); setSubIdx(d >= 0 ? d : 0); }
-        if (!grace) { grace = setTimeout(begin, 15000); setTimeout(() => { waited = true; if (ready()) begin(); }, 4000); }
-        else if (ready()) begin();
-      }).finally(() => live && setMore(false));
+        grace ??= setTimeout(begin, 15000);
+        if (ready()) begin();
+      }, nonce > 0).finally(() => live && setMore(false));
       begin();
       return null;
     })().then((r) => {
@@ -378,6 +380,13 @@ function Player() {
     }
     return null;
   }, [p, eps, series]);
+  // 30 s before the credits (else the last 2 min): look the next episode up now, so it starts at once
+  const nearEnd = next?.kind === "movie" && dur > 0 && cur >= (creditsAt ?? dur - 90) - 30;
+  useEffect(() => { // a beat later: right after "next" plays, cur/dur still hold the last episode's end until the reset renders
+    if (!nearEnd) return;
+    const t = setTimeout(() => import("@/lib/movies").then((m) => m.prefetchStream(next!)), 1000);
+    return () => clearTimeout(t);
+  }, [nearEnd, next && epKey(next)]); // eslint-disable-line react-hooks/exhaustive-deps
   const go = (np: P) => { save(); if (room) sendRoom({ type: "load", payload: np, position: 0 }); router.replace(href(np, extra)); };
   
   // a skip inside its interval; credits that run to the end are only worth a button when a next episode follows (the card below)
