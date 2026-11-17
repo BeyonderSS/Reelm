@@ -54,7 +54,7 @@ class FanOutTest {
         val got = FanOut.run(
             ('a'..'h').map { "$it" }, scope, limit = 3, after = 1, returnMs = 5_000, deadlineMs = 5_000,
             enough = { FanOut.enough(it, 1080) { h -> h }.also { e -> if (e) reached.set(true) } }, late = { late += it }
-        ) {
+        ) { _, _ ->
             val after = reached.get()
             peak.accumulateAndGet(live.incrementAndGet(), ::maxOf)
             if (after) peakAfter.accumulateAndGet(liveAfter.incrementAndGet(), ::maxOf)
@@ -75,10 +75,40 @@ class FanOutTest {
         val t0 = System.currentTimeMillis()
         val late = Collections.synchronizedList(mutableListOf<Int>())
         val got = FanOut.run(listOf("slow", "x", "y"), scope, limit = 2, after = 1, returnMs = 100, deadlineMs = 300,
-            enough = { false }, late = { late += it }) { p -> if (p == "slow") awaitCancellation() else { delay(150); listOf(720) } }
+            enough = { false }, late = { late += it }) { p, _ -> if (p == "slow") awaitCancellation() else { delay(150); listOf(720) } }
         assertTrue(System.currentTimeMillis() - t0 < 140)
         assertEquals(0, got.size)
         delay(500)
         assertEquals(listOf(720), late.toList()) // x lands late; its worker then retires (after = 1), and "slow" is cut at 300 ms
+    }
+
+    /** Fast answers go out at the cap; slow and "later" ones follow together; dead ones never. */
+    @Test
+    fun verifyDoesNotWaitForTheSlowest() = runBlocking {
+        val parts = Collections.synchronizedList(mutableListOf<Pair<Long, List<String>>>())
+        val t0 = System.currentTimeMillis()
+        val ms = mapOf("fast" to 10L, "dead" to 10L, "slow" to 300L, "gdrive" to 20L)
+        FanOut.verify(listOf("fast", "dead", "slow", "gdrive"), 100, { it == "gdrive" }, { delay(ms[it]!!); it != "dead" }) {
+            parts += (System.currentTimeMillis() - t0) to it
+        }
+        assertEquals(listOf(listOf("fast"), listOf("slow", "gdrive")), parts.map { it.second })
+        assertTrue(parts[0].first < 150) // "fast" didn't wait for "slow"
+    }
+
+    /** A provider hands each part the moment it's ready (first quality, then the rest): enough can hold before it's done. */
+    @Test
+    fun emittedPartsCountBeforeTheProviderIsDone() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.Default)
+        val late = Collections.synchronizedList(mutableListOf<Int>())
+        val t0 = System.currentTimeMillis()
+        val got = FanOut.run(listOf("a"), scope, limit = 1, after = 1, returnMs = 2_000, deadlineMs = 2_000,
+            enough = { it.size >= 2 }, late = { late += it }) { _, emit ->
+            emit(listOf(1080)); delay(50); emit(listOf(720)); delay(300)
+            listOf(480)
+        }
+        assertEquals(listOf(1080, 720), got)
+        assertTrue(System.currentTimeMillis() - t0 < 250) // not held until the provider finished
+        delay(500)
+        assertEquals(listOf(480), late.toList())
     }
 }

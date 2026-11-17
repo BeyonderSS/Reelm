@@ -6,7 +6,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
+import com.anistream.core.common.LowEnd
 import okhttp3.Call
+import okhttp3.ConnectionPool
 import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -26,6 +28,8 @@ class MediaHttp @Inject constructor() {
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .followRedirects(true)
+        // one lookup talks to ~15 hosts; OkHttp's default 5 idle connections left most of them cold (DNS + TLS again)
+        .connectionPool(ConnectionPool(if (LowEnd.eligible) 8 else 16, 5, TimeUnit.MINUTES))
         .build()
 
     suspend fun get(url: String, maxBytes: Long = 8L * 1024 * 1024): String = withContext(Dispatchers.IO) {
