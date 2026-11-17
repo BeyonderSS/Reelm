@@ -6,7 +6,7 @@ compileSdk = "35"
 minSdk = "22"
 targetSdk = "35"
 
-composeBom = "2024.12.01"
+composeBom = "2025.06.01"
 activityCompose = "1.9.3"
 navigationCompose = "2.8.5"
 lifecycleRuntime = "2.8.7"
