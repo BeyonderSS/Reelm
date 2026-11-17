@@ -43,6 +43,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import javax.inject.Inject
 
@@ -56,6 +58,16 @@ private const val SLOW_SWITCH_MS = 6_000L
 private const val NEXT_PREFETCH_MS = 3 * 60_000L
 /** a provider's stand-in clip (NetMirror's "Too Many Requests") instead of the title: its fault, recorded as a failure */
 private const val ERROR_PLACEHOLDER = 1_000_001 // PlaybackException custom range (≥ 1 000 000)
+/** 4K step-up: when auto-pick wants [STEP_TO], start at [STEP_FROM] (fast, decodes everywhere) and move up once the higher one is buffered */
+private const val STEP_TO = 2160
+private const val STEP_FROM = 1080
+/** after the first frame: a Play-on-TV handoff's seek lands first */
+private const val STEP_SETTLE_MS = 2_000L
+/** the background player starts this far ahead of the playing one (4K HLS took 4.4–6.1 s to start); doubles on each miss */
+private const val STEP_AHEAD_MS = 8_000L
+private const val STEP_GIVE_UP_MS = 30_000L
+/** how long auto-pick waits for the title's country (dub-safe pick) before ranking without it */
+private const val ORIGIN_WAIT_MS = 600L
 private const val DEFAULT_USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
@@ -157,6 +169,9 @@ class MediaPlayerViewModel @Inject constructor(
     private val appContext = context
     private fun pinKey(r: PlaybackRequest) = r.historyKey ?: r.mediaId ?: r.title
     private fun prefLang(r: PlaybackRequest) = AudioLanguage.preferred.value?.takeIf { l -> r.streams.any { l in it.languages } }
+    /** the title's country (MovieBox/Cinemeta detail) for [SourceRank.origin]; null until known */
+    private var country: String? = null
+    private fun origin(r: PlaybackRequest) = SourceRank.origin(country, r.streams)
     /** Connection-aware auto-pick (honouring [pin]) among the preferred language's streams: decides the height only. */
     private fun autoHeight(r: PlaybackRequest, pin: Int?): Int {
         val lang = prefLang(r)
@@ -165,10 +180,15 @@ class MediaPlayerViewModel @Inject constructor(
 
     /** Auto-pick: the height from [autoHeight], then the most reliable source of it. */
     private fun pick(r: PlaybackRequest): Int {
+        stepTo = 0
         if (r.isLive || r.streams.size < 2) { choose(r, r.streams[0].height); return 0 }
         com.anistream.core.account.HandoffHint.pickSource(r.streams.map { it.label() })?.let { choose(r, r.streams[it].height); return it } // Play on TV: the phone's source
         val pin = QualityPick.pinned(appContext, pinKey(r))
-        val i = choose(r, autoHeight(r, pin))
+        val want = autoHeight(r, pin)
+        // 4K starts slowly (and some never do): start at 1080p and step up in the background (see stepUp)
+        val up = pin == null && want >= STEP_TO && canStepUp(r)
+        val i = choose(r, if (up) STEP_FROM else want)
+        if (up && r.streams[i].height < want) stepTo = want
         val note = if (pin != null) "Pinned ${pin}p" else "Auto"
         _uiState.update { it.copy(autoIndex = i, quality = if (pin != null) r.streams[i].height else 0, autoNote = prefLang(r)?.let { l -> "$note · ${AudioLanguage.name(l)}" } ?: note) }
         return i
@@ -194,7 +214,7 @@ class MediaPlayerViewModel @Inject constructor(
     private var picked: String? = null
     private fun isTried(i: Int) = _uiState.value.request?.streams?.getOrNull(i)?.url in tried
     private fun order(r: PlaybackRequest, height: Int) =
-        SourceRank.fallbackOrder(r.streams, prefLang(r), height, SourceRank.load(appContext), System.currentTimeMillis(), canPlay, undecodable)
+        SourceRank.fallbackOrder(r.streams, prefLang(r), height, SourceRank.load(appContext), System.currentTimeMillis(), canPlay, undecodable, origin(r))
     /** best-ranked untried source of [height] (or below); fallbacks continue from there */
     private fun choose(r: PlaybackRequest, height: Int): Int {
         target = height
@@ -209,6 +229,7 @@ class MediaPlayerViewModel @Inject constructor(
         val s = _uiState.value
         val r = s.request?.takeIf { !it.isLive && it.streams.isNotEmpty() } ?: return
         QualityPick.pin(appContext, pinKey(r), height)
+        stopStepUp()
         val i = choose(r, if (height > 0) height else autoHeight(r, null))
         val h = r.streams[i].height
         // every source of that height is 10-bit HEVC: say so and play the best one this device decodes
@@ -226,7 +247,7 @@ class MediaPlayerViewModel @Inject constructor(
 
     /** "Show all sources": every source, best height first, ranked within it. */
     fun allSourcesOrder(): List<Int> = _uiState.value.request
-        ?.let { SourceRank.fallbackOrder(it.streams, null, Int.MAX_VALUE, SourceRank.load(appContext), System.currentTimeMillis(), canPlay, undecodable) }.orEmpty()
+        ?.let { SourceRank.fallbackOrder(it.streams, null, Int.MAX_VALUE, SourceRank.load(appContext), System.currentTimeMillis(), canPlay, undecodable, origin(it)) }.orEmpty()
 
     fun setShowAllSources(on: Boolean) {
         SourceRank.setShowAll(appContext, on)
@@ -250,6 +271,7 @@ class MediaPlayerViewModel @Inject constructor(
         if (lang == null || lang in trackLanguages(player.currentTracks) || lang in s.stream?.languages.orEmpty()) return
         val indices = r.streams.indices.filter { lang in r.streams[it].languages }
         if (indices.isEmpty()) return _uiState.update { it.copy(message = "No ${AudioLanguage.name(lang)} source for this title") }
+        stopStepUp()
         val i = choose(r, autoHeight(r, QualityPick.pinned(appContext, pinKey(r))))
         play(i, if (s.isLive) null else player.currentPosition)
         _uiState.update { it.copy(message = "Switched to ${r.streams[i].label()}") }
@@ -281,7 +303,9 @@ class MediaPlayerViewModel @Inject constructor(
             "host" to stream?.url?.let { Uri.parse(it).host }, *extra)
     }
 
-    val player: ExoPlayer = buildPlayer(context).apply {
+    private val swap = SwapPlayer(buildPlayer(context))
+    /** what the screens, remote and party drive; the ExoPlayer behind it changes when the 4K step-up lands */
+    val player: Player = swap.player.apply {
         addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {
@@ -298,6 +322,7 @@ class MediaPlayerViewModel @Inject constructor(
                             android.util.Log.d("Player", "first frame ${System.currentTimeMillis() - startedAt} ms after load: ${_uiState.value.stream?.label()}")
                             if (!_uiState.value.isLive) SourceRank.record(appContext, _uiState.value.stream, ok = true, ttff = System.currentTimeMillis() - startedAt)
                             startedAt = 0
+                            stepUp()
                         }
                         applyResume()
                     }
@@ -350,12 +375,14 @@ class MediaPlayerViewModel @Inject constructor(
         if (request == null || request.streams.isEmpty()) {
             _uiState.update { it.copy(isLoading = false, error = "Nothing to play") }
         } else {
+            val detail = request.mediaId?.takeIf { !request.isLive }?.let { id -> viewModelScope.async { movies.detail(id).getOrNull()?.country.also { country = it } } }
             viewModelScope.launch {
                 // kids: deep links, party joins and history can all land here, so check the title again
                 val blocked = KidsPolicy.active && if (request.isLive) !KidsPolicy.channel(request.subtitle)
                     else request.mediaId?.let { movies.detail(it).exceptionOrNull() is KidsBlockedException } == true
                 if (blocked) return@launch _uiState.update { it.copy(request = null, isLoading = false, error = KidsPolicy.BLOCKED) }
                 recordStart(request)
+                withTimeoutOrNull(ORIGIN_WAIT_MS) { detail?.await() } // dub-safe pick knows the title's country (usually cached by the detail page)
                 android.util.Log.d("Player", "sources: ${request.streams.size} ${request.streams.groupingBy { "${SourceRank.provider(it)}:${it.height}" }.eachCount()}")
                 play(pick(request), null)
             }
@@ -390,6 +417,27 @@ class MediaPlayerViewModel @Inject constructor(
     private fun play(index: Int, startMs: Long?) {
         val request = _uiState.value.request ?: return
         val stream = request.streams.getOrNull(index) ?: return
+        stepJob?.cancel() // a source change mid step-up: the new one gets its own after its first frame
+        val source = mediaSource(request, stream)
+        // live: no position = start at the live edge
+        startedAt = System.currentTimeMillis()
+        if (request.isLive || startMs == null) swap.exo.setMediaSource(source) else swap.exo.setMediaSource(source, startMs)
+        _uiState.update { it.copy(streamIndex = index, isLoading = true, error = null, ended = false) }
+        // subtitles: the file's own tracks (MKV/MP4/HLS) and the sideloaded ones are all Media3 text tracks; the selector
+        // turns on one in the viewer's language (or English) and the Subtitles menu lists every one (see textOptions)
+        // audio: a multi-audio file starts in the viewer's language, else the title's own (not the "Dual Audio" release's default Hindi)
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .setPreferredTextLanguages(*listOf(Locale.getDefault().language, "en").distinct().toTypedArray())
+            .setPreferredAudioLanguage(AudioLanguage.preferred.value ?: origin(request).lang)
+            .build()
+        player.prepare()
+        player.playWhenReady = true
+        watchStart(request, index, stream)
+    }
+
+    private fun mediaSource(request: PlaybackRequest, stream: MediaStream): androidx.media3.exoplayer.source.MediaSource {
         val userAgent = stream.headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value ?: DEFAULT_USER_AGENT
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(userAgent)
@@ -411,23 +459,15 @@ class MediaPlayerViewModel @Inject constructor(
             .apply { if (request.isLive) setLiveConfiguration(MediaItem.LiveConfiguration.Builder().build()) }
             .build()
         // DefaultDataSource reads file:// too, so downloads play here with the same controls
-        val source = (if (request.isLive || inferMimeType(stream)?.startsWith("application/") == true) DefaultMediaSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(appContext, http))
+        return (if (request.isLive || inferMimeType(stream)?.startsWith("application/") == true) DefaultMediaSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(appContext, http))
             else progressiveSources(appContext, http)).setLoadErrorHandlingPolicy(FailFast4xx).createMediaSource(item) // hosts that ignore Range: see NoRange.kt
-        // live: no position = start at the live edge
-        startedAt = System.currentTimeMillis()
-        if (request.isLive || startMs == null) player.setMediaSource(source) else player.setMediaSource(source, startMs)
-        _uiState.update { it.copy(streamIndex = index, isLoading = true, error = null, ended = false) }
-        // subtitles: the file's own tracks (MKV/MP4/HLS) and the sideloaded ones are all Media3 text tracks; the selector
-        // turns on one in the viewer's language (or English) and the Subtitles menu lists every one (see textOptions)
-        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-            .setPreferredTextLanguages(*listOf(Locale.getDefault().language, "en").distinct().toTypedArray())
-            .build()
-        player.prepare()
-        player.playWhenReady = true
-        // Some files load forever without an error (Google CDN MKVs whose index ExoPlayer can't reach): after 40 s
-        // without a first frame, fall back as if it had failed. startedAt is cleared on the first READY.
+    }
+
+    /**
+     * Some files load forever without an error (Google CDN MKVs whose index ExoPlayer can't reach): after 40 s
+     * without a first frame, fall back as if it had failed. startedAt is cleared on the first READY.
+     */
+    private fun watchStart(request: PlaybackRequest, index: Int, stream: MediaStream) {
         startWatch?.cancel()
         if (!request.isLive) startWatch = viewModelScope.launch {
             fun waiting() = _uiState.value.request.let { r ->
@@ -438,7 +478,8 @@ class MediaPlayerViewModel @Inject constructor(
                 val stats = SourceRank.load(appContext)
                 order(r, target).firstOrNull { val o = r.streams[it]
                     // never trade a source this device surely decodes for one it may not
-                    it != index && !isTried(it) && o.height == stream.height && !SourceRank.slowStart(o, stats) && !undecodable(o) && (canPlay(o) || !canPlay(stream)) }?.let { next ->
+                    it != index && !isTried(it) && o.height == stream.height && !SourceRank.slowStart(o, stats) && !undecodable(o) && (canPlay(o) || !canPlay(stream)) &&
+                        SourceRank.dubRank(o, origin(r)) <= SourceRank.dubRank(stream, origin(r)) }?.let { next -> // nor the title's audio for a dub
                     android.util.Log.d("Player", "slow start: no frame in ${SLOW_SWITCH_MS} ms from ${stream.label()}, trying ${r.streams[next].label()}")
                     SourceRank.record(appContext, stream, ttff = SLOW_SWITCH_MS) // teaches slowStart about this host, without a failure
                     tried += stream.url
@@ -454,6 +495,95 @@ class MediaPlayerViewModel @Inject constructor(
             delay(START_TIMEOUT_MS - DECODE_TIMEOUT_MS)
             if (waiting()) handleError(PlaybackException("No first frame in ${START_TIMEOUT_MS / 1000} s", null, PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT))
         }
+    }
+
+    /** the height auto-pick wanted while a [STEP_FROM] source plays first; 0 = no step-up (hand-picked, done, or given up) */
+    private var stepTo = 0
+    private var stepJob: kotlinx.coroutines.Job? = null
+
+    private fun stopStepUp() { stepTo = 0; stepJob?.cancel() }
+
+    /** Never on low-end devices (can't decode 4K), metered/Data Saver networks, downloads or live. */
+    private fun canStepUp(r: PlaybackRequest): Boolean = !lowEnd && !r.isLive && r.streams.all { it.url.startsWith("http") } &&
+        (appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager)?.isActiveNetworkMetered != true
+
+    /**
+     * 4K step-up, after the first frame of the [STEP_FROM] start: a second, muted ExoPlayer (no surface) loads the best
+     * [stepTo] source a few seconds ahead of the playing position; when the playing one reaches that point it takes over
+     * (surface, listeners, volume, speed, audio and subtitle language) and the old one is released. Gives up silently
+     * after [STEP_GIVE_UP_MS], on any error, or when the source can't seek; the quality picker still lists every height.
+     */
+    private fun stepUp() {
+        val s = _uiState.value
+        val r = s.request ?: return
+        val cur = s.stream ?: return
+        if (stepTo == 0 || cur.height >= stepTo || stepJob?.isActive == true) return
+        val from = s.streamIndex
+        val o = origin(r)
+        val ci = order(r, stepTo).firstOrNull { val c = r.streams[it]
+            c.height == stepTo && !isTried(it) && !undecodable(c) && canPlay(c) && SourceRank.dubRank(c, o) <= SourceRank.dubRank(cur, o) }
+            ?: return run { stepTo = 0 }
+        val c = r.streams[ci]
+        stepJob = viewModelScope.launch {
+            delay(STEP_SETTLE_MS)
+            // a remote handoff still landing, or the network turned metered: stay
+            if (com.anistream.core.account.HandoffHint.positionMs != null || !canStepUp(r)) return@launch run { stepTo = 0 }
+            val t0 = System.currentTimeMillis()
+            val next = buildPlayer(appContext)
+            try {
+                val old = swap.exo
+                next.volume = 0f
+                next.trackSelectionParameters = carried(old)
+                var ahead = STEP_AHEAD_MS
+                var at = old.currentPosition + ahead
+                next.setMediaSource(mediaSource(r, c), at)
+                next.prepare()
+                val ready = withTimeoutOrNull(STEP_GIVE_UP_MS) {
+                    while (true) {
+                        next.playerError?.let { throw it }
+                        val lead = at - old.currentPosition
+                        if (next.playbackState == Player.STATE_READY) {
+                            if (!next.isCurrentMediaItemSeekable) throw IllegalStateException("not seekable")
+                            if (old.isPlaying && lead <= 30) break
+                        }
+                        // the playing one passed the point (slow load) or was seeked away: try further ahead
+                        if (lead < -200 || lead > ahead + 5_000) { ahead = minOf(ahead * 2, 30_000); at = old.currentPosition + ahead; next.seekTo(at) }
+                        delay(if (lead > 1_000) 100 else 10)
+                    }
+                }
+                if (ready == null) throw IllegalStateException("not ready in ${STEP_GIVE_UP_MS / 1000} s")
+                val dur = next.duration.takeIf { it != C.TIME_UNSET } ?: 0
+                if (SourceRank.isPlaceholder(dur, expectedMin, r.season == 0)) throw IllegalStateException("placeholder clip")
+                val f = next.videoFormat
+                if (f != null && SourceRank.isMain10(f.codecs, f.sampleMimeType, f.colorInfo?.colorTransfer.let { it == C.COLOR_TRANSFER_ST2084 || it == C.COLOR_TRANSFER_HLG }) && !LowEnd.hasHevcMain10)
+                    throw IllegalStateException("10-bit")
+                val oldPos = old.currentPosition
+                next.setPlaybackParameters(old.playbackParameters)
+                next.volume = old.volume
+                next.playWhenReady = old.playWhenReady
+                swap.swap(next).release()
+                stepTo = 0
+                target = c.height
+                android.util.Log.d("Player", "step-up: ${cur.height}p → ${c.label()} after ${System.currentTimeMillis() - t0} ms, at ${next.currentPosition} ms (old at $oldPos ms)")
+                _uiState.update { it.copy(streamIndex = ci, autoIndex = if (it.autoIndex == from) ci else it.autoIndex, message = "Switched to ${if (c.height >= 2160) "4K" else "${c.height}p"}") }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                next.release(); throw e
+            } catch (e: Exception) {
+                next.release()
+                stepTo = 0
+                android.util.Log.d("Player", "step-up to ${c.label()} given up after ${System.currentTimeMillis() - t0} ms: ${e.message}")
+            }
+        }
+    }
+
+    /** The playing instance's settings for the next one: its audio and subtitle language (or subtitles off), without per-file overrides. */
+    private fun carried(old: ExoPlayer): androidx.media3.common.TrackSelectionParameters {
+        fun lang(type: Int) = old.currentTracks.groups.firstOrNull { it.type == type && it.isSelected }
+            ?.let { g -> (0 until g.length).firstOrNull(g::isTrackSelected)?.let { g.getTrackFormat(it).language } }
+        return old.trackSelectionParameters.buildUpon().clearOverrides()
+            .apply { lang(C.TRACK_TYPE_AUDIO)?.let { setPreferredAudioLanguage(it) } }
+            .apply { lang(C.TRACK_TYPE_TEXT)?.let { setPreferredTextLanguage(it) } }
+            .build()
     }
 
     private fun handleError(error: PlaybackException) {
@@ -490,13 +620,14 @@ class MediaPlayerViewModel @Inject constructor(
             if (!r.isLive) QualityPick.pin(appContext, pinKey(r), it.height)
             tried -= it.url // an explicit pick gets another go
             picked = it.url
+            stopStepUp()
             choose(r, it.height) // the fallback chain continues from its height
             _uiState.update { u -> u.copy(quality = it.height) }
         } }
         play(index, if (_uiState.value.isLive) null else player.currentPosition)
     }
 
-    fun retry() = tried.clear().also { slowLeft.clear() }.let { play(_uiState.value.streamIndex, if (_uiState.value.isLive) null else player.currentPosition) }
+    fun retry() = tried.clear().also { slowLeft.clear(); stopStepUp() }.let { play(_uiState.value.streamIndex, if (_uiState.value.isLive) null else player.currentPosition) }
 
     /** Upsert the history row so Continue Watching sees it; resume when it's the same season/episode. */
     private suspend fun recordStart(request: PlaybackRequest) {
@@ -641,6 +772,7 @@ class MediaPlayerViewModel @Inject constructor(
     fun messageShown() = _uiState.update { it.copy(message = null) }
 
     fun onStop() {
+        stepJob?.cancel() // leaving the screen: no second player loading in the background
         player.pause()
         saveProgress(push = true)
     }

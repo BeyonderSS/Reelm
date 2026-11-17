@@ -68,17 +68,58 @@ internal object SourceRank {
             ("pixeldrain" in u && "download" in u) || (!s.isDirectFile && s.height >= 2160)
     }
 
+    /** The title's audio as far as auto-pick needs it: [lang] its original language when known, [indian] an Indian original. */
+    data class Origin(val lang: String?, val indian: Boolean)
+
+    private val REGIONAL = setOf("hi", "ta", "te", "ml", "kn", "bn", "mr")
+    private val COUNTRY_LANG = listOf(
+        "india" to "", "united states" to "en", "usa" to "en", "united kingdom" to "en", "uk" to "en", "canada" to "en", "australia" to "en",
+        "ireland" to "en", "new zealand" to "en", "korea" to "ko", "japan" to "ja", "china" to "zh", "hong kong" to "zh", "taiwan" to "zh",
+        "france" to "fr", "spain" to "es", "mexico" to "es", "argentina" to "es", "germany" to "de", "italy" to "it", "turkey" to "tr",
+        "thailand" to "th", "russia" to "ru", "brazil" to "pt", "portugal" to "pt"
+    )
+
+    /**
+     * From the title's first country ("United States, United Kingdom" → en; India → Indian, its language the one most of
+     * [list] carry, Hindi on a tie); without a country the title counts as Indian only when every source names an Indian language.
+     */
+    fun origin(country: String?, list: List<MediaStream>): Origin {
+        val first = country?.split(',', '/')?.firstOrNull()?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+        val code = first?.let { c -> COUNTRY_LANG.firstOrNull { (k, _) -> c == k || c.contains(k) && k.length > 3 }?.second }
+        val indian = if (first != null) code == "" else list.isNotEmpty() && list.all { s -> s.languages.isNotEmpty() && s.languages.any { it in REGIONAL } }
+        if (!indian) return Origin(code?.takeIf { it.isNotEmpty() }, false)
+        val counts = list.flatMap { it.languages.filter { l -> l in REGIONAL } }.groupingBy { it }.eachCount()
+        return Origin(counts.maxByOrNull { (l, n) -> n * 2 + if (l == "hi") 1 else 0 }?.key ?: "hi", true)
+    }
+
+    /**
+     * Audio rank within a height, lower first: the original language → unlabelled (usually the original audio) → English →
+     * other multi-audio → a single-language regional dub (Tamil, Hindi … only) of a non-Indian title, which never beats
+     * the rest: castle's "Inception - Tamil - 1080p" was auto-picked over the English files.
+     */
+    fun dubRank(s: MediaStream, o: Origin): Int {
+        val l = s.languages
+        return when {
+            o.lang != null && o.lang in l -> 0
+            l.isEmpty() -> 1
+            "en" in l -> 2
+            !o.indian && l.size == 1 && l[0] in REGIONAL -> 4
+            else -> 3
+        }
+    }
+
     /**
      * Indexes of [list] to try, in order: [lang]'s sources first; within them what this device can decode at all ([undecodable] last, whatever its height); [height] itself, then each lower height (nearest first), then higher;
-     * within a height: what this device can decode, then what starts fast ([slowStart] last), then provider reliability, then list order.
+     * within a height: the title's own audio ([dubRank] by [origin]), what this device can decode, then what starts fast ([slowStart] last), then provider reliability, then list order.
      */
-    fun fallbackOrder(list: List<MediaStream>, lang: String?, height: Int, stats: Map<String, SrcStat>, now: Long, canPlay: (MediaStream) -> Boolean = { true }, undecodable: (MediaStream) -> Boolean = { false }): List<Int> {
+    fun fallbackOrder(list: List<MediaStream>, lang: String?, height: Int, stats: Map<String, SrcStat>, now: Long, canPlay: (MediaStream) -> Boolean = { true }, undecodable: (MediaStream) -> Boolean = { false }, origin: Origin? = null): List<Int> {
         val anyLang = lang != null && list.any { lang in it.languages }
         return list.indices.sortedWith(compareBy(
             { if (anyLang && lang !in list[it].languages) 1 else 0 },
             { if (undecodable(list[it])) 1 else 0 },
             { list[it].height.let { h -> if (h == height) 0 else if (h < height) 1 else 2 } },
             { list[it].height.let { h -> if (h < height) -h else h } },
+            { if (origin == null) 0 else dubRank(list[it], origin) },
             { if (canPlay(list[it])) 0 else 1 },
             { if (slowStart(list[it], stats)) 1 else 0 },
             { -score(stats[provider(list[it])], now) }

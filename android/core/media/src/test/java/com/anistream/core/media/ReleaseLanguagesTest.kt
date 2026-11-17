@@ -20,6 +20,11 @@ class ReleaseLanguagesTest {
         assertEquals(emptyList<String>(), p("Inception (2010) BluRay 1080p x264"))
         assertEquals(emptyList<String>(), p("Ben-Hur (2016) 1080p")) // short form without an audio marker
         assertEquals(listOf("hi"), p("English Vinglish (2012) Hindi 1080p", "English Vinglish"))
+        // per-file labels the dub-safe auto-pick ranks (SourceRankTest.dubSafe)
+        assertEquals(listOf("ta"), p("Inception - Tamil - 1080p", "Inception"))
+        assertEquals(listOf("hi"), p("Gangs of Wasseypur - Hindi - 1080p", "Gangs of Wasseypur"))
+        assertEquals(listOf("hi", "ta", "te"), p("Dhurandhar - Hindi, Tamil, Telugu - 720p", "Dhurandhar"))
+        assertEquals(listOf("hi", "en"), p("Inception (2010) Dual Audio [Hindi ORG + English] 1080p", "Inception"))
     }
 
     @Test
