@@ -436,7 +436,9 @@ class MediaPlayerViewModel @Inject constructor(
             delay(SLOW_SWITCH_MS)
             if (waiting() && stream.url != picked && player.totalBufferedDuration < DECODE_BUFFERED_MS) _uiState.value.request?.let { r ->
                 val stats = SourceRank.load(appContext)
-                order(r, target).firstOrNull { it != index && !isTried(it) && r.streams[it].height == stream.height && !SourceRank.slowStart(r.streams[it], stats) }?.let { next ->
+                order(r, target).firstOrNull { val o = r.streams[it]
+                    // never trade a source this device surely decodes for one it may not
+                    it != index && !isTried(it) && o.height == stream.height && !SourceRank.slowStart(o, stats) && !undecodable(o) && (canPlay(o) || !canPlay(stream)) }?.let { next ->
                     android.util.Log.d("Player", "slow start: no frame in ${SLOW_SWITCH_MS} ms from ${stream.label()}, trying ${r.streams[next].label()}")
                     SourceRank.record(appContext, stream, ttff = SLOW_SWITCH_MS) // teaches slowStart about this host, without a failure
                     tried += stream.url

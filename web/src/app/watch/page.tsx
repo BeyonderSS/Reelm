@@ -300,10 +300,12 @@ function Player() {
   }, [sources.length, more]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 6000); return () => clearTimeout(t); }, [toast]);
   // no picture after SLOW_SWITCH_MS: a fast-starting source of the same height takes over; the slow one stays listed and comes back last
+  // never trade a source this browser surely decodes for one it may not (a Dolby-audio 4KHDHub file hung 40 s that way)
+  const unsure = (x: Source) => dv(x) || !!x.dolby || risky({ ...x, url: x.src });
   slowRef.current = () => {
     if (!src || !startedAt.current || (video.current?.readyState ?? 0) >= 2 || picked.current === si) return;
     const st = loadStats(), nx = fallbackOrder(sources, { lang: want, height: target.current, stats: st })
-      .find((i) => i !== si && !tried.current.has(i) && (sources[i].height ?? 0) === (src.height ?? 0) && !slowStart(sources[i], st));
+      .find((i) => i !== si && !tried.current.has(i) && (sources[i].height ?? 0) === (src.height ?? 0) && !slowStart(sources[i], st) && (unsure(src) || !unsure(sources[i])));
     if (nx === undefined) return;
     console.debug(`[stream] slow start ${src.label} -> ${sources[nx].label}`);
     recordStat(src.label, { ttff: SLOW_SWITCH_MS }, src.src); // teaches slowStart about this host, without a failure
