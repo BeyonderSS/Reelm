@@ -21,7 +21,7 @@ export const hostKey = (url = "") => { const h = /^\w+:\/\/([^/:?#]+)/.exec(url)
  *  (2026-11-17, first 2 MB / first HLS segment): Google "download only" 1.8–6 s, Pixeldrain ?download, adaptive 4K HLS 4.4–6.1 s. */
 export const slowStart = (x: Pickable, stats: Stats) => {
   const u = (x.url ?? x.src ?? "").toLowerCase(), k = hostKey(u), seen = k ? stats[k]?.ttff : 0;
-  if (seen) return seen > 4000;
+  if (seen) return seen > 3000;
   return /download only/i.test(x.label ?? "") || u.includes("video-downloads.googleusercontent.com") || (u.includes("pixeldrain") && u.includes("download")) || (!!x.hls && (x.height ?? 0) >= 2160);
 };
 /** Updates the provider's record; a first-frame time also goes to the host's (`url`) for slowStart. */

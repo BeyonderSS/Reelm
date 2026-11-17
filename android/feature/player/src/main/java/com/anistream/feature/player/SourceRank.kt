@@ -54,10 +54,10 @@ internal object SourceRank {
     /** Stats key for a host's start time: "@pixeldrain.dev" (random worker / bucket subdomains share their site's). */
     fun hostKey(url: String): String? = Regex("""^\w+://([^/:?#]+)""").find(url)?.groupValues?.get(1)?.lowercase()?.split('.')?.takeLast(2)?.joinToString(".", "@")
 
-    private const val SLOW_START_MS = 4_000.0
+    private const val SLOW_START_MS = 3_000.0
 
     /**
-     * Starts slowly (seconds before the first frame): this device's own first-frame average for the host when it has one,
+     * Starts slowly (over 3 s to the first frame): this device's own first-frame average for the host when it has one,
      * else what measured slow from here (2026-11-17, first 2 MB / first HLS segment): Google's "download only" files
      * 1.8–6 s, Pixeldrain's ?download, adaptive 4K HLS 4.4–6.1 s; CF Storage, MovieBox and castle took 0.3–2 s.
      */
