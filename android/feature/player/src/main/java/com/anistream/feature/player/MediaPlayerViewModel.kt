@@ -189,6 +189,7 @@ class MediaPlayerViewModel @Inject constructor(
         val up = pin == null && want >= STEP_TO && canStepUp(r)
         val i = choose(r, if (up) STEP_FROM else want)
         if (up && r.streams[i].height < want) stepTo = want
+        android.util.Log.d("Player", "auto: wants ${want}p, starts ${r.streams[i].height}p${if (stepTo > 0) ", steps up to ${stepTo}p" else ""}")
         val note = if (pin != null) "Pinned ${pin}p" else "Auto"
         _uiState.update { it.copy(autoIndex = i, quality = if (pin != null) r.streams[i].height else 0, autoNote = prefLang(r)?.let { l -> "$note · ${AudioLanguage.name(l)}" } ?: note) }
         return i
@@ -479,7 +480,7 @@ class MediaPlayerViewModel @Inject constructor(
                 order(r, target).firstOrNull { val o = r.streams[it]
                     // never trade a source this device surely decodes for one it may not
                     it != index && !isTried(it) && o.height == stream.height && !SourceRank.slowStart(o, stats) && !undecodable(o) && (canPlay(o) || !canPlay(stream)) &&
-                        SourceRank.dubRank(o, origin(r)) <= SourceRank.dubRank(stream, origin(r)) }?.let { next -> // nor the title's audio for a dub
+                        SourceRank.keepsAudio(o, stream, origin(r)) }?.let { next -> // nor the title's audio for a dub
                     android.util.Log.d("Player", "slow start: no frame in ${SLOW_SWITCH_MS} ms from ${stream.label()}, trying ${r.streams[next].label()}")
                     SourceRank.record(appContext, stream, ttff = SLOW_SWITCH_MS) // teaches slowStart about this host, without a failure
                     tried += stream.url
@@ -504,7 +505,7 @@ class MediaPlayerViewModel @Inject constructor(
     private fun stopStepUp() { stepTo = 0; stepJob?.cancel() }
 
     /** Never on low-end devices (can't decode 4K), metered/Data Saver networks, downloads or live. */
-    private fun canStepUp(r: PlaybackRequest): Boolean = !lowEnd && !r.isLive && r.streams.all { it.url.startsWith("http") } &&
+    private fun canStepUp(r: PlaybackRequest): Boolean = !lowEnd && !r.isLive && r.streams.any { it.url.startsWith("http") } && // a download is its one local file
         (appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager)?.isActiveNetworkMetered != true
 
     /**
@@ -521,8 +522,8 @@ class MediaPlayerViewModel @Inject constructor(
         val from = s.streamIndex
         val o = origin(r)
         val ci = order(r, stepTo).firstOrNull { val c = r.streams[it]
-            c.height == stepTo && !isTried(it) && !undecodable(c) && canPlay(c) && SourceRank.dubRank(c, o) <= SourceRank.dubRank(cur, o) }
-            ?: return run { stepTo = 0 }
+            c.height == stepTo && c.url.startsWith("http") && !isTried(it) && !undecodable(c) && canPlay(c) && SourceRank.keepsAudio(c, cur, o) }
+            ?: return run { android.util.Log.d("Player", "step-up: no ${stepTo}p source this device decodes in the same audio"); stepTo = 0 }
         val c = r.streams[ci]
         stepJob = viewModelScope.launch {
             delay(STEP_SETTLE_MS)

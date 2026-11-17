@@ -128,6 +128,10 @@ class SourceRankTest {
         assertEquals("castle", first(inception, "United States", lang = "ta")) // the viewer asked for Tamil
         assertEquals(SourceRank.Origin("en", false), SourceRank.origin("United States, United Kingdom", inception))
         assertEquals(4, SourceRank.dubRank(inception[0], SourceRank.origin(null, inception)))
+        // step-up from the Hindi + English file: to an unlabelled 4K yes, to the Tamil dub no
+        val us = SourceRank.origin("United States", inception)
+        assertTrue(SourceRank.keepsAudio(inception[3], inception[2], us))
+        assertTrue(!SourceRank.keepsAudio(inception[0], inception[2], us))
         // a single-language dub loses to a multi-audio file too
         assertEquals("multi", first(listOf(s(1080, "castle", langs = listOf("ta")), s(1080, "multi", langs = listOf("hi", "ta", "te"))), "South Korea"))
         // Gangs of Wasseypur - Hindi - 1080p: a Hindi original, so Hindi is right

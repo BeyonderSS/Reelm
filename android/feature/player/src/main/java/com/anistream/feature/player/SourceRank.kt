@@ -108,6 +108,9 @@ internal object SourceRank {
         }
     }
 
+    /** Moving from [cur] to [next] (a slow start's replacement, the 4K step-up) doesn't trade the title's audio for a dub: an unlabelled file counts as original. */
+    fun keepsAudio(next: MediaStream, cur: MediaStream, o: Origin) = dubRank(next, o) <= maxOf(dubRank(cur, o), 1)
+
     /**
      * Indexes of [list] to try, in order: [lang]'s sources first; within them what this device can decode at all ([undecodable] last, whatever its height); [height] itself, then each lower height (nearest first), then higher;
      * within a height: the title's own audio ([dubRank] by [origin]), what this device can decode, then what starts fast ([slowStart] last), then provider reliability, then list order.
