@@ -135,6 +135,15 @@ fun TvHomeScreen(filter: HomeFilter, homeVm: HomeViewModel, moviesVm: MoviesHome
         // low-end: change hero/backdrop only once focus has rested 300 ms; further moves cancel the load
         snapshotFlow { focused.value }.collectLatest { if (lowEnd && hero.value != null) delay(300); hero.value = it }
     }
+    LaunchedEffect(lowEnd) {
+        // focus resting 1.5 s on a movie/series warms its Play (low-end: Continue-watching tickets only); moving on cancels
+        snapshotFlow { focused.value }.collectLatest { item ->
+            val id = item?.mediaId ?: return@collectLatest
+            if (lowEnd && !item.key.startsWith("cw|")) return@collectLatest
+            delay(1_500)
+            homeVm.prefetch(id)
+        }
+    }
     var lastFocused by rememberSaveable { mutableStateOf<String?>(null) }
     val restore = remember { FocusRequester() }
     val heroReq = remember { FocusRequester() }
@@ -380,6 +389,7 @@ private fun buildRows(
         key = "$row|${m.id}", title = m.title, imageUrl = m.posterUrl,
         meta = listOfNotNull(if (m.type == MediaType.SERIES) "Series" else "Movie", m.year?.toString(), scoreLabel(m.rating)) + m.genres.take(2),
         trailer = mediaTrailerKey(m.id, m.title, m.year, m.type == MediaType.SERIES),
+        mediaId = m.id,
         onClick = { nav.navigate(TvRoutes.movie(m.id)) }
     )
 
@@ -395,6 +405,7 @@ private fun buildRows(
         onLongClick = { onRemove(h) },
         trailer = if (h.kind == "media") mediaTrailerKey(h.detailId, h.animeTitle, null, h.season > 0 || h.lastEpisodeWatched > 0)
             else animeTrailerKey(h.malId, h.animeTitle, null),
+        mediaId = h.detailId.takeIf { h.kind == "media" },
         // anime resumes straight into the player; media goes through detail, where Resume is the first focus
         onClick = {
             if (h.kind == "media") nav.navigate(TvRoutes.movie(h.detailId))

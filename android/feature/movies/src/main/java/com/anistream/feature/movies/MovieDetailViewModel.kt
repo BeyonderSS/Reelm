@@ -86,6 +86,35 @@ sealed interface DetailEvent {
 }
 
 private val KeySuffix = Regex(":s(\\d+)e(\\d+)$")
+private const val PICK_DWELL_MS = 1_500L
+
+/** This title's newest history row, saved under the plain id or the "id:sXeY" episode form. */
+internal fun historyOf(d: MediaDetail, all: List<WatchHistory>): WatchHistory? = all
+    .filter { it.animeSlug == mediaSlug(d.type == MediaType.SERIES, d.title) || it.mediaId == d.id || it.animeSlug == d.id || it.animeSlug.startsWith(d.id + ":s") }
+    .maxByOrNull { it.lastWatchedTimestamp }
+
+/** Where "Continue" picks up from [h]; null = nothing to continue. */
+internal fun resumeOf(d: MediaDetail, h: WatchHistory): Resume? {
+    val m = KeySuffix.find(h.animeSlug)
+    return if (d.type == MediaType.MOVIE) {
+        Resume(0, 0).takeIf { h.watchProgress in 0.01f..0.9f }
+    } else {
+        val season = h.season.takeIf { it > 0 } ?: m?.groupValues?.get(1)?.toInt() ?: d.seasons.firstOrNull()?.number ?: 1
+        val ep = m?.groupValues?.get(2)?.toInt() ?: h.lastEpisodeWatched.coerceAtLeast(1)
+        val count = d.seasons.firstOrNull { it.number == season }?.episodeCount ?: 0
+        when {
+            h.watchProgress < 0.9f -> Resume(season, ep)
+            count == 0 || ep < count -> Resume(season, ep + 1)
+            else -> d.seasons.firstOrNull { it.number > season }?.let { Resume(it.number, 1) }
+        }
+    }
+}
+
+internal fun defaultTarget(d: MediaDetail) =
+    if (d.type == MediaType.SERIES) Resume(d.seasons.firstOrNull()?.number ?: 1, 1) else Resume(0, 0)
+
+/** The episode the detail page's Play / Continue button starts (phone and TV alike). */
+internal fun playTarget(d: MediaDetail, resume: Resume?) = resume ?: defaultTarget(d)
 
 /** History's catalog-independent media key ([mediaSlug]), not something the catalog can open directly. */
 fun isCanonicalKey(id: String) = id.startsWith("movie:") || id.startsWith("series:")
@@ -97,7 +126,8 @@ class MovieDetailViewModel @Inject constructor(
     private val favorites: FavoriteRepository,
     private val history: WatchHistoryRepository,
     private val downloads: DownloadRepository,
-    private val guide: com.anistream.core.media.EpisodeGuide
+    private val guide: com.anistream.core.media.EpisodeGuide,
+    private val prefetch: PlayPrefetch
 ) : ViewModel() {
 
     private var id: String = savedStateHandle.get<String>("id").orEmpty()
@@ -161,33 +191,28 @@ class MovieDetailViewModel @Inject constructor(
         load()
     }
 
-    fun selectSeason(n: Int) = _uiState.update { it.copy(selectedSeason = n) }
+    fun selectSeason(n: Int) {
+        _uiState.update { it.copy(selectedSeason = n) }
+        pick(n, nextEpisode())
+    }
 
-    /** Accepts history saved under the plain id or the "id:sXeY" episode form, newest wins. */
+    private var pickJob: Job? = null
+
+    /** A season chip or a focused TV episode: warm that episode's lookup once the choice has rested. */
+    fun pick(season: Int, episode: Int) {
+        val d = _uiState.value.detail?.takeIf { it.playable } ?: return
+        pickJob?.cancel()
+        pickJob = viewModelScope.launch { delay(PICK_DWELL_MS); prefetch.start(d.id, season, episode) }
+    }
+
     fun refreshHistory() {
         val d = _uiState.value.detail ?: return
         viewModelScope.launch {
-            val all = history.getAll().getOrNull().orEmpty()
-            val h: WatchHistory = all
-                .filter { it.animeSlug == mediaSlug(d.type == MediaType.SERIES, d.title) || it.mediaId == d.id || it.animeSlug == d.id || it.animeSlug.startsWith(d.id + ":s") }
-                .maxByOrNull { it.lastWatchedTimestamp } ?: run {
-                _uiState.update { it.copy(resume = null, eps = emptyMap()) }
-                return@launch
-            }
-            val m = KeySuffix.find(h.animeSlug)
-            val resume = if (d.type == MediaType.MOVIE) {
-                Resume(0, 0).takeIf { h.watchProgress in 0.01f..0.9f }
-            } else {
-                val season = h.season.takeIf { it > 0 } ?: m?.groupValues?.get(1)?.toInt() ?: d.seasons.firstOrNull()?.number ?: 1
-                val ep = m?.groupValues?.get(2)?.toInt() ?: h.lastEpisodeWatched.coerceAtLeast(1)
-                val count = d.seasons.firstOrNull { it.number == season }?.episodeCount ?: 0
-                when {
-                    h.watchProgress < 0.9f -> Resume(season, ep)
-                    count == 0 || ep < count -> Resume(season, ep + 1)
-                    else -> d.seasons.firstOrNull { it.number > season }?.let { Resume(it.number, 1) }
-                }
-            }
-            _uiState.update { it.copy(resume = resume, eps = h.eps, selectedSeason = if (resume != null && resume.season > 0) resume.season else it.selectedSeason) }
+            val h = historyOf(d, history.getAll().getOrNull().orEmpty())
+            val resume = h?.let { resumeOf(d, it) }
+            _uiState.update { it.copy(resume = resume, eps = h?.eps.orEmpty(), selectedSeason = if (resume != null && resume.season > 0) resume.season else it.selectedSeason) }
+            // what Play / Continue starts
+            if (d.playable) playTarget(d, resume).let { prefetch.start(d.id, it.season, it.episode) }
         }
     }
 
@@ -239,9 +264,6 @@ class MovieDetailViewModel @Inject constructor(
         animeSlug = id, animeTitle = title, posterUrl = posterUrl, score = rating,
         kind = "media", mediaType = if (type == MediaType.SERIES) "series" else "movie", year = year
     )
-
-    private fun defaultTarget(d: MediaDetail) =
-        if (d.type == MediaType.SERIES) Resume(d.seasons.firstOrNull()?.number ?: 1, 1) else Resume(0, 0)
 
     fun toggleFavorite() {
         val d = _uiState.value.detail ?: return

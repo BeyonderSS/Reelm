@@ -235,7 +235,7 @@ fun TvMovieDetailScreen(
         },
         seasons = if (series) d.seasons.map { it.number } else emptyList(), season = season, onSeason = vm::selectSeason,
         seasonNote = if (series && count > 0) "Season $season, $count episodes" else null,
-        stubs = stubs, initial = (resumeHere - 1).coerceAtLeast(0), onStub = { play(season, it) },
+        stubs = stubs, initial = (resumeHere - 1).coerceAtLeast(0), onStub = { play(season, it) }, onStubFocus = { vm.pick(season, it) },
         below = if (s.similar.isEmpty()) null else ({
             val row = TvRow("More like this", s.similar.map { m ->
                 TvItem(key = m.id, title = m.title, imageUrl = m.posterUrl, onClick = { onOpen(m.id) })
