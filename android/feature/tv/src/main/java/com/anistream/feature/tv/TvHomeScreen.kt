@@ -101,12 +101,13 @@ import com.anistream.feature.movies.MoviesHomeViewModel
 import com.anistream.feature.movies.asMediaItem
 import com.anistream.domain.model.forYouRows
 import com.anistream.domain.ContentPrefs
+import com.anistream.domain.model.Mirrors
 
 enum class HomeFilter { ALL, MEDIA, ANIME }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun TvHomeScreen(filter: HomeFilter, homeVm: HomeViewModel, moviesVm: MoviesHomeViewModel, nav: NavController) {
+fun TvHomeScreen(filter: HomeFilter, homeVm: HomeViewModel, moviesVm: MoviesHomeViewModel, nav: NavController, mirror: Boolean = false) {
     val anime by homeVm.uiState.collectAsStateWithLifecycle()
     val media by moviesVm.uiState.collectAsStateWithLifecycle()
     val hidden by ContentPrefs.hidden.collectAsStateWithLifecycle()
@@ -120,7 +121,8 @@ fun TvHomeScreen(filter: HomeFilter, homeVm: HomeViewModel, moviesVm: MoviesHome
     val lowEnd = LocalLowEnd.current
     // ponytail: rows rebuild only when the data changes, not on every D-pad move
     var removing by remember { mutableStateOf<WatchHistory?>(null) }
-    val rows = remember(anime, media, filter, lowEnd, hidden) { buildRows(filter, anime, media, lowEnd, nav) { removing = it } }
+    // a mirror page (Mirrors flyout): that mirror's rows only, loaded here and never on Home (keeps Home light on a TV stick)
+    val rows = remember(anime, media, filter, lowEnd, hidden, mirror) { buildRows(filter, anime, media, lowEnd, nav, mirror) { removing = it } }
     removing?.let { h ->
         TvConfirm("Remove ${h.animeTitle} from history?", "Remove", {
             (if (h.kind == "media") moviesVm::removeHistory else homeVm::removeHistory)(h.animeSlug); removing = null
@@ -202,8 +204,10 @@ fun TvHomeScreen(filter: HomeFilter, homeVm: HomeViewModel, moviesVm: MoviesHome
         HomeBackdrop(hero)
         HouseLights(preview, bigness)
         Column(Modifier.fillMaxSize()) {
-            HomeHero(hero, filter, tall, heroReq, trailers, Modifier.graphicsLayer { alpha = 1f - bigness.value; translationY = -(29 * sc).dp.toPx() * bigness.value })
+            HomeHero(hero, if (mirror) anime.mirror?.let { Mirrors.all[it] } ?: "Mirrors" else null, filter, tall, heroReq, trailers, Modifier.graphicsLayer { alpha = 1f - bigness.value; translationY = -(29 * sc).dp.toPx() * bigness.value })
             Box(Modifier.graphicsLayer { alpha = 1f - bigness.value; translationY = (288 * sc).dp.toPx() * bigness.value }) { when {
+                mirror && rows.isEmpty() && anime.mirrorError != null -> TvMessage(anime.mirrorError!!) { TvPill("Retry", onClick = { homeVm.openMirror(anime.mirror) }) }
+                mirror && rows.isEmpty() -> TvMessage("Opening the ${Mirrors.all[anime.mirror]} mirror… The first time today takes about 40 s.")
                 rows.isEmpty() && (anime.isLoading || media.isLoading) -> TvMessage("Loading…")
                 rows.isEmpty() -> TvMessage(anime.error ?: media.error ?: "Nothing here yet") {
                     TvPill("Retry", onClick = { homeVm.loadContent(); moviesVm.load() })
@@ -263,7 +267,7 @@ private fun HomeBackdrop(hero: State<TvItem?>) {
  * House lights fades the poster out, Poster wakes up (low-end) turns it over into a 16:9 window playing the trailer.
  */
 @Composable
-private fun HomeHero(hero: State<TvItem?>, filter: HomeFilter, tall: State<Boolean>, focus: FocusRequester, trailers: TrailerRepository, modifier: Modifier = Modifier) {
+private fun HomeHero(hero: State<TvItem?>, page: String?, filter: HomeFilter, tall: State<Boolean>, focus: FocusRequester, trailers: TrailerRepository, modifier: Modifier = Modifier) {
     val s = uiScale()
     fun d(n: Float) = (n * s).dp
     val h = hero.value
@@ -277,7 +281,7 @@ private fun HomeHero(hero: State<TvItem?>, filter: HomeFilter, tall: State<Boole
     val logoScale by animateFloatAsState(if (playing) 0.78f else 1f, tween(if (reduce) 0 else 600, easing = Motion.emphasized), label = "logo")
     Box(modifier.fillMaxWidth().height(d(if (tall.value) 330f else 250f))) {
         if (h?.imageUrl != null) HeroPoster(h, if (mine) p!!.info else null, p, lowEnd, reduce, s)
-        val title = h?.title ?: when (filter) { HomeFilter.ALL -> "Reelm"; HomeFilter.MEDIA -> "Movies & TV"; HomeFilter.ANIME -> "Anime" }
+        val title = h?.title ?: page ?: when (filter) { HomeFilter.ALL -> "Reelm"; HomeFilter.MEDIA -> "Movies & TV"; HomeFilter.ANIME -> "Anime" }
         // logo from /v1/trailer (cached): nothing for up to 600 ms while it is looked up (never the previous title's logo),
         // then text whenever there is none or it fails to load
         var logoFailed by remember(h?.key) { mutableStateOf(false) }
@@ -376,6 +380,7 @@ private fun buildRows(
     media: com.anistream.feature.movies.MoviesHomeUiState,
     lowEnd: Boolean,
     nav: NavController,
+    mirror: Boolean,
     onRemove: (WatchHistory) -> Unit
 ): List<TvRow> {
     fun animeItem(row: String, a: AnimeSearchResult) = TvItem(
@@ -412,6 +417,12 @@ private fun buildRows(
             else nav.navigate(TvRoutes.player(h.animeSlug, if (h.watchProgress >= 0.9f && !h.isComplete) h.nextEpisode else h.lastEpisodeWatched.coerceAtLeast(1)))
         }
     )
+
+    if (mirror) {
+        val via = "Plays from the ${Mirrors.all[anime.mirror]} mirror"
+        return anime.mirrorRows.map { r -> TvRow(r.title, r.items.distinctBy { it.id }.map { mediaItem(r.title, it).let { i -> i.copy(meta = i.meta.distinct().take(4) + via) } }) }
+            .filter { it.items.isNotEmpty() }.distinctBy { it.title }
+    }
 
     // "What you watch": a hidden kind drops out of every row
     fun keep(m: MediaItem) = ContentPrefs.shows(if (m.type == MediaType.SERIES) ContentPrefs.SERIES else ContentPrefs.MOVIES)

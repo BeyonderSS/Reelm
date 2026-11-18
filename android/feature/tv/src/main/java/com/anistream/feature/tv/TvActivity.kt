@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountCircle
+import androidx.compose.material.icons.outlined.Album
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LiveTv
@@ -97,6 +99,7 @@ internal object TvRoutes {
     const val MORE = "more"
     const val MEDIA_PLAYER = "media_player"
     const val ACCOUNT = "account"
+    const val MIRROR = "mirror"
 
     fun anime(slug: String) = "anime/${Uri.encode(slug)}"
     fun movie(id: String) = "movie/${Uri.encode(id)}"
@@ -112,6 +115,7 @@ private val rail = listOf(
     RailEntry(TvRoutes.SEARCH, "Search", Icons.Outlined.Search),
     RailEntry(TvRoutes.MOVIES, "Movies & TV", Icons.Outlined.Movie),
     RailEntry(TvRoutes.ANIME, "Anime", Icons.Outlined.AutoAwesome),
+    RailEntry(TvRoutes.MIRROR, "Mirrors", Icons.Outlined.Album),
     RailEntry(TvRoutes.LIVE, "Live TV", Icons.Outlined.LiveTv),
     RailEntry(TvRoutes.LIBRARY, "Library", Icons.Outlined.VideoLibrary),
     RailEntry(TvRoutes.MORE, "More", Icons.Outlined.MoreHoriz)
@@ -124,6 +128,7 @@ private fun TvApp() {
     val nav = rememberNavController()
     // activity-scoped so Home, Movies & TV and Anime share one load
     val homeVm: HomeViewModel = hiltViewModel()
+    val homeState by homeVm.uiState.collectAsStateWithLifecycle()
     val moviesVm: MoviesHomeViewModel = hiltViewModel()
     val entry by nav.currentBackStackEntryAsState()
     val current = entry?.destination?.route
@@ -208,6 +213,7 @@ private fun TvApp() {
             composable(TvRoutes.HOME) { TvHomeScreen(HomeFilter.ALL, homeVm, moviesVm, nav) }
             composable(TvRoutes.MOVIES) { TvHomeScreen(HomeFilter.MEDIA, homeVm, moviesVm, nav) }
             composable(TvRoutes.ANIME) { TvHomeScreen(HomeFilter.ANIME, homeVm, moviesVm, nav) }
+            composable(TvRoutes.MIRROR) { TvHomeScreen(HomeFilter.MEDIA, homeVm, moviesVm, nav, mirror = true) }
             composable(TvRoutes.SEARCH) { TvSearchScreen(onOpen = { nav.navigate(TvRoutes.detail(it)) }) }
             composable(TvRoutes.LIVE) { TvLiveScreen(onPlay = { nav.navigate(TvRoutes.MEDIA_PLAYER) }) }
             composable(TvRoutes.LIBRARY) { TvLibraryScreen(onOpen = { nav.navigate(TvRoutes.detail(it)) }, onPlayer = { nav.navigate(TvRoutes.MEDIA_PLAYER) }) }
@@ -307,12 +313,25 @@ private fun TvApp() {
                     val profile = if (r.route == TvRoutes.ACCOUNT) session?.activeProfile else null
                     val label = (profile?.name ?: r.label) + if (profile?.kids == true) " · Kids" else ""
                     var focused by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
-                    androidx.compose.foundation.layout.Box(Modifier.size(32.6.dp)) {
+                    // Mirrors: its label pill is a menu of the three mirrors (Right enters, Up/Down choose, OK opens, Left leaves)
+                    val isMirrors = r.route == TvRoutes.MIRROR
+                    var flyIn by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+                    val iconReq = androidx.compose.runtime.remember { FocusRequester() }
+                    val flyReqs = androidx.compose.runtime.remember { com.anistream.domain.model.Mirrors.all.keys.map { FocusRequester() } }
+                    val enterFly = {
+                        flyIn = true // keeps the menu composed while focus moves into it
+                        val at = com.anistream.domain.model.Mirrors.all.keys.indexOf(homeState.mirror).coerceAtLeast(0)
+                        runCatching { flyReqs[at].requestFocus() }
+                    }
+                    androidx.compose.foundation.layout.Box(Modifier.size(32.6.dp).onKeyEvent { e ->
+                        if (isMirrors && focused && e.type == KeyEventType.KeyDown && e.key == Key.DirectionRight) { enterFly(); true } else false
+                    }) {
                         // focused = amber ring + lighter surface; selected (current screen) = soft amber fill + amber icon
                         androidx.tv.material3.Surface(
-                            onClick = { if (r.route == TvRoutes.ACCOUNT) acct.repo.openGate() else nav.navigateTop(r.route) },
+                            onClick = { if (isMirrors) enterFly() else if (r.route == TvRoutes.ACCOUNT) acct.repo.openGate() else nav.navigateTop(r.route) },
                             modifier = Modifier.size(32.6.dp)
                                 .then(if (selected) Modifier.focusRequester(selectedReq) else Modifier)
+                                .focusRequester(iconReq)
                                 .onFocusChanged { focused = it.isFocused },
                             shape = androidx.tv.material3.ClickableSurfaceDefaults.shape(androidx.compose.foundation.shape.CircleShape),
                             colors = androidx.tv.material3.ClickableSurfaceDefaults.colors(
@@ -336,7 +355,51 @@ private fun TvApp() {
                             }
                         }
                         // label chip beside the focused icon; offset, so it never changes the pill's width
-                        if (focused) Text(
+                        if (isMirrors && (focused || flyIn)) Column(
+                            Modifier.align(androidx.compose.ui.Alignment.CenterStart).offset(x = 50.dp)
+                                .wrapContentSize(androidx.compose.ui.Alignment.CenterStart, unbounded = true)
+                                .onFocusChanged { flyIn = it.hasFocus }
+                                .background(Color(0xFF272B37), androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
+                                .padding(5.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Text("Mirrors", style = TvType.body.copy(color = Ink.muted, fontSize = 10.5.sp), modifier = Modifier.padding(horizontal = 9.dp, vertical = 2.dp))
+                            val keys = com.anistream.domain.model.Mirrors.all.keys.toList()
+                            keys.forEachIndexed { i, p ->
+                                var on by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+                                androidx.tv.material3.Surface(
+                                    onClick = { homeVm.openMirror(p); nav.navigateTop(TvRoutes.MIRROR) },
+                                    modifier = Modifier.focusRequester(flyReqs[i]).onFocusChanged { on = it.isFocused }.onKeyEvent { e ->
+                                        if (e.type != KeyEventType.KeyDown) false else when (e.key) {
+                                            Key.DirectionLeft -> { runCatching { iconReq.requestFocus() }; true }
+                                            Key.DirectionRight -> true
+                                            Key.DirectionUp -> i == 0
+                                            Key.DirectionDown -> i == keys.lastIndex
+                                            else -> false
+                                        }
+                                    },
+                                    shape = androidx.tv.material3.ClickableSurfaceDefaults.shape(Radius.pill),
+                                    colors = androidx.tv.material3.ClickableSurfaceDefaults.colors(
+                                        containerColor = Color.Transparent, contentColor = Ink.body,
+                                        focusedContainerColor = Ink.high, focusedContentColor = Bg.base
+                                    ),
+                                    scale = androidx.tv.material3.ClickableSurfaceDefaults.scale(focusedScale = 1f),
+                                    glow = androidx.tv.material3.ClickableSurfaceDefaults.glow(focusedGlow = Glow.None)
+                                ) {
+                                    androidx.compose.foundation.layout.Row(
+                                        Modifier.padding(horizontal = 11.dp, vertical = 4.5.dp),
+                                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(7.dp)
+                                    ) {
+                                        Text(com.anistream.domain.model.Mirrors.all[p]!!, maxLines = 1,
+                                            style = TvType.body.copy(color = if (on) Bg.base else Ink.body, fontSize = 13.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium))
+                                        // the mirror you're in
+                                        if (current == TvRoutes.MIRROR && homeState.mirror == p) Box(Modifier.size(6.dp).background(Accent.main, androidx.compose.foundation.shape.CircleShape))
+                                    }
+                                }
+                            }
+                        }
+                        if (focused && !isMirrors) Text(
                             label, maxLines = 1, style = TvType.body.copy(color = Ink.high, fontSize = 13.4.sp, lineHeight = 18.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
                             modifier = Modifier.align(androidx.compose.ui.Alignment.CenterStart).offset(x = 50.dp)
                                 .wrapContentWidth(unbounded = true, align = androidx.compose.ui.Alignment.Start)

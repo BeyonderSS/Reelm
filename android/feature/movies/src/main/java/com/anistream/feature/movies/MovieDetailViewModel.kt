@@ -44,6 +44,8 @@ data class MovieDetailUiState(
     val resume: Resume? = null,
     val selectedSeason: Int = 1,
     val resolving: Boolean = false,
+    /** a mirror title's Play still waiting on its mirror (cold unlock, ~40 s): the service name; the screen offers another source */
+    val mirrorWait: String? = null,
     /** set when no in-app stream exists: the screen offers "Watch in web player" for this target */
     val webFallback: Resume? = null,
     /** per-episode progress of this title ("s1e2" -> p/at) */
@@ -87,6 +89,7 @@ sealed interface DetailEvent {
 
 private val KeySuffix = Regex(":s(\\d+)e(\\d+)$")
 private const val PICK_DWELL_MS = 1_500L
+private const val MIRROR_WAIT_MS = 3_000L
 
 /** This title's newest history row, saved under the plain id or the "id:sXeY" episode form. */
 internal fun historyOf(d: MediaDetail, all: List<WatchHistory>): WatchHistory? = all
@@ -224,7 +227,12 @@ class MovieDetailViewModel @Inject constructor(
         viewModelScope.launch {
             val streams = if (local != null) Result.success(listOf(local)) else {
                 _uiState.update { it.copy(resolving = true) }
-                movies.streams(d.id, season, episode).also { _uiState.update { it.copy(resolving = false) } }
+                // a warm mirror answers in 2–3 s; past that it's unlocking: say so and offer the other sources
+                val wait = com.anistream.domain.model.Mirrors.of(d.id)?.let { p ->
+                    launch { delay(MIRROR_WAIT_MS); _uiState.update { it.copy(mirrorWait = com.anistream.domain.model.Mirrors.all[p]) } }
+                }
+                playing = Triple(d.id, season, episode)
+                movies.streams(d.id, season, episode).also { wait?.cancel(); _uiState.update { it.copy(resolving = false, mirrorWait = null) } }
             }
             val list = streams.getOrNull().orEmpty()
             if (list.isEmpty()) {
@@ -246,6 +254,14 @@ class MovieDetailViewModel @Inject constructor(
             )
             _events.send(DetailEvent.OpenPlayer)
         }
+    }
+
+    private var playing: Triple<String, Int, Int>? = null
+
+    /** "Play from another source now": stop waiting on the mirror; the other sources answer (the mirror keeps unlocking). */
+    fun playElsewhere() {
+        playing?.let { (id, s, e) -> movies.playElsewhere(id, s, e) }
+        _uiState.update { it.copy(mirrorWait = null) }
     }
 
     /** Last resort: the web player, keyed by IMDb id. */

@@ -8,6 +8,12 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import com.anistream.domain.model.Mirrors
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -181,12 +187,21 @@ fun HomeScreen(
     val c = uiState.content
     val mediaRows = uiState.mediaRows
     // Hero: trending anime and the first Movies & TV row, interleaved.
-    val hero = remember(c.trending, mediaRows) {
+    // Mirror mode ("Change the reel"): the hero and rows come from that mirror alone
+    val mirror = uiState.mirror
+    val mirrorRows = uiState.mirrorRows
+    val hero = remember(c.trending, mediaRows, mirror, mirrorRows) {
+        if (mirror != null) return@remember mirrorRows.heroItems(HERO_COUNT).map { HeroItem(it.asCard(), media = true) }
         val anime = c.trending.distinctBy { it.slug }.take(HERO_COUNT / 2).map { HeroItem(it, media = false) }
         val media = mediaRows.heroItems(HERO_COUNT / 2).map { HeroItem(it.asCard(), media = true) }
         (0 until maxOf(anime.size, media.size)).flatMap { i -> listOfNotNull(anime.getOrNull(i), media.getOrNull(i)) }
     }
-    val rows = remember(c, mediaRows, hero) { buildRows(c, mediaRows.map { r -> HomeRow("m-${r.title}", r.title, r.items.map { it.asCard() }, media = true, catalogKey = r.catalogKey) }, hero) }
+    val rows = remember(c, mediaRows, hero, mirror, mirrorRows) {
+        if (mirror != null) mirrorRows.map { r -> HomeRow("mm-${r.title}", r.title, r.items.map { it.asCard() }, media = true) }
+        else buildRows(c, mediaRows.map { r -> HomeRow("m-${r.title}", r.title, r.items.map { it.asCard() }, media = true, catalogKey = r.catalogKey) }, hero)
+    }
+    var mirrorSheet by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val animePicks = remember(uiState.picks) {
         uiState.picks.forYouRows().map { (title, picks) ->
             title to picks.map { AnimeSearchResult(slug = it.id, title = it.title, posterUrl = it.posterUrl, score = it.rating, year = it.year) }
@@ -207,11 +222,11 @@ fun HomeScreen(
     val fRows = remember(rows, filter) {
         rows.map { r -> r.copy(items = r.items.filter { filter.keeps(r.media, it.type) }) }.filter { it.items.isNotEmpty() }
     }
-    val fAnimePicks = if (filter.keeps(false, null)) animePicks else emptyList()
-    val fMediaPicks = remember(mediaPicks, filter) {
-        mediaPicks.map { (t, l) -> t to l.filter { filter.keeps(true, it.type) } }.filter { it.second.isNotEmpty() }
+    val fAnimePicks = if (filter.keeps(false, null) && mirror == null) animePicks else emptyList()
+    val fMediaPicks = remember(mediaPicks, filter, mirror) {
+        if (mirror != null) emptyList() else mediaPicks.map { (t, l) -> t to l.filter { filter.keeps(true, it.type) } }.filter { it.second.isNotEmpty() }
     }
-    val continueWatching = remember(uiState.continueWatching, filter) { uiState.continueWatching.filter(filter::keeps) }
+    val continueWatching = remember(uiState.continueWatching, filter, mirror) { if (mirror != null) emptyList() else uiState.continueWatching.filter(filter::keeps) }
     // the likeliest next tap is the first Continue-watching card: warm its Play once Home has settled
     val firstCw = continueWatching.firstOrNull()?.takeIf { it.kind == "media" }?.detailId
     LaunchedEffect(firstCw) { if (firstCw != null) { kotlinx.coroutines.delay(1_500); viewModel.prefetch(firstCw) } }
@@ -231,7 +246,7 @@ fun HomeScreen(
     val reel = remember(reelCandidates, reelReady, filter) {
         reelCandidates.filter { it.card.slug in reelReady && filter.keeps(it.media, it.card.type) }
     }
-    val showReel = previewMode != PreviewMode.OFF && reel.size >= 3
+    val showReel = previewMode != PreviewMode.OFF && reel.size >= 3 && mirror == null
     var projecting by remember { mutableStateOf<HeroItem?>(null) }
     var reelAt by remember { mutableStateOf<Int?>(null) }
     var seen by remember { mutableStateOf(emptySet<String>()) }
@@ -305,9 +320,22 @@ fun HomeScreen(
                                 selected = filter,
                                 hidden = hidden,
                                 showLive = ContentPrefs.LIVE !in hidden,
-                                onSelect = { filter = it },
+                                mirror = mirror,
+                                onMirrors = { mirrorSheet = true },
+                                onSelect = { viewModel.openMirror(null); filter = it },
                                 onLive = onLiveTvClick
                             )
+                        }
+                        if (mirror != null && rows.isEmpty()) item(key = "mirrorState") {
+                            val err = uiState.mirrorError
+                            if (err != null) PartialNotice("$err.", onRetry = { viewModel.openMirror(mirror) })
+                            else Column {
+                                Text("Opening the ${Mirrors.all[mirror]} mirror. The first time today takes about 40 s.", style = AppType.caption,
+                                    modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.md))
+                                PosterRowSkeleton()
+                                Spacer(Modifier.height(Space.xl))
+                                PosterRowSkeleton()
+                            }
                         }
                         if (showReel) {
                             item(key = "reel", contentType = "reel") {
@@ -317,8 +345,9 @@ fun HomeScreen(
                         if (fHero.isNotEmpty()) {
                             item(key = "hero", contentType = "hero") {
                                 // re-key on the filter so the pager starts over on the filtered titles
-                                androidx.compose.runtime.key(filter) {
+                                androidx.compose.runtime.key(filter, mirror) {
                                     LivingHero(
+                                        via = mirror?.let { "Plays from the ${Mirrors.all[it]} mirror" },
                                         items = fHero,
                                         myList = uiState.myList,
                                         listState = listState,
@@ -347,7 +376,7 @@ fun HomeScreen(
                             "Anime".takeIf { uiState.error != null && !uiState.animeLoading },
                             "Movies & TV".takeIf { uiState.mediaError != null && !uiState.mediaLoading }
                         )
-                        if (failed.isNotEmpty()) {
+                        if (failed.isNotEmpty() && mirror == null) {
                             item(key = "notice") {
                                 PartialNotice("${failed.joinToString(" and ")} didn't load.", onRetry = { viewModel.loadContent() })
                             }
@@ -370,7 +399,7 @@ fun HomeScreen(
                             }
                         }
 
-                        val showLiveRow = filter == PhoneFilter.All && uiState.channels.isNotEmpty()
+                        val showLiveRow = filter == PhoneFilter.All && uiState.channels.isNotEmpty() && mirror == null
                         fRows.forEachIndexed { i, row ->
                             // live TV sits a few rows down, after the first anime and movie rows
                             if (i == LIVE_ROW_AT && showLiveRow) liveRow(uiState.channels, onLiveTvClick) { ch ->
@@ -421,6 +450,13 @@ fun HomeScreen(
         )
     }
 
+    if (mirrorSheet) MirrorSheet(mirror, onPick = { p ->
+        mirrorSheet = false
+        filter = PhoneFilter.All
+        viewModel.openMirror(p)
+        scope.launch { listState.scrollToItem(0) }
+    }, onDismiss = { mirrorSheet = false })
+
     projecting?.let { p ->
         ProjectCard(
             item = p, vm = viewModel, inList = p.card.slug in uiState.myList,
@@ -443,7 +479,10 @@ fun HomeScreen(
 
 /** All / Movies / Series / Anime filter Home in place (kinds hidden in "What you watch" drop out); Live TV opens its tab. */
 @Composable
-private fun FilterChips(selected: PhoneFilter, hidden: Set<String>, showLive: Boolean, onSelect: (PhoneFilter) -> Unit, onLive: () -> Unit) {
+private fun FilterChips(
+    selected: PhoneFilter, hidden: Set<String>, showLive: Boolean, mirror: String?, onMirrors: () -> Unit,
+    onSelect: (PhoneFilter) -> Unit, onLive: () -> Unit
+) {
     val shown = PhoneFilter.entries.filter {
         when (it) {
             PhoneFilter.All -> true
@@ -456,8 +495,58 @@ private fun FilterChips(selected: PhoneFilter, hidden: Set<String>, showLive: Bo
         contentPadding = PaddingValues(start = Space.lg, end = Space.lg, bottom = Space.md),
         horizontalArrangement = Arrangement.spacedBy(Space.sm)
     ) {
-        items(shown, key = { it.name }) { f -> PillChip(f.label, selected = f == selected, onClick = { onSelect(f) }) }
+        item(key = "mirrors") { MirrorsChip(mirror, onMirrors) }
+        items(shown, key = { it.name }) { f -> PillChip(f.label, selected = mirror == null && f == selected, onClick = { onSelect(f) }) }
         if (showLive) item(key = "live") { PillChip("Live TV", selected = false, onClick = onLive) }
+    }
+}
+
+/** Leads the filter chips: an amber-edged pill with a 2×2 mark, the service's name while a mirror is on, ▾ for the sheet. */
+@Composable
+private fun MirrorsChip(mirror: String?, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .clip(Radius.pill)
+            .background(if (mirror != null) Accent.main.copy(alpha = 0.16f) else Bg.raised, Radius.pill)
+            .border(1.dp, Accent.main.copy(alpha = 0.45f), Radius.pill)
+            .pressClickable(onClick = onClick)
+            .heightIn(min = 36.dp)
+            .padding(start = Space.sm, end = Space.md),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            repeat(2) { r -> Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                repeat(2) { c -> Box(Modifier.size(7.dp).background(Accent.main.copy(alpha = if (r != c) 0.45f else 1f), RoundedCornerShape(2.dp))) }
+            } }
+        }
+        Text(mirror?.let { Mirrors.all[it] } ?: "Mirrors", style = AppType.label, color = Ink.high, maxLines = 1)
+        Text("▾", style = AppType.caption)
+    }
+}
+
+/** "Change the reel": the three mirrors; picking one swaps Home to its rows, "Back to all of Reelm" turns it off. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MirrorSheet(current: String?, onPick: (String?) -> Unit, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Bg.raised) {
+        Column(Modifier.padding(start = Space.lg, end = Space.lg, bottom = Space.xl), verticalArrangement = Arrangement.spacedBy(Space.md)) {
+            Text("Mirrors", style = AppType.heading.copy(fontSize = 20.sp, fontWeight = FontWeight.Bold))
+            Text("Home shows that service's rows. Playback tries the mirror first, then your usual sources.", style = AppType.caption.copy(color = Ink.body))
+            Mirrors.all.forEach { (p, name) ->
+                val on = p == current
+                Row(
+                    Modifier.fillMaxWidth().height(64.dp).clip(Radius.lg).background(Bg.base, Radius.lg)
+                        .then(if (on) Modifier.border(1.5.dp, Accent.main, Radius.lg) else Modifier)
+                        .pressClickable(onClick = { onPick(p) }).padding(horizontal = Space.lg),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(name, style = AppType.heading.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold), modifier = Modifier.weight(1f))
+                    if (on) Box(Modifier.size(8.dp).background(Accent.main, Radius.round))
+                }
+            }
+            if (current != null) TextAction("Back to all of Reelm", onClick = { onPick(null) }, modifier = Modifier.align(Alignment.CenterHorizontally))
+        }
     }
 }
 

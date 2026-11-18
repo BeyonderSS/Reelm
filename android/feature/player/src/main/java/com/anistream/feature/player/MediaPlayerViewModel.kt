@@ -385,7 +385,14 @@ class MediaPlayerViewModel @Inject constructor(
                 recordStart(request)
                 withTimeoutOrNull(ORIGIN_WAIT_MS) { detail?.await() } // dub-safe pick knows the title's country (usually cached by the detail page)
                 android.util.Log.d("Player", "sources: ${request.streams.size} ${request.streams.groupingBy { "${SourceRank.provider(it)}:${it.height}" }.eachCount()}")
-                play(pick(request), null)
+                val first = pick(request)
+                play(first, null)
+                // a mirror title: say where it plays from (its mirror, or the source that stood in for it)
+                com.anistream.domain.model.Mirrors.of(request.mediaId)?.let { p ->
+                    val s = request.streams[first]
+                    val m = com.anistream.domain.model.Mirrors.source(p)
+                    _uiState.update { it.copy(message = if (s.sourceName == m) "Playing from the $m" else "Playing from ${s.label()} instead of the $m") }
+                }
             }
             loadSkips(request)
             // slow networks: sources that answered after playback started are appended (indices stay valid for fallback)

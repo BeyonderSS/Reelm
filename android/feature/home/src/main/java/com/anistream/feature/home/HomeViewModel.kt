@@ -61,7 +61,12 @@ data class HomeUiState(
     val picks: List<Recommendation> = emptyList(),
     val mediaPicks: List<Recommendation> = emptyList(),
     /** ids in My List (favourites), for the hero's toggle */
-    val myList: Set<String> = emptySet()
+    val myList: Set<String> = emptySet(),
+    /** Mirror mode: the mirror Home shows instead of all of Reelm (a Mirrors provider), and its rows once loaded */
+    val mirror: String? = null,
+    val mirrorRows: List<MediaRow> = emptyList(),
+    val mirrorLoading: Boolean = false,
+    val mirrorError: String? = null
 ) {
     val isLoading: Boolean get() = animeLoading || mediaLoading
 
@@ -214,6 +219,24 @@ class HomeViewModel @Inject constructor(
             for ((card, media) in items) {
                 if (card.slug in _reelReady.value) continue
                 if (trailer(card, media)?.streamUrl != null) _reelReady.update { it + card.slug }
+            }
+        }
+    }
+
+    private val mirrorCache = ConcurrentHashMap<String, List<MediaRow>>()
+    private var mirrorJob: Job? = null
+
+    /** Show a mirror's rows ([provider] from Mirrors.all), or all of Reelm again (null). Rows load once per mirror. */
+    fun openMirror(provider: String?) {
+        mirrorJob?.cancel()
+        val cached = provider?.let { mirrorCache[it] }
+        _uiState.update { it.copy(mirror = provider, mirrorRows = cached.orEmpty(), mirrorLoading = provider != null && cached == null, mirrorError = null) }
+        if (provider == null || cached != null) return
+        mirrorJob = viewModelScope.launch {
+            when (val r = movies.mirrorRows(provider)) {
+                is Result.Success -> { mirrorCache[provider] = r.data; _uiState.update { if (it.mirror == provider) it.copy(mirrorRows = r.data, mirrorLoading = false) else it } }
+                is Result.Error -> _uiState.update { if (it.mirror == provider) it.copy(mirrorLoading = false, mirrorError = r.message ?: "The mirror didn't answer") else it }
+                Result.Loading -> Unit
             }
         }
     }
