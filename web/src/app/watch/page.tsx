@@ -13,7 +13,7 @@ import { SeekPreview } from "@/components/seek-preview";
 import { hereFor, PlayOnTv, RemotePanel } from "@/components/play-on-tv";
 import { setRemoteHere, useHub, type Now } from "@/lib/hub";
 import { frac } from "@/lib/eps";
-import { get, getHistory, epKey, playKey, proxied, reelm, saveProgress, syncHistory, toPlay, WS, type Play as P } from "@/lib/core";
+import { get, getHistory, epKey, mirrorTitle, playKey, proxied, reelm, saveProgress, syncHistory, toPlay, unmirror, WS, type Play as P } from "@/lib/core";
 import { track } from "@/lib/telemetry";
 import { helperVega, helperVersion } from "@/lib/bridge";
 import { bitrate, dv, getBandwidth, getPin, pickStream, risky, saveBandwidth, setPin } from "@/lib/pick-stream";
@@ -182,6 +182,11 @@ function Player() {
         const r = await get(`anime/stream?ep=${p.epId}&lang=${p.lang ?? "sub"}`);
         if (r.malId) get(`aniskip?mal=${r.malId}&ep=${p.ep}`).then((d) => live && setSkips(toSkips(d))).catch(() => {});
         return [[{ src: proxied(r.master, r.referer), hls: true, label: "Auto" }], r.subtitles.map((x: Sub) => ({ ...x, url: proxied(x.url, r.referer) }))] as const;
+      }
+      if (p.id.startsWith("nm:")) { // a mirror-mode title from Android: the same title by name, keeping the resume point
+        const id = await unmirror(p.title || mirrorTitle(p.id), p.type, p.year);
+        if (live) router.replace(id ? href({ ...p, id }, `${extra}${t0 ? `&t=${t0}` : ""}${f0 ? `&f=${f0}` : ""}`) : `/search?q=${encodeURIComponent(p.title || mirrorTitle(p.id))}`);
+        return null;
       }
       if (!document.documentElement.dataset.reelmHelper) throw new Error("helper");
       // progressive: sources join as each provider lands (every one already verified); play as soon as one this browser can surely decode

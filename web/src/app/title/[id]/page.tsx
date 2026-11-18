@@ -1,6 +1,6 @@
 "use client";
 import { Suspense, use, useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Play } from "lucide-react";
 import { Chips, FavButton, mediaCard, Notice, pill, Row, timeLeft } from "@/components/app";
@@ -8,7 +8,7 @@ import { EpisodeStrip, EpisodeStripSkeleton, type EpInfo } from "@/components/ep
 import { DetailHero, DetailSkeleton, SeasonNumerals } from "@/components/detail";
 import { PlayOnTv } from "@/components/play-on-tv";
 import { histMs } from "@/lib/hub";
-import { getHistory, playKey, kids, toPlay, KIDS_BLOCKED, epProgress, syncHistory, watchHref, type Entry, type Play as P } from "@/lib/core";
+import { getHistory, playKey, kids, mirrorTitle, toPlay, KIDS_BLOCKED, epProgress, syncHistory, unmirror, watchHref, type Entry, type Play as P } from "@/lib/core";
 import { useApi, useSession } from "@/lib/session";
 
 /** Seasons and the episode strip. TMDB stills and names when TMDB knows the season; numbered stubs otherwise. */
@@ -32,8 +32,11 @@ function Episodes({ m, id, cur, seasons, play, prog, last }: { m: any; id: strin
 }
 
 function Title({ id }: { id: string }) {
-  const type = useSearchParams().get("type") ?? "movie", { s } = useSession();
-  const { data: m, error } = useApi(`movies/detail?id=${encodeURIComponent(id)}&type=${type}`);
+  const type = useSearchParams().get("type") ?? "movie", { s } = useSession(), router = useRouter(), mirror = id.startsWith("nm:");
+  const { data: m, error } = useApi(mirror ? null : `movies/detail?id=${encodeURIComponent(id)}&type=${type}`);
+  useEffect(() => { // a mirror-mode title from Android: open the same title by name
+    if (mirror) unmirror(mirrorTitle(id), type).then((x) => router.replace(x ? `/title/${encodeURIComponent(x)}?type=${type}` : `/search?q=${encodeURIComponent(mirrorTitle(id))}`));
+  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
   const audio: { id: string; label: string; current: boolean }[] =
     useApi(m ? `movies/audio?id=${encodeURIComponent(id)}&type=${m.type}&title=${encodeURIComponent(m.title)}&year=${m.year ?? ""}` : null).data ?? [];
   const [season, setSeason] = useState<number | null>(null);

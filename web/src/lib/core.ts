@@ -102,6 +102,15 @@ export const epKey = (p: Play) => p.kind === "anime" ? `anime:${p.id}:${p.ep}` :
 const legacy = (k: string) => k.startsWith("movie:") || /^media:(?!(movie|series):)/.test(k) || /^anime:[^:]+:\d+$/.test(k);
 /** `f` resumes at a fraction of the duration (entries hold seconds; older app rows hold permille of 1000, so only the ratio is shared). */
 export const watchHref = (p: Play, f = 0) => `/watch?p=${encodeURIComponent(JSON.stringify(p))}${f > 0 && f < 0.95 ? `&f=${f.toFixed(4)}` : ""}`;
+/** Android's mirror-mode ids ("nm:<provider>:<id|prefix|Title>"): the web can't reach the mirrors, so it plays the same title from its own sources. */
+export const mirrorTitle = (id: string) => { const t = (id.split("|")[2] ?? "").replace(/\+/g, " "); try { return decodeURIComponent(t); } catch { return t; } };
+/** The regular id (tt…, tmdb:…, mb:…) of the title with exactly this name (type and nearest year when known), null when search has none. */
+export async function unmirror(title: string, type?: string, year?: number): Promise<string | null> {
+  const n = normTitle(title), hits = (await get<any[]>(`movies/search?q=${encodeURIComponent(title)}`).catch(() => [] as any[]))
+    .filter((i) => normTitle(i.title ?? "") === n && (!type || i.type === type));
+  const off = (i: any) => (year ? Math.abs((i.year ?? 0) - year) : -(i.year ?? 0)); // newest when the year is unknown, like Android's match
+  return n ? hits.sort((a, b) => off(a) - off(b))[0]?.id ?? null : null;
+}
 export const entryHref = (e: Entry) => watchHref(e.payload, frac(e.position, e.duration));
 export const entrySub = (p: Play) => p.kind === "anime" ? `Episode ${p.ep}` : p.season ? `Season ${p.season}, episode ${p.episode}` : "Movie";
 
