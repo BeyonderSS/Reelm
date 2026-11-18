@@ -270,7 +270,7 @@ class VegaSources @Inject constructor(
         /** Never asked for a movie or series: anime (anime titles have their own sources), live TV, YouTube. */
         val OFF_TITLE = setOf("anime", "live", "video")
         /** Providers with no movies (kissKh is K-drama episodes only): asked for series alone. */
-        val SERIES_ONLY = setOf("kissKh")
+        val SERIES_ONLY = setOf("kissKh", "dramacool")
         private val DISPLAY = mapOf(
             "hdhub4u" to "HdHub4u", "drive" to "MoviesDrive", "vega" to "VMovies", "mod" to "MoviesMod", "topmovies" to "TopMovies"
         ) + com.anistream.domain.model.Mirrors.all.keys.associateWith(com.anistream.domain.model.Mirrors::source)

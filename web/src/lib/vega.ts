@@ -234,7 +234,7 @@ export const kindOf = (p: string, type?: string) => KIND_FIX[p] ?? type ?? "glob
 /** Never asked for a movie or series: anime (anime titles have their own sources), live TV and YouTube (no title catalog). */
 const OFF_TITLE = ["anime", "live", "video"];
 /** Providers with no movies (kissKh is K-drama episodes only): asked for series alone. */
-const SERIES_ONLY = ["kissKh"];
+const SERIES_ONLY = ["kissKh", "dramacool"];
 /** Need to read Set-Cookie and send Cookie (NetMirror's ad-verify session), which browser fetch can't; they run on Android only. */
 export const WEB_SKIP = ["netflixMirror", "primeMirror", "disneyMirror"];
 const types = new Map<string, Promise<Record<string, string>>>();
