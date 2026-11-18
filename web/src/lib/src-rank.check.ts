@@ -52,3 +52,9 @@ const dh = [D("castle · Dhurandhar - Tamil - 720p", { height: 720 }), D("castle
 assert.deepEqual(fallbackOrder(dh, { height: 720, stats: {}, now }), [1, 0]); // multi-audio over a single regional dub
 assert.deepEqual(fallbackOrder(dh, { orig: origLangs("India"), height: 720, stats: {}, now }), [0, 1]); // an Indian original: either is original, list order
 console.log("dub-safe ok");
+// resume point: a Range-ignoring host (always starts at 0:00) goes after a seekable file of its height, even one measured fast
+const gd = [D("A · 1080p", { url: "https://video-downloads.googleusercontent.com/x" }), D("B · 1080p", { url: "https://cdn.example/b.mp4" })];
+const fast = { "@googleusercontent.com": { ok: 0, fail: 0, stall: 0, ttff: 1000, t: now } };
+assert.deepEqual(fallbackOrder(gd, { height: 1080, stats: fast, now }), [0, 1]);
+assert.deepEqual(fallbackOrder(gd, { height: 1080, stats: fast, now, resume: true }), [1, 0]);
+console.log("resume seekable ok");

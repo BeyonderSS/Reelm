@@ -17,7 +17,7 @@ import { get, getHistory, epKey, playKey, proxied, reelm, saveProgress, syncHist
 import { track } from "@/lib/telemetry";
 import { helperVega, helperVersion } from "@/lib/bridge";
 import { bitrate, dv, getBandwidth, getPin, pickStream, risky, saveBandwidth, setPin } from "@/lib/pick-stream";
-import { fallbackOrder, langRank, loadStats, qualities, recordStat, slowStart } from "@/lib/src-rank";
+import { fallbackOrder, langRank, loadStats, noSeek, qualities, recordStat, slowStart } from "@/lib/src-rank";
 import { useApi, useSession } from "@/lib/session";
 import { languageName, trackLabel, useAudioTracks, useLibavAudio } from "@/lib/use-libav-audio";
 import { iso1, origLangs } from "@/lib/langs";
@@ -145,7 +145,8 @@ function Player() {
   const slowLeft = useRef(new Set<number>()), picked = useRef(-1), slowRef = useRef<() => void>(() => {});
   /** best-ranked source of height `h` (fallbacks start over from there) */
   const orig = useRef<string[]>([]); // the title's original languages (dub-safe picking), from its detail's country
-  const choose = (list: Source[], lang: string, h: number) => { target.current = h; tried.current = new Set(); slowLeft.current = new Set(); exhausted.current = ""; setNote(""); return fallbackOrder(list, { lang, orig: orig.current, height: h, stats: loadStats() })[0]; };
+  const resuming = () => t0 > 30 || f0 > 0 || keep.current > 30 || (!!p && (getHistory(pid)[playKey(p)]?.position ?? 0) > 30);
+  const choose = (list: Source[], lang: string, h: number) => { target.current = h; tried.current = new Set(); slowLeft.current = new Set(); exhausted.current = ""; setNote(""); return fallbackOrder(list, { lang, orig: orig.current, height: h, stats: loadStats(), resume: resuming() })[0]; };
   // 4K step-up: armed while auto-picking (no pinned quality, no hand pick, no room); `up`: the 4K sources to prepare, the first one in the hidden element
   const armed = useRef(false), [up, setUp] = useState<number[]>([]), upAt = useRef(0), prep = useRef<HTMLVideoElement | null>(null), medias = useRef<Record<number, unknown>>({});
   const swapAt = useRef(0), resume = useRef(false);
@@ -302,7 +303,7 @@ function Player() {
     return () => clearInterval(i);
   }); // eslint-disable-line react-hooks/exhaustive-deps
   // fall over: the next-ranked source of the same height, then the nearest lower one (with a note); late sources count too
-  const next1 = () => { const o = fallbackOrder(sources, { lang: want, orig: orig.current, height: target.current, stats: loadStats() }); return o.find((i) => !tried.current.has(i)) ?? o.find((i) => slowLeft.current.has(i)); };
+  const next1 = () => { const o = fallbackOrder(sources, { lang: want, orig: orig.current, height: target.current, stats: loadStats(), resume: resuming() }); return o.find((i) => !tried.current.has(i)) ?? o.find((i) => slowLeft.current.has(i)); };
   const fail = (m: string) => {
     if (src) { track("play_error", { ...info(), error: m }); recordStat(src.label, { fail: true }); }
     tried.current.add(si); slowLeft.current.delete(si);
@@ -351,7 +352,7 @@ function Player() {
     if (!armed.current || up.length || room || remote || embed || !src || startedAt.current || p?.kind !== "movie") return;
     const h = sources[pickFor(sources, want, 0)]?.height ?? 0;
     if (h < 2160 || (src.height ?? 0) >= h) return;
-    const lr = langRank(src, orig.current), c = fallbackOrder(sources, { lang: want, orig: orig.current, height: h, stats: loadStats() })
+    const lr = langRank(src, orig.current), c = fallbackOrder(sources, { lang: want, orig: orig.current, height: h, stats: loadStats(), resume: resuming() })
       .filter((i) => sources[i].height === h && !tried.current.has(i) && !dv(sources[i]) && !sources[i].dolby && langRank(sources[i], orig.current) <= lr && (!want || !src.langs?.includes(want) || !!sources[i].langs?.includes(want)));
     if (!c.length) return;
     console.debug(`[stream] step-up: preparing ${sources[c[0]].label}`);
@@ -399,7 +400,7 @@ function Player() {
     if (p?.kind === "live") return;
     const hist = p && epKey(getHistory(pid)[playKey(p)]?.payload ?? p) === epKey(p) ? getHistory(pid)[playKey(p)] : undefined;
     const at = keep.current || t0 || (f0 && v.duration ? f0 * v.duration : 0) || (hist && frac(hist.position, hist.duration) < 0.95 ? frac(hist.position, hist.duration) * v.duration : 0); // entries hold seconds (older app rows: permille of 1000); the ratio is what is shared
-    if (at > 5) v.currentTime = at;
+    if (at > 5) { v.currentTime = at; if (at > 30 && src && noSeek(src)) setToast("This source can't skip ahead — starting from the beginning"); }
   };
 
   // pull what other devices watched so a later save compares against it
