@@ -14,6 +14,14 @@ class MediaParsingTest {
     private fun text(name: String) = javaClass.classLoader!!.getResource(name)!!.readText()
     private fun json(s: String): JsonObject = MediaHttp.json.parseToJsonElement(s).jsonObject
 
+    @Test fun mirrorShelfRoundTrip() {
+        val rows = listOf(com.anistream.domain.model.MediaRow("New on Netflix", listOf(
+            MediaItem("nm:netflixMirror:81|nf|Squid%20Game", MediaType.SERIES, "Squid Game", "https://p/1.jpg", 2021, 8.0, listOf("Drama")),
+            MediaItem("nm:netflixMirror:82||Bare", MediaType.MOVIE, "Bare \"quoted\"")
+        )))
+        assertEquals(rows, MirrorShelf.decode(MirrorShelf.encode(rows)))
+    }
+
     @Test fun cinemetaCatalogs() {
         val movies = Stremio.parseMetas(json(text("cinemeta_top_movie.json")))
         assertEquals(48, movies.size)

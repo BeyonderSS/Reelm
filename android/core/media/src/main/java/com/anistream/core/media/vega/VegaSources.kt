@@ -135,6 +135,9 @@ class VegaSources @Inject constructor(
      * start used to come back empty. Earn it in the background at app start and again before it expires. Not on a
      * low-end TV: a second QuickJS runtime there competes with the UI for ~1 GB.
      */
+    /** The pre-warm's unlock while it runs (completes when it ends either way). */
+    @Volatile private var unlocking: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
     fun prewarm() {
         if (LowEnd.isOn(context)) return
         background.launch { while (true) delay(runCatching { warm() }.onFailure { Log.w("Vega", "pre-warm: ${it.message}") }.getOrDefault(RETRY_MS)) }
@@ -152,9 +155,12 @@ class VegaSources @Inject constructor(
         if (age() < REFRESH_MS) return REFRESH_MS - age()
         val t0 = System.currentTimeMillis()
         val files = listOf("posts").mapNotNull { f -> file(reg.commit, p, f)?.let { f to patch(it) } }.toMap()
-        withTimeout(UNLOCK_MS) {
-            engine.session(files, p) { call("posts.getSearchPosts({searchQuery:'Red Notice',page:1,providerValue:${JsonPrimitive(p)},signal:new AbortController().signal,providerContext:ctx})") }
-        }
+        val done = kotlinx.coroutines.CompletableDeferred<Unit>().also { unlocking = it }
+        try {
+            withTimeout(UNLOCK_MS) {
+                engine.session(files, p) { call("posts.getSearchPosts({searchQuery:'Red Notice',page:1,providerValue:${JsonPrimitive(p)},signal:new AbortController().signal,providerContext:ctx})") }
+            }
+        } finally { done.complete(Unit) }
         val ok = age() < REFRESH_MS
         Log.d("Vega", "pre-warm: $p ${if (ok) "unlocked" else "still locked"} in ${System.currentTimeMillis() - t0} ms")
         return if (ok) REFRESH_MS else RETRY_MS
@@ -168,6 +174,8 @@ class VegaSources @Inject constructor(
     suspend fun mirrorRows(p: String): List<Pair<String, List<JsonObject>>> {
         val commit = registry().commit
         val files = listOf("catalog", "posts").associateWith { f -> file(commit, p, f)?.let(::patch) ?: throw IOException("$p has no $f.js") }
+        // opened while the pre-warm unlocks: ride on its token (shared through the cookie jar) rather than unlock again
+        unlocking?.takeIf { !it.isCompleted }?.let { val t = System.currentTimeMillis(); it.await(); Log.d("Vega", "$p rows waited ${System.currentTimeMillis() - t} ms for the pre-warm unlock") }
         return withTimeout(UNLOCK_MS) { engine.mirrorRows(files, p, if (LowEnd.isOn(context)) LOW_END_MIRROR_HEAP else 0) }
     }
 
@@ -375,11 +383,15 @@ internal suspend fun VegaEngine.streams(
     }
 }
 
-/** A mirror's catalog rows ([files]: catalog + posts), each filter asked in turn so its home page is fetched once; repeats dropped. */
+/**
+ * A mirror's catalog rows ([files]: catalog + posts); repeats dropped. The first filter goes alone (it unlocks and caches
+ * the mirror's home page in the runtime), the rest then go together off that cached page.
+ */
 internal suspend fun VegaEngine.mirrorRows(files: Map<String, String>, p: String, heap: Long = 0): List<Pair<String, List<JsonObject>>> =
     VegaPick.distinctRows(session(files, p, heap) {
-        call("(async () => { const out = []; for (const c of catalog.catalog) out.push([c.title, await posts.getPosts({filter:c.filter,page:1," +
-            "providerValue:${JsonPrimitive(p)},signal:new AbortController().signal,providerContext:ctx}).catch(() => [])]); return out })()")
+        call("(async () => { const get = c => posts.getPosts({filter:c.filter,page:1,providerValue:${JsonPrimitive(p)}," +
+            "signal:new AbortController().signal,providerContext:ctx}).catch(() => []).then(r => [c.title, r]);" +
+            " const [c0, ...rest] = catalog.catalog; if (!c0) return []; const first = await get(c0); return [first, ...await Promise.all(rest.map(get))] })()")
     }.jsonArray.map { r -> r.jsonArray[0].jsonPrimitive.content to (r.jsonArray[1] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject } })
 
 /** QuickJS heap per provider runtime on low-end TVs (2 run at once): pages are capped at 8 MB, cheerio's DOM of one stays well under. */

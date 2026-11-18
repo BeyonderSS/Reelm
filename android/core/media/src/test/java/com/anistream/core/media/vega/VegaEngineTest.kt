@@ -5,6 +5,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -202,6 +203,42 @@ class VegaEngineTest {
         }
         println("=== mirrors\n" + out.joinToString("\n"))
         assertTrue(out.joinToString(), out.none { "-> 0 streams" in it })
+    }
+
+    /**
+     * Live: Mirror mode's stages from a cold engine (no stored unlock), then warm, plus the Cinemeta exact-title search
+     * each row title used to wait for (8 at a time, as on a phone). Run with -Pvega.live.
+     */
+    @Test
+    fun mirrorRowsTimings() = runBlocking {
+        assumeTrue(System.getProperty("vega.live") == "true")
+        val base = "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@70f69e58af852bb39b7a24a57a000622dfc35d0b/dist"
+        val cold = VegaEngine(client, { File("src/main/assets/vega-runtime.js").readText() }, {}, File.createTempFile("vega-state", ".json").apply { delete() })
+        val gate = kotlinx.coroutines.sync.Semaphore(8)
+        fun since(t: Long) = System.currentTimeMillis() - t
+        val out = listOf("netflixMirror", "primeMirror", "disneyMirror").map { p ->
+            val files = listOf("catalog", "posts").associateWith { f ->
+                client.newCall(Request.Builder().url("$base/$p/$f.js").build()).execute().use { VegaSources.patch(it.body!!.string()) }
+            }
+            var t = System.currentTimeMillis()
+            val first = withTimeout(120_000) { cold.mirrorRows(files, p) }
+            val coldMs = since(t)
+            t = System.currentTimeMillis()
+            val rows = withTimeout(120_000) { cold.mirrorRows(files, p) }
+            val warmMs = since(t)
+            val titles = rows.flatMap { it.second }.mapNotNull { it["title"]?.jsonPrimitive?.content }.distinct()
+            t = System.currentTimeMillis()
+            val hits = coroutineScope {
+                titles.map { title -> async(Dispatchers.IO) { gate.withPermit {
+                    val q = java.net.URLEncoder.encode(com.anistream.core.media.Stremio.searchQuery(title), "UTF-8").replace("+", "%20")
+                    listOf("movie", "series").map { type -> async { runCatching {
+                        client.newCall(Request.Builder().url("${com.anistream.core.media.Stremio.CINEMETA_BASE}/catalog/$type/top/search=$q.json").build()).execute().use { it.body!!.string() }
+                    }.getOrDefault("") } }.awaitAll().any { "\"name\":" in it }
+                } } }.awaitAll()
+            }
+            "$p: cold ${first.size} rows in $coldMs ms; warm ${rows.size} rows in $warmMs ms; cinemeta ${titles.size} titles (${hits.count { it }} answered) in ${since(t)} ms"
+        }
+        println("=== mirror timings\n" + out.joinToString("\n"))
     }
 
     private data class Quad(val a: String, val b: Int, val c: Int, val d: Int)

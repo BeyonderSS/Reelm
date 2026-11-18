@@ -37,6 +37,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import com.anistream.domain.repository.LateStreams
 import com.anistream.domain.repository.NowPlaying
 import com.anistream.core.common.LowEnd
@@ -52,7 +55,11 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeout
+import java.io.File
 import java.net.URLEncoder
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -438,26 +445,40 @@ class MoviesRepositoryImpl @Inject constructor(
     private val byTitle = ConcurrentHashMap<String, MediaItem>()    // normalised title → Cinemeta hit (absent = none or not asked)
     private val skipMirror = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
 
-    override suspend fun mirrorRows(provider: String): Result<List<MediaRow>> = safeApiCall {
+    /** Last rows per mirror, shown at once on the next open (even after a restart) while fresh ones load. */
+    private fun shelf(p: String) = File(context.cacheDir, "mirror-rows/$p.json")
+
+    override fun mirrorRows(provider: String): Flow<List<MediaRow>> = flow {
+        val t0 = System.currentTimeMillis()
+        val saved = shelf(provider).takeIf { System.currentTimeMillis() - it.lastModified() < MIRROR_SHELF_MS }
+            ?.let { f -> runCatching { MirrorShelf.decode(f.readText()) }.getOrNull() }?.takeIf { it.isNotEmpty() }
+        if (saved != null) { emit(saved); Log.d("Mirror", "$provider: ${saved.size} saved rows in ${System.currentTimeMillis() - t0} ms") }
+        val raw = try { vega.mirrorRows(provider) } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException || saved == null) throw e
+            Log.w("Mirror", "$provider: ${e.message}; keeping the saved rows"); return@flow
+        }
+        // the mirror's own titles and images first: Cinemeta's art follows in one swap, not one recomposition per title
+        val posts = raw.map { (title, ps) -> title to ps.mapNotNull { p -> p.str("title")?.let { t -> p.str("link")?.let { Triple(Mirrors.id(provider, it), t, p.str("image")) } } } }
+            .filter { it.second.isNotEmpty() }
+        if (posts.isEmpty()) { if (saved == null) error("The ${Mirrors.all[provider]} mirror didn't answer") else return@flow }
+        posts.forEach { (_, ps) -> ps.forEach { (id, _, img) -> img?.let { mirrorImages[id] = it } } }
+        Log.d("Mirror", "$provider: mirror rows in ${System.currentTimeMillis() - t0} ms")
+        if (saved == null) emit(posts.map { (title, ps) -> MediaRow(title, ps.map { (id, t, img) -> MediaItem(id, MediaType.MOVIE, t, img) }) })
+        val t1 = System.currentTimeMillis()
         val gate = Semaphore(if (LowEnd.isOn(context)) 4 else 8)
         val rows = coroutineScope {
-            vega.mirrorRows(provider).map { (title, posts) ->
-                async { MediaRow(title, posts.map { async { gate.withPermit { mirrorItem(provider, it) } } }.awaitAll().filterNotNull()) }
-            }.awaitAll()
-        }.filter { it.items.isNotEmpty() }
-        if (rows.isEmpty()) error("The ${Mirrors.all[provider]} mirror didn't answer")
-        rows
-    }
+            posts.map { (title, ps) -> MediaRow(title, ps.map { (id, t, img) -> async { gate.withPermit { mirrorItem(id, t, img) } } }.awaitAll()) }
+        }
+        Log.d("Mirror", "$provider: Cinemeta art in ${System.currentTimeMillis() - t1} ms")
+        emit(rows)
+        runCatching { shelf(provider).apply { parentFile?.mkdirs() }.writeText(MirrorShelf.encode(rows)) }
+    }.flowOn(Dispatchers.IO)
 
     /** A mirror row item with Cinemeta's art and facts when a Cinemeta title has exactly its name, else the mirror's image. */
-    private suspend fun mirrorItem(p: String, post: JsonObject): MediaItem? {
-        val link = post.str("link") ?: return null
-        val title = post.str("title") ?: return null
-        val id = Mirrors.id(p, link)
-        post.str("image")?.let { mirrorImages[id] = it }
+    private suspend fun mirrorItem(id: String, title: String, image: String?): MediaItem {
         val hit = cinemetaByTitle(title)
         mirrorTts[id] = hit?.id.orEmpty()
-        return MediaItem(id, hit?.type ?: MediaType.MOVIE, title, hit?.posterUrl ?: post.str("image"), hit?.year, hit?.rating, hit?.genres.orEmpty())
+        return MediaItem(id, hit?.type ?: MediaType.MOVIE, title, hit?.posterUrl ?: image, hit?.year, hit?.rating, hit?.genres.orEmpty())
     }
 
     /**
@@ -569,6 +590,7 @@ class MoviesRepositoryImpl @Inject constructor(
         const val GRACE_MS = 4_000L // after the first source with streams, how long the others get before playback starts
         const val SEARCH_TIMEOUT_MS = 6_000L
         const val MAX_DUBS = 6
+        const val MIRROR_SHELF_MS = 6 * 3_600_000L // saved mirror rows older than this aren't shown
         const val MIRROR_META_MS = 12_000L // a mirror title's own meta (only when Cinemeta has no match); a cold unlock takes ~40 s
 
         /** Indian Home rows, catalogKey → (title, TMDB path), in Home order. trending?region=IN ignores the region, so "New" = now playing. */
@@ -580,5 +602,28 @@ class MoviesRepositoryImpl @Inject constructor(
                 "&first_air_date.gte=2016-01-01&sort_by=popularity.desc&vote_count.gte=15&vote_average.gte=6"),
             "tmdb/in-new" to ("New in India" to "/movie/now_playing?region=IN")
         )
+    }
+}
+
+/** Mirror rows ⇄ the JSON saved per mirror on disk. */
+internal object MirrorShelf {
+    fun encode(rows: List<MediaRow>): String = JsonArray(rows.map { r ->
+        JsonObject(mapOf("title" to JsonPrimitive(r.title), "items" to JsonArray(r.items.map { i ->
+            JsonObject(mapOf(
+                "id" to JsonPrimitive(i.id), "type" to JsonPrimitive(i.type.name), "title" to JsonPrimitive(i.title),
+                "poster" to JsonPrimitive(i.posterUrl), "year" to JsonPrimitive(i.year), "rating" to JsonPrimitive(i.rating),
+                "genres" to JsonArray(i.genres.map(::JsonPrimitive))
+            ))
+        })))
+    }).toString()
+
+    fun decode(text: String): List<MediaRow> = kotlinx.serialization.json.Json.parseToJsonElement(text).jsonArray.map { r ->
+        val o = r.jsonObject
+        MediaRow(o["title"]!!.jsonPrimitive.content, o["items"]!!.jsonArray.map { e ->
+            val i = e.jsonObject
+            fun s(k: String) = i[k]?.jsonPrimitive?.contentOrNull
+            MediaItem(s("id")!!, MediaType.valueOf(s("type")!!), s("title")!!, s("poster"), i["year"]?.jsonPrimitive?.intOrNull,
+                i["rating"]?.jsonPrimitive?.doubleOrNull, (i["genres"] as? JsonArray).orEmpty().map { it.jsonPrimitive.content })
+        })
     }
 }

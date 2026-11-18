@@ -232,11 +232,14 @@ class HomeViewModel @Inject constructor(
         val cached = provider?.let { mirrorCache[it] }
         _uiState.update { it.copy(mirror = provider, mirrorRows = cached.orEmpty(), mirrorLoading = provider != null && cached == null, mirrorError = null) }
         if (provider == null || cached != null) return
+        // saved rows, then the mirror's own, then with Cinemeta's art: each replaces the last
         mirrorJob = viewModelScope.launch {
-            when (val r = movies.mirrorRows(provider)) {
-                is Result.Success -> { mirrorCache[provider] = r.data; _uiState.update { if (it.mirror == provider) it.copy(mirrorRows = r.data, mirrorLoading = false) else it } }
-                is Result.Error -> _uiState.update { if (it.mirror == provider) it.copy(mirrorLoading = false, mirrorError = r.message ?: "The mirror didn't answer") else it }
-                Result.Loading -> Unit
+            var last: List<MediaRow>? = null
+            try {
+                movies.mirrorRows(provider).collect { rows -> last = rows; _uiState.update { if (it.mirror == provider) it.copy(mirrorRows = rows, mirrorLoading = false) else it } }
+                last?.let { mirrorCache[provider] = it }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                _uiState.update { if (it.mirror == provider) it.copy(mirrorLoading = false, mirrorError = if (last == null) e.message ?: "The mirror didn't answer" else null) else it }
             }
         }
     }
