@@ -160,6 +160,38 @@ class VegaSources @Inject constructor(
         return if (ok) REFRESH_MS else RETRY_MS
     }
 
+    /**
+     * Mirror mode: a mirror's catalog.js rows, each `posts.getPosts({filter})` (20 titles, no paging), asked one after
+     * another in one runtime so the mirror's home page is fetched once. A row listing the same titles as an earlier one is
+     * dropped (Netflix answers two of its four filters with one list). Cold, the mirror may first unlock (~40 s).
+     */
+    suspend fun mirrorRows(p: String): List<Pair<String, List<JsonObject>>> {
+        val commit = registry().commit
+        val files = listOf("catalog", "posts").associateWith { f -> file(commit, p, f)?.let(::patch) ?: throw IOException("$p has no $f.js") }
+        return withTimeout(UNLOCK_MS) { engine.mirrorRows(files, p, if (LowEnd.isOn(context)) LOW_END_MIRROR_HEAP else 0) }
+    }
+
+    /** A mirror title's meta (title, synopsis, image, type, tags, linkList) plus `counts`: each linkList entry's episode count. */
+    suspend fun mirrorMeta(p: String, link: String): JsonObject {
+        val commit = registry().commit
+        val files = listOf("meta", "episodes").mapNotNull { f -> file(commit, p, f)?.let { f to patch(it) } }.toMap()
+        return engine.session(files, p) {
+            call("(async () => { const m = await meta.getMeta({link:${JsonPrimitive(link)},provider:${JsonPrimitive(p)},providerContext:ctx});" +
+                " m.counts = await Promise.all((m.linkList || []).map(l => l.episodesLink ? episodes.getEpisodes({url:l.episodesLink,providerContext:ctx})" +
+                ".then(e => (e || []).length).catch(() => 0) : 0)); return m })()").jsonObject
+        }
+    }
+
+    /** A mirror title's own streams, straight from its link (no title search); empty when the mirror has none. Never throws. */
+    suspend fun mirrorStreams(p: String, link: String, title: String, type: MediaType, season: Int, episode: Int): List<MediaStream> = runCatching {
+        val commit = registry().commit
+        val files = listOf("meta", "stream", "episodes").mapNotNull { f -> file(commit, p, f)?.let { f to patch(it) } }.toMap()
+        withTimeout(UNLOCK_MS) {
+            engine.streams(files, p, DISPLAY[p] ?: p, title, null, type, season, episode, LowEnd.isOn(context),
+                known = JsonObject(mapOf("link" to JsonPrimitive(link), "title" to JsonPrimitive(title))))
+        }
+    }.onFailure { Log.w("Vega", "$p mirror: ${it.message}") }.getOrDefault(emptyList())
+
     /** Ask the way ExoPlayer does (open range): some hosts only serve bounded ranges and answer players with a 403 page. */
     private suspend fun playable(s: MediaStream): Boolean = !s.isDirectFile || withContext(Dispatchers.IO) {
         runCatching {
@@ -175,7 +207,7 @@ class VegaSources @Inject constructor(
         // movies need episodes.js too: NetMirror's meta calls a film with seasons "series" and lists it via episodesLink
         val files = listOf("posts", "meta", "stream", "episodes")
             .mapNotNull { f -> file(commit, p, f)?.let { f to patch(it) } }.toMap()
-        return engine.streams(files, p, DISPLAY[p] ?: p, title, year, type, season, episode, lowEnd, searched, onQuality)
+        return engine.streams(files, p, DISPLAY[p] ?: p, title, year, type, season, episode, lowEnd, searched, onQuality = onQuality)
     }
 
     /** Google's "download only" files: 2–4.6 s to the first byte and no seeking (NoRange.kt), so never waited for and listed last. */
@@ -239,7 +271,9 @@ class VegaSources @Inject constructor(
         val OFF_TITLE = setOf("anime", "live", "video")
         private val DISPLAY = mapOf(
             "hdhub4u" to "HdHub4u", "drive" to "MoviesDrive", "vega" to "VMovies", "mod" to "MoviesMod", "topmovies" to "TopMovies"
-        )
+        ) + com.anistream.domain.model.Mirrors.all.keys.associateWith(com.anistream.domain.model.Mirrors::source)
+        /** a mirror's rows parse its whole home page, more than one title's search pages (96 MB) */
+        private const val LOW_END_MIRROR_HEAP = 160L * 1024 * 1024
 
         /**
          * NetMirror's search always asks /mobile/search.php, which answers from the Netflix catalog whatever the ott
@@ -281,20 +315,25 @@ private object PostCache {
  */
 internal suspend fun VegaEngine.streams(
     files: Map<String, String>, p: String, name: String, title: String, year: Int?, type: MediaType, season: Int, episode: Int,
-    lowEnd: Boolean, searched: () -> Unit = {}, onQuality: (List<MediaStream>) -> Unit = {}
+    lowEnd: Boolean, searched: () -> Unit = {},
+    /** the post itself (a mirror title's own link): no search */
+    known: JsonObject? = null,
+    onQuality: (List<MediaStream>) -> Unit = {}
 ): List<MediaStream> {
     val series = type == MediaType.SERIES
     return session(files, p, if (lowEnd) LOW_END_HEAP else 0) {
-        val cacheKey = "$p|$title|$year|${if (series) season else 0}"
+        val cacheKey = if (known != null) "$p|${known["link"]}|${if (series) season else 0}" else "$p|$title|$year|${if (series) season else 0}"
         val (post, meta) = PostCache.get(cacheKey)?.also { searched() } ?: run {
-            val q = JsonPrimitive(Stremio.searchQuery(title))
-            val posts = try {
-                call("posts.getSearchPosts({searchQuery:$q,page:1,providerValue:${JsonPrimitive(p)},signal:new AbortController().signal,providerContext:ctx})")
-                    .jsonArray.map { it.jsonObject }
-            } catch (e: VegaEngine.VegaException) { throw VegaEngine.SearchFailed(e.message) }
-            if (posts.isEmpty() && httpFails > 0) throw VegaEngine.SearchFailed("$httpFails search requests failed")
-            searched()
-            val post = VegaPick.post(title, year, series, season, posts) ?: return@session emptyList()
+            val post = known ?: run {
+                val q = JsonPrimitive(Stremio.searchQuery(title))
+                val posts = try {
+                    call("posts.getSearchPosts({searchQuery:$q,page:1,providerValue:${JsonPrimitive(p)},signal:new AbortController().signal,providerContext:ctx})")
+                        .jsonArray.map { it.jsonObject }
+                } catch (e: VegaEngine.VegaException) { throw VegaEngine.SearchFailed(e.message) }
+                if (posts.isEmpty() && httpFails > 0) throw VegaEngine.SearchFailed("$httpFails search requests failed")
+                searched()
+                VegaPick.post(title, year, series, season, posts) ?: return@session emptyList()
+            }
             val meta = call("meta.getMeta({link:${post["link"]},provider:${JsonPrimitive(p)},providerContext:ctx})").jsonObject
             PostCache.put(cacheKey, post, meta)
             post to meta
@@ -334,6 +373,13 @@ internal suspend fun VegaEngine.streams(
     }
 }
 
+/** A mirror's catalog rows ([files]: catalog + posts), each filter asked in turn so its home page is fetched once; repeats dropped. */
+internal suspend fun VegaEngine.mirrorRows(files: Map<String, String>, p: String, heap: Long = 0): List<Pair<String, List<JsonObject>>> =
+    VegaPick.distinctRows(session(files, p, heap) {
+        call("(async () => { const out = []; for (const c of catalog.catalog) out.push([c.title, await posts.getPosts({filter:c.filter,page:1," +
+            "providerValue:${JsonPrimitive(p)},signal:new AbortController().signal,providerContext:ctx}).catch(() => [])]); return out })()")
+    }.jsonArray.map { r -> r.jsonArray[0].jsonPrimitive.content to (r.jsonArray[1] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject } })
+
 /** QuickJS heap per provider runtime on low-end TVs (2 run at once): pages are capped at 8 MB, cheerio's DOM of one stays well under. */
 private const val LOW_END_HEAP = 96L * 1024 * 1024
 
@@ -354,6 +400,12 @@ internal object VegaPick {
     fun cleanTitle(t: String): String {
         val s = stripTags(t).replace(Regex("(?i)^\\s*download\\s+"), "")
         return s.substring(0, CUT.find(s)?.range?.first ?: s.length).trim()
+    }
+
+    /** Mirror rows minus empty ones and any listing the same titles (by link) as an earlier row. */
+    fun distinctRows(rows: List<Pair<String, List<JsonObject>>>): List<Pair<String, List<JsonObject>>> {
+        val seen = mutableSetOf<List<String>>()
+        return rows.filter { (_, items) -> items.isNotEmpty() && seen.add(items.map { it.str("link") }.sorted()) }
     }
 
     /** Seasons a title covers ("Season 1-7", "S01", "Season: 1 +2+3"); empty when it doesn't say. */

@@ -181,3 +181,22 @@ fun List<MediaRow>.heroItems(n: Int): List<MediaItem> {
     if (local.isEmpty()) return (main.ifEmpty { firstOrNull()?.items.orEmpty() }).take(n)
     return (main.take(1) + local.take(1) + main.drop(1).take(1) + local.drop(1) + main.drop(2)).distinctBy { it.id }.take(n)
 }
+
+/**
+ * Mirror mode: the NetMirror catalogs (Netflix, Prime Video, Hotstar) browsed as rows. A mirror title's id is
+ * "nm:<provider>:<the mirror's own link>"; it plays from that mirror first, then from every other source by name.
+ */
+object Mirrors {
+    /** provider → service name, in menu order */
+    val all = linkedMapOf("netflixMirror" to "Netflix", "primeMirror" to "Prime Video", "disneyMirror" to "Hotstar")
+
+    fun id(provider: String, link: String) = "nm:$provider:$link"
+
+    /** the provider of a mirror title id; null for any other id */
+    fun of(id: String?): String? = id?.takeIf { it.startsWith("nm:") }?.substringAfter(':')?.substringBefore(':')?.takeIf { it in all }
+
+    fun link(id: String) = id.removePrefix("nm:").substringAfter(':')
+
+    /** the source name its streams carry: "Netflix mirror" */
+    fun source(provider: String) = "${all[provider] ?: provider} mirror"
+}

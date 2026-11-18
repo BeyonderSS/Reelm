@@ -38,6 +38,12 @@ interface MoviesRepository {
 
     /** "More like this" for a title (TMDB recommendations, same filters as Home rows); empty when unknown. */
     suspend fun similar(id: String): List<MediaItem> = emptyList()
+
+    /** A mirror's catalog rows ([com.anistream.domain.model.Mirrors]), repeats dropped; items open and play as mirror ids. */
+    suspend fun mirrorRows(provider: String): Result<List<MediaRow>> = Result.success(emptyList())
+
+    /** Stop waiting for a mirror title's mirror (still unlocking): [streams] answers with the other sources now. */
+    fun playElsewhere(id: String, season: Int = 0, episode: Int = 0) {}
 }
 
 interface AddonRepository {

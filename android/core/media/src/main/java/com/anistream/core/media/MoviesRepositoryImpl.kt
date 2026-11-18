@@ -24,6 +24,10 @@ import com.anistream.domain.model.MediaRow
 import com.anistream.domain.model.MediaSeason
 import com.anistream.domain.model.MediaStream
 import com.anistream.domain.model.MediaType
+import com.anistream.domain.model.Mirrors
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.withTimeoutOrNull
 import com.anistream.domain.repository.MoviesRepository
 import com.anistream.domain.usecase.bestTitle
 import com.anistream.domain.usecase.rankSearch
@@ -64,7 +68,7 @@ class MoviesRepositoryImpl @Inject constructor(
     private val addonDao: AddonDao,
     fourKHdHub: FourKHdHubSource,
     dramachi: DramachiSource,
-    vega: VegaSources,
+    private val vega: VegaSources,
     @ApplicationContext private val context: Context
 ) : MoviesRepository {
 
@@ -222,6 +226,7 @@ class MoviesRepositoryImpl @Inject constructor(
     private suspend fun rawDetail(id: String): Result<MediaDetail> = safeApiCall {
         if (id.startsWith("mb:")) return@safeApiCall movieBox.detail(id.removePrefix("mb:")).also { dubsOf[it.id.removePrefix("mb:")] = it.audioVariants }.copy(playable = true) // as below
         if (id.startsWith("tmdb:")) return@safeApiCall tmdbDetail(id)
+        Mirrors.of(id)?.let { return@safeApiCall mirrorDetail(it, id) }
         val meta = cinemetaMeta(id)
         val cine = meta.detail
         val sid = matchMovieBox(id, meta)
@@ -282,6 +287,7 @@ class MoviesRepositoryImpl @Inject constructor(
 
     override suspend fun imdbId(mediaId: String): String? = when {
         mediaId.startsWith("tt") -> mediaId
+        Mirrors.of(mediaId) != null -> mirrorTt(mediaId)
         mediaId.startsWith("tmdb:") -> runCatching { if (!tmdbTt.containsKey(mediaId)) tmdbDetail(mediaId); tmdbTt[mediaId]?.ifEmpty { null } }.getOrNull()
         mediaId.startsWith("mb:") -> runCatching {
             val sid = mediaId.removePrefix("mb:")
@@ -358,7 +364,11 @@ class MoviesRepositoryImpl @Inject constructor(
         }
     }
 
-    private suspend fun resolve(id: String, season: Int, episode: Int, onLate: suspend (List<MediaStream>) -> Unit): Result<List<MediaStream>> = safeApiCall {
+    private suspend fun resolve(id: String, season: Int, episode: Int, onLate: suspend (List<MediaStream>) -> Unit): Result<List<MediaStream>> =
+        Mirrors.of(id)?.let { p -> safeApiCall { mirrorFirst(p, id, season, episode, onLate) } } ?: ladder(id, season, episode, onLate)
+
+    /** Every source for a title, quality-first (a mirror title: matched by name, and year when Cinemeta knows it). */
+    private suspend fun ladder(id: String, season: Int, episode: Int, onLate: suspend (List<MediaStream>) -> Unit): Result<List<MediaStream>> = safeApiCall {
         val sid: String?
         val tt: String?
         val detail: MediaDetail?
@@ -373,6 +383,12 @@ class MoviesRepositoryImpl @Inject constructor(
             detail = runCatching { tmdbDetail(id) }.getOrNull()
             tt = tmdbTt[id]?.ifEmpty { null }
             years = detail?.year?.let { it..it }
+        } else if (Mirrors.of(id) != null) {
+            tt = mirrorTt(id)
+            val meta = tt?.let { runCatching { cinemetaMeta(it) }.getOrNull() }
+            sid = meta?.let { matchMovieBox(tt, it) }
+            detail = meta?.detail ?: MediaDetail(id, if (season > 0) MediaType.SERIES else MediaType.MOVIE, mirrorTitle(id))
+            years = meta?.years
         } else {
             tt = id
             val meta = runCatching { cinemetaMeta(id) }.getOrNull()
@@ -415,6 +431,105 @@ class MoviesRepositoryImpl @Inject constructor(
         got.flatMap { it.getOrNull().orEmpty() }
     }
 
+    // ---- Mirror mode (ids "nm:<provider>:<link>", see Mirrors) ----
+
+    private val mirrorTts = ConcurrentHashMap<String, String>()     // mirror id → Cinemeta tt ("" = no exact-title match)
+    private val mirrorImages = ConcurrentHashMap<String, String>()  // mirror id → the mirror's own image
+    private val byTitle = ConcurrentHashMap<String, MediaItem>()    // normalised title → Cinemeta hit (absent = none or not asked)
+    private val skipMirror = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+
+    override suspend fun mirrorRows(provider: String): Result<List<MediaRow>> = safeApiCall {
+        val gate = Semaphore(if (LowEnd.isOn(context)) 4 else 8)
+        val rows = coroutineScope {
+            vega.mirrorRows(provider).map { (title, posts) ->
+                async { MediaRow(title, posts.map { async { gate.withPermit { mirrorItem(provider, it) } } }.awaitAll().filterNotNull()) }
+            }.awaitAll()
+        }.filter { it.items.isNotEmpty() }
+        if (rows.isEmpty()) error("The ${Mirrors.all[provider]} mirror didn't answer")
+        rows
+    }
+
+    /** A mirror row item with Cinemeta's art and facts when a Cinemeta title has exactly its name, else the mirror's image. */
+    private suspend fun mirrorItem(p: String, post: JsonObject): MediaItem? {
+        val link = post.str("link") ?: return null
+        val title = post.str("title") ?: return null
+        val id = Mirrors.id(p, link)
+        post.str("image")?.let { mirrorImages[id] = it }
+        val hit = cinemetaByTitle(title)
+        mirrorTts[id] = hit?.id.orEmpty()
+        return MediaItem(id, hit?.type ?: MediaType.MOVIE, title, hit?.posterUrl ?: post.str("image"), hit?.year, hit?.rating, hit?.genres.orEmpty())
+    }
+
+    /**
+     * Cinemeta's title with exactly this (normalised) name, newest first when a film and a series share it.
+     * ponytail: name only, so a same-named older title can lend its art; play still goes to the mirror's own id.
+     */
+    private suspend fun cinemetaByTitle(title: String): MediaItem? {
+        val norm = Stremio.normalizeTitle(title)
+        byTitle[norm]?.let { return it }
+        val hit = runCatching { cinemetaSearch(Stremio.searchQuery(title)) }.getOrNull().orEmpty()
+            .filter { Stremio.normalizeTitle(it.title) == norm }.maxByOrNull { it.year ?: 0 } ?: return null
+        byTitle[norm] = hit
+        return hit
+    }
+
+    /** "id|prefix|Title%20encoded" → "Title encoded" */
+    private fun mirrorTitle(id: String) = Mirrors.link(id).split('|').getOrNull(2)?.let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrDefault(it) }.orEmpty()
+
+    private suspend fun mirrorTt(id: String): String? =
+        (mirrorTts[id] ?: cinemetaByTitle(mirrorTitle(id))?.id.orEmpty().also { mirrorTts[id] = it }).ifEmpty { null }
+
+    /** Cinemeta's detail when the name matched (fast, has seasons); else the mirror's own meta, which may wait for its unlock. */
+    private suspend fun mirrorDetail(p: String, id: String): MediaDetail {
+        mirrorTt(id)?.let { tt -> runCatching { cinemetaMeta(tt) }.getOrNull()?.let { return it.detail.copy(id = id, playable = true) } }
+        val title = mirrorTitle(id)
+        // ponytail: a cold mirror still unlocking shows the bare title as a film; a series then needs a revisit once it's open
+        val m = withTimeoutOrNull(MIRROR_META_MS) { runCatching { vega.mirrorMeta(p, Mirrors.link(id)) }.getOrNull() }
+            ?: return MediaDetail(id, MediaType.MOVIE, title, posterUrl = mirrorImages[id])
+        val tags = (m["tags"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+        val counts = (m["counts"] as? JsonArray).orEmpty().map { (it as? JsonPrimitive)?.intOrNull ?: 0 }
+        val series = m.str("type") == "series"
+        return MediaDetail(
+            id = id, type = if (series) MediaType.SERIES else MediaType.MOVIE, title = m.str("title") ?: title, description = m.str("synopsis"),
+            posterUrl = mirrorImages[id] ?: m.str("image"), backdropUrl = m.str("image"),
+            year = tags.firstNotNullOfOrNull { t -> t.toIntOrNull()?.takeIf { it in 1900..2100 } },
+            genres = tags.filter { it.toIntOrNull() == null && "IMDb" !in it },
+            cast = (m["cast"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull },
+            seasons = if (!series) emptyList() else (m["linkList"] as? JsonArray).orEmpty().mapIndexedNotNull { i, l ->
+                val n = (l as? JsonObject)?.str("title")?.filter(Char::isDigit)?.toIntOrNull() ?: (i + 1)
+                MediaSeason(n, counts.getOrElse(i) { 0 })
+            }
+        )
+    }
+
+    override fun playElsewhere(id: String, season: Int, episode: Int) {
+        skipMirror[NowPlaying.lateKey(id, season, episode)]?.complete(Unit)
+    }
+
+    /**
+     * The mirror's own streams for its own id (no title matching) first; the usual ladder runs alongside and its streams
+     * follow as late ones, so the player falls back to them when the mirror's file fails its checks (placeholder clip,
+     * 10-bit). When the mirror has nothing, or the viewer won't wait for its unlock ([playElsewhere]), the ladder's streams
+     * answer instead and the mirror's, if any, arrive late.
+     */
+    private suspend fun mirrorFirst(p: String, id: String, season: Int, episode: Int, onLate: suspend (List<MediaStream>) -> Unit): List<MediaStream> {
+        val key = NowPlaying.lateKey(id, season, episode)
+        val skip = CompletableDeferred<Unit>().also { skipMirror[key] = it }
+        val t0 = System.currentTimeMillis()
+        val type = if (season > 0) MediaType.SERIES else MediaType.MOVIE
+        val mirror = late.async { vega.mirrorStreams(p, Mirrors.link(id), mirrorTitle(id), type, season, episode) }
+        val others = late.async { (ladder(id, season, episode, onLate) as? Result.Success)?.data.orEmpty() }
+        val first = select<List<MediaStream>?> { mirror.onAwait { it }; skip.onAwait { null } }
+        skipMirror.remove(key, skip)
+        Log.d("Sources", "mirror $p: ${first?.size ?: "skipped"} after ${System.currentTimeMillis() - t0} ms")
+        if (!first.isNullOrEmpty()) {
+            late.launch { others.await().takeIf { it.isNotEmpty() }?.let { onLate(it) } }
+            return first
+        }
+        late.launch { mirror.await().takeIf { it.isNotEmpty() }?.let { onLate(it) } }
+        return others.await().ifEmpty { error("Neither the ${Mirrors.all[p]} mirror nor any other source has this title") }
+    }
+
     /**
      * MovieBox streams tagged with their audio language: the subject itself ([dub] false), or every other audio variant
      * of it ("Hindi dub" is a separate MovieBox subject). A dub that only serves the notice clip resolves to nothing.
@@ -454,6 +569,7 @@ class MoviesRepositoryImpl @Inject constructor(
         const val GRACE_MS = 4_000L // after the first source with streams, how long the others get before playback starts
         const val SEARCH_TIMEOUT_MS = 6_000L
         const val MAX_DUBS = 6
+        const val MIRROR_META_MS = 12_000L // a mirror title's own meta (only when Cinemeta has no match); a cold unlock takes ~40 s
 
         /** Indian Home rows, catalogKey → (title, TMDB path), in Home order. trending?region=IN ignores the region, so "New" = now playing. */
         val TMDB_ROWS = linkedMapOf(
