@@ -68,6 +68,9 @@ internal object SourceRank {
             ("pixeldrain" in u && "download" in u) || (!s.isDirectFile && s.height >= 2160)
     }
 
+    /** Hosts that ignore Range (see NoRange.kt): the file always starts at 0:00. */
+    fun noSeek(s: MediaStream) = "video-downloads.googleusercontent.com" in s.url.lowercase()
+
     /** The title's audio as far as auto-pick needs it: [lang] its original language when known, [indian] an Indian original. */
     data class Origin(val lang: String?, val indian: Boolean)
 
@@ -113,9 +116,9 @@ internal object SourceRank {
 
     /**
      * Indexes of [list] to try, in order: [lang]'s sources first; within them what this device can decode at all ([undecodable] last, whatever its height); [height] itself, then each lower height (nearest first), then higher;
-     * within a height: the title's own audio ([dubRank] by [origin]), what this device can decode, then what starts fast ([slowStart] last), then provider reliability, then list order.
+     * within a height: the title's own audio ([dubRank] by [origin]), a seekable file when [resume], what this device can decode, then what starts fast ([slowStart] last), then provider reliability, then list order.
      */
-    fun fallbackOrder(list: List<MediaStream>, lang: String?, height: Int, stats: Map<String, SrcStat>, now: Long, canPlay: (MediaStream) -> Boolean = { true }, undecodable: (MediaStream) -> Boolean = { false }, origin: Origin? = null): List<Int> {
+    fun fallbackOrder(list: List<MediaStream>, lang: String?, height: Int, stats: Map<String, SrcStat>, now: Long, canPlay: (MediaStream) -> Boolean = { true }, undecodable: (MediaStream) -> Boolean = { false }, origin: Origin? = null, resume: Boolean = false): List<Int> {
         val anyLang = lang != null && list.any { lang in it.languages }
         return list.indices.sortedWith(compareBy(
             { if (anyLang && lang !in list[it].languages) 1 else 0 },
@@ -123,6 +126,7 @@ internal object SourceRank {
             { list[it].height.let { h -> if (h == height) 0 else if (h < height) 1 else 2 } },
             { list[it].height.let { h -> if (h < height) -h else h } },
             { if (origin == null) 0 else dubRank(list[it], origin) },
+            { if (resume && noSeek(list[it])) 1 else 0 }, // a resume point can't be honoured on a source that restarts from 0:00
             { if (canPlay(list[it])) 0 else 1 },
             { if (slowStart(list[it], stats)) 1 else 0 },
             { -score(stats[provider(list[it])], now) }

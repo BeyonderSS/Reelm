@@ -125,7 +125,7 @@ class HubClient @Inject constructor(private val account: AccountRepository, priv
                     put("playing", n.playing); put("positionMs", n.positionMs); put("durationMs", n.durationMs)
                     put("hasNext", n.hasNext); put("hasPrev", n.hasPrev); put("at", n.at); put("rev", n.rev)
                     put("skip", n.skip?.let { s -> buildJsonObject { put("label", s.label.take(40)); put("endMs", s.endMs) } } ?: JsonNull)
-                    put("nextInMs", n.nextInMs)
+                    put("nextInMs", n.nextInMs); put("seekable", n.seekable)
                 }
             } ?: JsonNull)
         }.toString())
@@ -191,6 +191,6 @@ class HubClient @Inject constructor(private val account: AccountRepository, priv
         return Now(str(n, "title"), n["subtitle"]?.jsonPrimitive?.contentOrNull, n["poster"]?.jsonPrimitive?.contentOrNull, b("playing"),
             l("positionMs"), l("durationMs"), b("hasNext"), b("hasPrev"), if (received) t else l("at").takeIf { it in 1..t } ?: t,
             l("rev").toInt(), (n["skip"] as? JsonObject)?.let { SkipNow(str(it, "label"), it["endMs"]?.jsonPrimitive?.doubleOrNull?.toLong() ?: 0L) },
-            n["nextInMs"]?.jsonPrimitive?.doubleOrNull?.toLong())
+            n["nextInMs"]?.jsonPrimitive?.doubleOrNull?.toLong(), n["seekable"]?.jsonPrimitive?.booleanOrNull != false)
     }
 }

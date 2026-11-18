@@ -20,7 +20,9 @@ data class Device(val id: String, val name: String, val kind: String, val now: N
 data class Now(
     val title: String, val subtitle: String?, val poster: String?, val playing: Boolean,
     val positionMs: Long, val durationMs: Long, val hasNext: Boolean, val hasPrev: Boolean, val at: Long,
-    val rev: Int = 0, val skip: SkipNow? = null, val nextInMs: Long? = null
+    val rev: Int = 0, val skip: SkipNow? = null, val nextInMs: Long? = null,
+    /** false on a host that ignores Range: the source plays from 0:00 and the remote disables seeking (absent from older TVs = true) */
+    val seekable: Boolean = true
 ) {
     fun positionAt(t: Long) = (positionMs + if (playing) (t - at).coerceAtLeast(0) else 0).let { if (durationMs > 0) it.coerceAtMost(durationMs) else it }
 }

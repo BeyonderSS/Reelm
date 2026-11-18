@@ -66,6 +66,9 @@ private const val STEP_SETTLE_MS = 2_000L
 /** the background player starts this far ahead of the playing one (4K HLS took 4.4–6.1 s to start); doubles on each miss */
 private const val STEP_AHEAD_MS = 8_000L
 private const val STEP_GIVE_UP_MS = 30_000L
+/** a resume point past this is worth a seekable source */
+private const val RESUME_MIN_MS = 30_000L
+
 /** how long auto-pick waits for the title's country (dub-safe pick) before ranking without it */
 private const val ORIGIN_WAIT_MS = 600L
 private const val DEFAULT_USER_AGENT =
@@ -215,7 +218,7 @@ class MediaPlayerViewModel @Inject constructor(
     private var picked: String? = null
     private fun isTried(i: Int) = _uiState.value.request?.streams?.getOrNull(i)?.url in tried
     private fun order(r: PlaybackRequest, height: Int) =
-        SourceRank.fallbackOrder(r.streams, prefLang(r), height, SourceRank.load(appContext), System.currentTimeMillis(), canPlay, undecodable, origin(r))
+        SourceRank.fallbackOrder(r.streams, prefLang(r), height, SourceRank.load(appContext), System.currentTimeMillis(), canPlay, undecodable, origin(r), pendingResume != null || player.currentPosition > RESUME_MIN_MS)
     /** best-ranked untried source of [height] (or below); fallbacks continue from there */
     private fun choose(r: PlaybackRequest, height: Int): Int {
         target = height
@@ -669,7 +672,9 @@ class MediaPlayerViewModel @Inject constructor(
         val duration = player.duration
         if (duration == C.TIME_UNSET || duration <= 0) return
         pendingResume = null
-        player.seekTo((fraction * duration).toLong())
+        val at = (fraction * duration).toLong()
+        if (!player.isCurrentMediaItemSeekable) { if (at > RESUME_MIN_MS) _uiState.update { it.copy(message = "This source can't skip ahead — starting from the beginning") }; return }
+        player.seekTo(at)
     }
 
     /** Countdown finished / "Play now": resolve the next episode's streams and play them. */

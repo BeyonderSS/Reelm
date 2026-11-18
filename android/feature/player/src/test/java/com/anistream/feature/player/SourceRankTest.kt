@@ -163,4 +163,16 @@ class SourceRankTest {
         }
         assertEquals(listOf("4KHDHub1080", "4KHDHub1080b", good), played)
     }
+
+    @Test
+    fun resumePrefersSeekableOfEqualHeight() {
+        val list = listOf(
+            MediaStream(url = "https://video-downloads.googleusercontent.com/x", qualityLabel = "GDrive 1080p", height = 1080, sourceName = "A"), // 0
+            MediaStream(url = "https://cdn.example/b.mp4", qualityLabel = "1080p", height = 1080, sourceName = "B"), // 1
+            MediaStream(url = "https://cdn.example/c.mp4", qualityLabel = "720p", height = 720, sourceName = "C")) // 2
+        fun order(resume: Boolean) = SourceRank.fallbackOrder(list, null, 1080, mapOf("@googleusercontent.com" to SrcStat(ttff = 1000.0)), 0, // measured fast here: slowStart alone wouldn't demote it
+             resume = resume)
+        assertEquals(listOf(0, 1, 2), order(false))
+        assertEquals(listOf(1, 0, 2), order(true)) // equal height only: 720p never beats the non-seekable 1080p
+    }
 }
