@@ -9,7 +9,7 @@ export function get<T = any>(path: string): Promise<T> {
   const hit = memo.get(path);
   if (hit) return hit;
   const [key, qs = ""] = path.split("?");
-  if (typeof window !== "undefined" && /^movies\/(search|detail|stream)$/.test(key)) {
+  if (typeof window !== "undefined" && /^movies\/(search|detail|stream|mirror)$/.test(key)) {
     const p = import("./movies").then((m) => m.movieRoutes[key](new URLSearchParams(qs))) as Promise<T>;
     if (key !== "movies/stream") { memo.set(path, p); p.catch(() => memo.delete(path)); }
     return p;

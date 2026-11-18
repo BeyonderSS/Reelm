@@ -10,6 +10,7 @@ import { PlayOnTv } from "@/components/play-on-tv";
 import { histMs } from "@/lib/hub";
 import { getHistory, playKey, kids, mirrorTitle, toPlay, KIDS_BLOCKED, epProgress, syncHistory, unmirror, watchHref, type Entry, type Play as P } from "@/lib/core";
 import { useApi, useSession } from "@/lib/session";
+import { helperMirror } from "@/lib/bridge";
 
 /** Seasons and the episode strip. TMDB stills and names when TMDB knows the season; numbered stubs otherwise. */
 function Episodes({ m, id, cur, seasons, play, prog, last }: { m: any; id: string; cur: any; seasons: React.ReactNode; play: (se?: number, ep?: number) => P; prog: Record<string, number>; last: Entry | null }) {
@@ -32,9 +33,10 @@ function Episodes({ m, id, cur, seasons, play, prog, last }: { m: any; id: strin
 }
 
 function Title({ id }: { id: string }) {
-  const type = useSearchParams().get("type") ?? "movie", { s } = useSession(), router = useRouter(), mirror = id.startsWith("nm:");
+  // a mirror-mode title opens as itself with Helper 1.4+ (it plays from its mirror first); without it, as the same title by name
+  const type = useSearchParams().get("type") ?? "movie", { s } = useSession(), router = useRouter(), mirror = id.startsWith("nm:") && !helperMirror();
   const { data: m, error } = useApi(mirror ? null : `movies/detail?id=${encodeURIComponent(id)}&type=${type}`);
-  useEffect(() => { // a mirror-mode title from Android: open the same title by name
+  useEffect(() => {
     if (mirror) unmirror(mirrorTitle(id), type).then((x) => router.replace(x ? `/title/${encodeURIComponent(x)}?type=${type}` : `/search?q=${encodeURIComponent(mirrorTitle(id))}`));
   }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
   const audio: { id: string; label: string; current: boolean }[] =

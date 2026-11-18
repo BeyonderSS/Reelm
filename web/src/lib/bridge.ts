@@ -1,7 +1,7 @@
 // Talks to the Reelm Helper extension's content script, which fetches for us from the viewer's own IP (no CORS, no datacenter block).
 export type BridgeRes = { status: number; url: string; headers: Record<string, string>; text: string };
 let n = 0;
-export const bridge = (url: string, o: { headers?: Record<string, string>; probe?: boolean; method?: string; body?: string; vega?: boolean; type?: string } = {}, ms = 15000) =>
+export const bridge = (url: string, o: { headers?: Record<string, string>; probe?: boolean; method?: string; body?: string; vega?: boolean; jar?: boolean; type?: string; key?: string; value?: unknown } = {}, ms = 15000) =>
   new Promise<BridgeRes>((ok, no) => {
     const id = ++n, done = (f: () => void) => { clearTimeout(t); removeEventListener("message", on); f(); };
     const on = (e: MessageEvent) => {
@@ -21,4 +21,11 @@ export const setHeaders = (url: string, headers: Record<string, string>) => brid
 // Helper 1.3+: lets this page fetch one host's files (CORS headers added for Reelm's own requests), so the web player can
 // read audio tracks itself. Older Helpers, or none: resolves anyway; the read just fails on hosts without CORS.
 export const helperCors = () => { const [a = 0, b = 0] = helperVersion().split(".").map(Number); return a > 1 || (a === 1 && b >= 3); };
+// Helper 1.4+: a cookie jar for `jar` fetches, Cookie on Reelm's own media requests, and a kvStore kept in the extension: what the NetMirror mirrors need.
+export const helperMirror = () => { const [a = 0, b = 0] = helperVersion().split(".").map(Number); return a > 1 || (a === 1 && b >= 4); };
+/** Mirror mode (same as Android's Mirrors): provider → service, in menu order. A mirror title's id is "nm:<provider>:<the mirror's own link>". */
+export const MIRRORS: Record<string, string> = { netflixMirror: "Netflix", primeMirror: "Prime Video", disneyMirror: "Hotstar" };
+export const mirrorOf = (id = "") => (id.startsWith("nm:") ? Object.keys(MIRRORS).find((p) => id.startsWith(`nm:${p}:`)) : undefined);
+/** The source name a mirror's streams carry: "Netflix mirror". */
+export const mirrorSource = (p: string) => `${MIRRORS[p] ?? p} mirror`;
 export const allowRead = (url: string) => (helperCors() ? bridge(url, { type: "cors" }).then(() => {}, () => {}) : Promise.resolve());

@@ -1,13 +1,15 @@
 // Vega providers (github.com/Zenda-Cross/vega-providers): compiled CommonJS scrapers loaded from jsDelivr and run in the page. The sites send no CORS,
 // so every request goes through the Reelm Helper bridge (1.2+). `f` is injectable so node can test the shims.
 import { score } from "./search-rank.ts";
-import { bridge, helperCors, setHeaders } from "./bridge.ts";
+import { bridge, helperCors, helperMirror, MIRRORS, mirrorSource, setHeaders } from "./bridge.ts";
 import { langs } from "./langs.ts";
 import { loadStats, score as reliability } from "./src-rank.ts";
 export type F = (url: string, o?: { headers?: Record<string, string>; probe?: boolean; method?: string; body?: string; vega?: boolean }) => Promise<{ status: number; url: string; headers: Record<string, string>; text: string }>;
 const vf: F = (u, o) => bridge(u, { ...o, vega: true }, 20000);
+/** NetMirror's requests: through the Helper's cookie jar (1.4+) */
+const jf: F = (u, o) => bridge(u, { ...o, vega: true, jar: true }, 20000);
 const DEFAULT = { commit: "4ecbc98e12da870ffc06b41bd7affe4b1fe316f0", enabled: ["hdhub4u", "drive", "vega", "mod", "topmovies"], base: "" };
-const NAMES: Record<string, string> = { "4khdhub": "4KHDHub", hdhub4u: "HDHub4u", drive: "Drive", vega: "VegaMovies", mod: "MoD", topmovies: "TopMovies" };
+const NAMES: Record<string, string> = { "4khdhub": "4KHDHub", hdhub4u: "HDHub4u", drive: "Drive", vega: "VegaMovies", mod: "MoD", topmovies: "TopMovies", ...Object.fromEntries(Object.keys(MIRRORS).map((p) => [p, mirrorSource(p)])) };
 const cdn = (c: string) => `https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@${c}/dist`;
 
 const qs = (u: string, p?: Record<string, unknown>) => { if (!p) return u; const x = new URL(u); for (const [k, v] of Object.entries(p)) if (v != null) x.searchParams.set(k, String(v)); return x.toString(); };
@@ -107,7 +109,10 @@ const load = (base: string, p: string, name: string, f: F) => {
     const r = await fetch(`${base}/${p}/${name}.js`);
     if (!r.ok) throw new Error(`vega ${p}/${name}: HTTP ${r.status}`);
     const m: any = { exports: {} };
-    new Function("exports", "module", "fetch", await r.text())(m.exports, m, makeFetch(f)); // ponytail: globalThis.fetch inside is the real one (only used for CORS-safe provider caches)
+    // NetMirror's search asks /mobile/search.php, which answers from the Netflix catalog whatever the ott cookie says; Prime and
+    // Hotstar titles are at /mobile/pv/ and /mobile/hs/ (Android's VegaSources.patch). ponytail: drop once vega-providers does it.
+    const code = (await r.text()).replace("/mobile/search.php?s=", '/mobile/${prefix?prefix+"/":""}search.php?s=');
+    new Function("exports", "module", "fetch", code)(m.exports, m, makeFetch(f)); // ponytail: globalThis.fetch inside is the real one (only used for CORS-safe provider caches)
     return m.exports;
   })().catch((e) => { mods.delete(k); throw e; }));
   return mods.get(k)!;
@@ -134,7 +139,8 @@ export const remember = <T,>(k: string, on: boolean, f: () => Promise<T>): Promi
 };
 const tmo = <T,>(p: Promise<T>, ms: number) => Promise.race([p, new Promise<never>((_, no) => setTimeout(() => no(new Error("timeout")), ms))]);
 
-type Req = { title: string; year: number; type: "movie" | "series"; season: number; episode: number };
+/** `link`: the post itself (a mirror title's own link), no search */
+type Req = { title: string; year: number; type: "movie" | "series"; season: number; episode: number; link?: string };
 export type Stage = "load" | "search" | "meta" | "episodes" | "stream" | "done";
 const URLS = "https://raw.githubusercontent.com/Zenda-Cross/vega-providers/refs/heads/main/urls.json";
 let urls: Promise<Record<string, { url: string }>> | undefined;
@@ -142,8 +148,12 @@ let urls: Promise<Record<string, { url: string }>> | undefined;
 const context = async (f: F, p = "") => ({ axios: makeAxios(f), cheerio: await import("cheerio"), commonHeaders: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" },
   getBaseUrl: async (v: string) => ((await (urls ??= makeFetch(f)(URLS).then((r) => r.json()).catch((e) => { urls = undefined; throw e; })))[v]?.url ?? ""),
   // TheIntroDB skip times per episode (1.4-2.7 s per series lookup): off, the player asks TheIntroDB/AniSkip itself
-  kvStore: (() => { const m = new Map<string, any>([[`${p}_skipTimings`, false]]); return { get: async (k: string) => m.get(k), set: async (k: string, v: any) => void m.set(k, v), delete: async (k: string) => m.delete(k), keys: async () => [...m.keys()], clear: async () => m.clear() }; })(),
+  kvStore: p in MIRRORS ? mirrorKv : (() => { const m = new Map<string, any>([[`${p}_skipTimings`, false]]); return { get: async (k: string) => m.get(k), set: async (k: string, v: any) => void m.set(k, v), delete: async (k: string) => m.delete(k), keys: async () => [...m.keys()], clear: async () => m.clear() }; })(),
   openWebView: async () => { throw new Error("unsupported"); } });
+
+/** The mirrors' kvStore, kept in the Helper (its 12 h session token) and shared by all three: one unlock opens them all. */
+const mirrorKv = { get: (k: string) => bridge("", { type: "kv", key: `netmirror:${k}` }) as Promise<any>, set: (k: string, v: any) => bridge("", { type: "kv", key: `netmirror:${k}`, value: v ?? null }).then(() => {}),
+  delete: (k: string) => bridge("", { type: "kv", key: `netmirror:${k}`, value: null }).then(() => true), keys: async () => [] as string[], clear: async () => {} };
 
 /** hls.js fetches the playlists and segments itself, so every host they live on needs CORS (Helper 1.3 adds it for Reelm's own requests) and the stream's Referer. */
 async function hlsReady(url: string, hd: Record<string, string>, f: F) {
@@ -168,10 +178,10 @@ async function resolve(base: string, p: string, r: Req, ctx: any, f: F, at: (s: 
   const [posts, meta, stream, eps] = await Promise.all(["posts", "meta", "stream", "episodes"].map((n) => load(base, p, n, f).catch((e) => (n === "episodes" ? null : Promise.reject(e)))));
   const sig = new AbortController().signal, ctxBase = { providerValue: p, signal: sig, providerContext: ctx };
   at("search");
-  const res = (await remember(`${base}|${p}|search|${q}`, cache, () => posts.getSearchPosts({ searchQuery: q, page: 1, ...ctxBase }))) as { title: string; link: string }[];
+  const res = r.link ? [{ title: r.title, link: r.link }] : (await remember(`${base}|${p}|search|${q}`, cache, () => posts.getSearchPosts({ searchQuery: q, page: 1, ...ctxBase }))) as { title: string; link: string }[];
   // "Download Breaking Bad (Season 1 – 5) Dual Audio…" → "Breaking Bad" (Android VegaPick.cleanTitle)
   const clean = (t: string) => { const x = t.replace(/^\s*(download\s+|\[[^\]]*\]\s*)+/i, ""), i = x.search(/[([{|]|\b(19|20)\d{2}\b|\bseason\b|\bS\d{1,2}\b/i); return (i < 0 ? x : x.slice(0, i)).trim(); };
-  const found = res // both ways, as Android does: one way, "Breaking Bad" matched "Bad Cop" (0.63)
+  const found = r.link ? res[0] : res // both ways, as Android does: one way, "Breaking Bad" matched "Bad Cop" (0.63)
     .map((x) => ({ x, s: Math.min(score(q, clean(x.title)), score(clean(x.title), q)) + (year && x.title.includes(String(year)) ? 0.3 : 0) }))
     .filter((e) => e.s >= 0.6 && (type !== "series" || (pickSeason([e.x], season).length && seriesYear(e.x.title, year, season)))).sort((a, b) => b.s - a.s)[0]?.x; // not a post for another season
   if (!found) { console.debug(`[vega] ${p}: no post matched "${q}"`, res.slice(0, 8).map((x) => x.title)); return []; }
@@ -203,8 +213,9 @@ async function resolve(base: string, p: string, r: Req, ctx: any, f: F, at: (s: 
       if (!/^https:/.test(s.link ?? "") || NOT_MEDIA.test(s.link) || TRIAL.test(String(s.server ?? ""))) continue;
       const hls = s.type === "m3u8" || /\.m3u8(\?|$)/.test(s.link);
       if (hls && !helperCors()) continue; // hls.js needs CORS from every host: Helper 1.3+
-      const hd = s.headers ?? {};
-      if (Object.keys(hd).some((k) => !["referer", "origin", "user-agent"].includes(k.toLowerCase()))) continue; // can't be applied to a <video>
+      // a mirror's stream lists its API headers too (Accept); its Cookie (the session) goes on the <video>'s requests (Helper 1.4)
+      const hd: Record<string, string> = p in MIRRORS ? Object.fromEntries(Object.entries(s.headers ?? {}).filter(([k]) => /^(referer|origin|user-agent|cookie)$/i.test(k))) as Record<string, string> : s.headers ?? {};
+      if (Object.keys(hd).some((k) => !["referer", "origin", "user-agent", ...(p in MIRRORS ? ["cookie"] : [])].includes(k.toLowerCase()))) continue; // can't be applied to a <video>
       if (Object.keys(hd).length) try { await setHeaders(s.link, hd); } catch { continue; }
       if (hls) { if (!(await hlsReady(s.link, hd, f).catch(() => false))) { console.debug(`[vega] ${p}: dropped HLS ${String(s.link).slice(8, 50)}`); continue; } }
       else { // ask the way a <video> does (open range): some hosts only serve bounded ranges and answer players with a 403 page
@@ -235,8 +246,8 @@ export const kindOf = (p: string, type?: string) => KIND_FIX[p] ?? type ?? "glob
 const OFF_TITLE = ["anime", "live", "video"];
 /** Providers with no movies (kissKh is K-drama episodes only): asked for series alone. */
 const SERIES_ONLY = ["kissKh", "dramacool"];
-/** Need to read Set-Cookie and send Cookie (NetMirror's ad-verify session), which browser fetch can't; they run on Android only. */
-export const WEB_SKIP = ["netflixMirror", "primeMirror", "disneyMirror"];
+/** NetMirror's ad-verify session needs Set-Cookie read and Cookie sent, which browser fetch can't: only through Helper 1.4+. */
+export const webSkip = (p: string) => p in MIRRORS && !helperMirror();
 const types = new Map<string, Promise<Record<string, string>>>();
 /** provider → manifest type at the commit `base` points at (…/dist). */
 export const manifestTypes = (base: string) => {
@@ -275,16 +286,17 @@ export async function fanOut<T>(ps: string[], one: (p: string) => Promise<T[]>, 
 }
 
 /** Every title provider, most reliable first, 5 at a time (2 once there's enough), each up to 45 s, all within 60 s. `on` gets each file as soon as it's verified. */
-export async function streams(title: string, year: number, type: "movie" | "series", season: number, episode: number, f: F = vf, on: (x: Awaited<ReturnType<typeof resolve>>) => void = () => {}) {
+export async function streams(title: string, year: number, type: "movie" | "series", season: number, episode: number, f: F = vf, on: (x: Awaited<ReturnType<typeof resolve>>) => void = () => {}, own?: string) {
   const reg = await registry(), kinds = await manifestTypes(reg.base), r = { title, year, type, season, episode }, stats = loadStats(), br = breakers(), now = Date.now();
-  const ps = order(reg.enabled.filter((p) => !WEB_SKIP.includes(p) && !OFF_TITLE.includes(kindOf(p, kinds[p])) && !(type === "movie" && SERIES_ONLY.includes(p)) && !tripped(br[p], now)), (p) => reliability(stats[NAMES[p] ?? p], now));
+  const ps = order(reg.enabled.filter((p) => !webSkip(p) && p !== own && !OFF_TITLE.includes(kindOf(p, kinds[p])) && !(type === "movie" && SERIES_ONLY.includes(p)) && !tripped(br[p], now)), (p) => reliability(stats[NAMES[p] ?? p], now));
   const t0 = Date.now(), all: VegaFile[] = [], add = (x: VegaFile) => { if (Date.now() - t0 < 60000) { all.push(x); on([x]); } };
   const one = async (p: string) => {
     // the provider's own fetches, so a search whose requests failed can be told from one that found nothing
     let stage = "load" as Stage, fails = 0;
-    const g: F = (u, o) => stage !== "search" ? f(u, o) : f(u, o).then((x) => { if (x.status >= 400) fails++; return x; }, (e) => { fails++; throw e; });
+    const pf = p in MIRRORS && f === vf ? jf : f;
+    const g: F = (u, o) => stage !== "search" ? pf(u, o) : pf(u, o).then((x) => { if (x.status >= 400) fails++; return x; }, (e) => { fails++; throw e; });
     try {
-      const x = await tmo(resolve(reg.base, p, r, await context(g, p), g, (s) => { stage = s; }, add), 45000);
+      const x = await tmo(resolve(reg.base, p, r, await context(g, p), g, (s) => { stage = s; }, add), 45000); // a mirror's unlock outlives this and is kept
       console.debug(`[vega] ${p}: ${x.length} in ${Date.now() - t0} ms`);
       if (stage !== "load") breaker(p, stage === "search" && !x.length && fails > 0);
       return x;
@@ -314,7 +326,8 @@ const ORDER: Stage[] = ["load", "search", "meta", "episodes", "stream", "done"];
 /** Run ONE provider at an explicit commit (not the registry's pin) through the player's path, on a title of its kind. `files` = playable files found (max one per picked quality). */
 export async function checkProvider(commit: string, provider: string, c: CheckCase, f: F = vf, ms = 30000, kind = "global"): Promise<Check> {
   const t0 = Date.now(), req = casesFor(kind)?.[c];
-  if (WEB_SKIP.includes(provider)) return { ok: false, skipped: true, stage: "load", files: 0, ms: 0, error: "Android only: the browser can't read or send the session cookie this site needs" };
+  if (webSkip(provider)) return { ok: false, skipped: true, stage: "load", files: 0, ms: 0, error: "Needs Reelm Helper 1.4: the session cookie this site needs goes through it" };
+  if (provider in MIRRORS && f === vf) f = jf;
   if (!req) return { ok: false, skipped: true, stage: "load", files: 0, ms: 0, error: kind === "live" ? "Live TV: nothing to search, not testable here" : "Not a movie or series catalog, not testable here" };
   const title = `${req.title}${req.type === "series" ? ` S${req.season}E${req.episode}` : ` (${req.year})`}`;
   let stage = "load" as Stage;
@@ -323,4 +336,46 @@ export async function checkProvider(commit: string, provider: string, c: CheckCa
     if (out.length) return { ok: true, stage: "done", files: out.length, ms: Date.now() - t0, title };
     return { ok: false, stage, files: 0, ms: Date.now() - t0, error: stage === "search" ? "no search match" : "no playable file", title };
   } catch (e: any) { return { ok: false, stage, files: 0, ms: Date.now() - t0, error: String(e?.message ?? e), title }; }
+}
+
+// ---- Mirror mode (Helper 1.4+) ----
+export type MirrorPost = { title: string; link: string; image?: string };
+/** A mirror's catalog rows: each filter's posts (20 titles, no paging) asked in turn, so its home page is fetched once; empty rows and
+ *  rows listing the same titles as an earlier one are dropped (Netflix answers two filters with one list). Cold, it unlocks first (~40 s). */
+export const mirrorRows = (p: string) => remember(`rows|${p}`, true, async () => {
+  const reg = await registry(), ctx = await context(jf, p), [cat, posts] = await Promise.all(["catalog", "posts"].map((n) => load(reg.base, p, n, jf)));
+  const out: { title: string; items: MirrorPost[] }[] = [], seen = new Set<string>();
+  for (const c of cat.catalog as { title: string; filter: string }[]) {
+    const items = ((await posts.getPosts({ filter: c.filter, page: 1, providerValue: p, signal: new AbortController().signal, providerContext: ctx }).catch(() => [])) ?? []) as MirrorPost[];
+    const k = items.map((x) => x.link).sort().join("\n");
+    if (items.length && !seen.has(k)) { seen.add(k); out.push({ title: c.title, items }); }
+  }
+  return out;
+});
+/** A mirror title's meta (title, synopsis, image, type, tags, cast, linkList), plus each season's episode count. */
+export async function mirrorMeta(p: string, link: string) {
+  const reg = await registry(), ctx = await context(jf, p), [meta, eps] = await Promise.all(["meta", "episodes"].map((n) => load(reg.base, p, n, jf)));
+  const m: any = await remember(`${reg.base}|${p}|meta|${link}`, true, () => meta.getMeta({ link, provider: p, providerContext: ctx }));
+  const counts = await Promise.all(((m?.linkList ?? []) as Link[]).map((l) => (l.episodesLink ? eps.getEpisodes({ url: l.episodesLink, providerContext: ctx }).then((e: unknown[]) => e?.length ?? 0, () => 0) : 0)));
+  return { ...m, counts };
+}
+/** A mirror title's own streams, straight from its link (no title search). Each file goes to `on` as soon as it's verified. */
+export async function mirrorStreams(p: string, link: string, title: string, type: "movie" | "series", season: number, episode: number, on: (x: VegaFile[]) => void = () => {}) {
+  const reg = await registry();
+  return tmo(resolve(reg.base, p, { title, year: 0, type, season, episode, link }, await context(jf, p), jf, undefined, (x) => on([x])), 90000);
+}
+/** Earn the mirrors' session (12 h) in the background when it's missing or older than 11 h, so most plays skip the ~40 s wait (Android's prewarm). */
+let warming = false;
+export async function prewarm() {
+  if (warming || !helperMirror()) return;
+  warming = true;
+  try {
+    const d = await mirrorKv.get("t_hash_t_data");
+    if (d?.ts && Date.now() - d.ts < 11 * 36e5) return;
+    const reg = await registry(), p = Object.keys(MIRRORS).find((x) => reg.enabled.includes(x));
+    if (!p) return;
+    const t0 = Date.now(), posts = await load(reg.base, p, "posts", jf);
+    await posts.getSearchPosts({ searchQuery: "Red Notice", page: 1, providerValue: p, signal: new AbortController().signal, providerContext: await context(jf, p) });
+    console.debug(`[vega] mirror pre-warm: ${(await mirrorKv.get("t_hash_t_data"))?.ts > t0 ? "unlocked" : "still locked"} in ${Date.now() - t0} ms`);
+  } catch {} finally { warming = false; }
 }

@@ -15,9 +15,9 @@ import { setRemoteHere, useHub, type Now } from "@/lib/hub";
 import { frac } from "@/lib/eps";
 import { get, getHistory, epKey, mirrorTitle, playKey, proxied, reelm, saveProgress, syncHistory, toPlay, unmirror, WS, type Play as P } from "@/lib/core";
 import { track } from "@/lib/telemetry";
-import { helperVega, helperVersion } from "@/lib/bridge";
+import { helperMirror, helperVega, helperVersion, mirrorOf, mirrorSource } from "@/lib/bridge";
 import { bitrate, dv, getBandwidth, getPin, pickStream, risky, saveBandwidth, setPin } from "@/lib/pick-stream";
-import { fallbackOrder, langRank, loadStats, noSeek, qualities, recordStat, slowStart } from "@/lib/src-rank";
+import { fallbackOrder, langRank, loadStats, noSeek, provider, qualities, recordStat, slowStart } from "@/lib/src-rank";
 import { useApi, useSession } from "@/lib/session";
 import { languageName, trackLabel, useAudioTracks, useLibavAudio } from "@/lib/use-libav-audio";
 import { iso1, origLangs } from "@/lib/langs";
@@ -139,6 +139,9 @@ function Player() {
   // quality-first: the chip picked (0 = Auto), the height fallbacks aim for, sources already tried, a note when it had to go lower
   const [qsel, setQsel] = useState(0), [note, setNote] = useState(""), [toast, setToast] = useState(""), [more, setMore] = useState(false);
   const [allSrc, setAllSrc] = useState(false);
+  // a mirror title (Helper 1.4+) plays from its own mirror first: `ms` names it ("Netflix mirror"); `mwait` 1 while it answers, 2 once the wait offers another source
+  const mp = p ? mirrorOf(p.id) : undefined, ms = mp && helperMirror() ? mirrorSource(mp) : "";
+  const [mwait, setMwait] = useState(0), skipMirror = useRef(() => {});
   useEffect(() => { try { setAllSrc(localStorage.getItem(ALL_KEY) === "1"); } catch {} }, []);
   const target = useRef(0), tried = useRef(new Set<number>()), exhausted = useRef(""), failRef = useRef<(m: string) => void>(() => {}), stalled = useRef("");
   // left for a faster source before their first frame (still working: tried again last), and the source picked by hand (never left)
@@ -146,7 +149,7 @@ function Player() {
   /** best-ranked source of height `h` (fallbacks start over from there) */
   const orig = useRef<string[]>([]); // the title's original languages (dub-safe picking), from its detail's country
   const resuming = () => t0 > 30 || f0 > 0 || keep.current > 30 || (!!p && (getHistory(pid)[playKey(p)]?.position ?? 0) > 30);
-  const choose = (list: Source[], lang: string, h: number) => { target.current = h; tried.current = new Set(); slowLeft.current = new Set(); exhausted.current = ""; setNote(""); return fallbackOrder(list, { lang, orig: orig.current, height: h, stats: loadStats(), resume: resuming() })[0]; };
+  const choose = (list: Source[], lang: string, h: number) => { target.current = h; tried.current = new Set(); slowLeft.current = new Set(); exhausted.current = ""; setNote(""); return fallbackOrder(list, { lang, orig: orig.current, height: h, stats: loadStats(), resume: resuming(), mirror: ms })[0]; };
   // 4K step-up: armed while auto-picking (no pinned quality, no hand pick, no room); `up`: the 4K sources to prepare, the first one in the hidden element
   const armed = useRef(false), [up, setUp] = useState<number[]>([]), upAt = useRef(0), prep = useRef<HTMLVideoElement | null>(null), medias = useRef<Record<number, unknown>>({});
   const swapAt = useRef(0), resume = useRef(false);
@@ -159,7 +162,7 @@ function Player() {
   useEffect(() => {
     if (!p) return;
     let live = true;
-    setErr(""); setSources([]); setSubs([]); setSkips([]); setCur(0); setDur(0); setSi(-1); setTag({ i: -1, pin: 0 }); setQsel(0); setMore(false); keep.current = 0;
+    setErr(""); setMwait(0); setSources([]); setSubs([]); setSkips([]); setCur(0); setDur(0); setSi(-1); setTag({ i: -1, pin: 0 }); setQsel(0); setMore(false); keep.current = 0;
     target.current = 0; tried.current = new Set(); slowLeft.current = new Set(); picked.current = -1; exhausted.current = ""; setNote(""); armed.current = false; setUp([]);
     // TheIntroDB for movies and series: by IMDb id (Cinemeta), else the TMDB id
     const sid = p.kind === "movie" ? (/^tt\d+$/.test(p.id) ? p.id : p.id.match(/^tmdb:(?:movie|tv):(\d+)$/)?.[1]) : undefined;
@@ -183,7 +186,7 @@ function Player() {
         if (r.malId) get(`aniskip?mal=${r.malId}&ep=${p.ep}`).then((d) => live && setSkips(toSkips(d))).catch(() => {});
         return [[{ src: proxied(r.master, r.referer), hls: true, label: "Auto" }], r.subtitles.map((x: Sub) => ({ ...x, url: proxied(x.url, r.referer) }))] as const;
       }
-      if (p.id.startsWith("nm:")) { // a mirror-mode title from Android: the same title by name, keeping the resume point
+      if (p.id.startsWith("nm:") && !ms) { // a mirror-mode title without Helper 1.4: the same title by name, keeping the resume point
         const id = await unmirror(p.title || mirrorTitle(p.id), p.type, p.year);
         if (live) router.replace(id ? href({ ...p, id }, `${extra}${t0 ? `&t=${t0}` : ""}${f0 ? `&f=${f0}` : ""}`) : `/search?q=${encodeURIComponent(p.title || mirrorTitle(p.id))}`);
         return null;
@@ -193,10 +196,13 @@ function Player() {
       // is in (not HEVC/MKV/Dolby Vision), else the best so far after 15 s or when all are done; never switch for late ones.
       // A title page opened first has usually run this lookup already (prefetchStream): then everything found so far arrives at once.
       let acc: Source[] = [], started = false, grace: ReturnType<typeof setTimeout> | undefined, subbed = false;
+      // a mirror title: nothing starts before its mirror answers (its own id, no title matching) or the viewer asks for another source;
+      // the usual sources look in parallel meanwhile and stay listed as the fallback
+      let held = !!ms, ladderDone = false;
       const ready = () => acc.some((x) => !risky({ ...x, url: x.src }) && !dv(x));
       const tl = Date.now();
       const begin = () => {
-        if (started || !live || !acc.length) return;
+        if (started || !live || !acc.length || held) return;
         started = true; clearTimeout(grace);
         const pin = getPin(playKey(p)) ?? 0, lang = savedLang(), saver = !!(navigator as any).connection?.saveData;
         let h = acc[pickFor(acc, lang, pin)].height ?? 0;
@@ -206,10 +212,11 @@ function Player() {
         const i = choose(acc, lang, h);
         setQsel(pin ? h : 0); setSi(i); setTag({ i, pin: pin && acc[i].height === pin ? pin : 0 });
         console.debug(`[stream] start ${acc[i].label} (of ${acc.length}) after ${Date.now() - tl} ms`);
+        if (ms) setToast(provider(acc[i].label) === ms ? `Playing from the ${ms}` : `Playing from ${provider(acc[i].label)} instead of the ${ms}`);
       };
       setMore(true);
       const mv = await import("@/lib/movies");
-      await mv.streamShared(mv.streamQuery(p), (part) => {
+      const onPart = (part: any[]) => {
         if (!live) return;
         acc = [...acc, ...part.map((x) => ({ src: x.url, hls: x.hls ?? /\.m3u8(\?|$)/.test(x.url), label: x.label, codec: x.codec, dolby: x.dolby, height: x.height, langs: x.langs }))];
         setSources(acc);
@@ -218,8 +225,22 @@ function Player() {
         if (sb && !subbed) { subbed = true; const b = sb.map((x: Sub) => ({ ...x, url: `/api/sub?u=${encodeURIComponent(x.url)}` })), d = b.findIndex((x: Sub) => x.default); setSubs(b); setSubIdx(d >= 0 ? d : 0); }
         grace ??= setTimeout(begin, 15000);
         if (ready()) begin();
-      }, nonce > 0).finally(() => live && setMore(false));
+      };
+      const mirrorRun = mp && ms ? (async () => {
+        setMwait(1);
+        const t = setTimeout(() => live && held && setMwait(2), 3000);
+        skipMirror.current = () => { held = false; setMwait(0); begin(); };
+        const files = await (await import("@/lib/vega")).mirrorStreams(mp, p.id.slice(`nm:${mp}:`.length), p.title, p.type === "series" ? "series" : "movie", p.season ?? 0, p.episode ?? 0, (x) => live && onPart(x)).catch(() => []);
+        console.debug(`[stream] ${ms}: ${files.length} after ${Date.now() - tl} ms`);
+        clearTimeout(t);
+        if (!held || !live) return;
+        held = false; setMwait(0);
+        if (files.length || ladderDone || ready()) begin(); else grace = setTimeout(begin, 5000);
+      })() : null;
+      const ladder = mv.streamShared(mv.streamQuery(p), onPart, nonce > 0).finally(() => { ladderDone = true; });
+      await (mirrorRun ? Promise.all([ladder.catch(() => {}), mirrorRun]) : ladder).finally(() => live && setMore(false));
       begin();
+      if (mirrorRun && !acc.length) throw new Error("No streams found");
       return null;
     })().then((r) => {
       if (!live || !r) return;
@@ -308,7 +329,7 @@ function Player() {
     return () => clearInterval(i);
   }); // eslint-disable-line react-hooks/exhaustive-deps
   // fall over: the next-ranked source of the same height, then the nearest lower one (with a note); late sources count too
-  const next1 = () => { const o = fallbackOrder(sources, { lang: want, orig: orig.current, height: target.current, stats: loadStats(), resume: resuming() }); return o.find((i) => !tried.current.has(i)) ?? o.find((i) => slowLeft.current.has(i)); };
+  const next1 = () => { const o = fallbackOrder(sources, { lang: want, orig: orig.current, height: target.current, stats: loadStats(), resume: resuming(), mirror: ms }); return o.find((i) => !tried.current.has(i)) ?? o.find((i) => slowLeft.current.has(i)); };
   const fail = (m: string) => {
     if (src) { track("play_error", { ...info(), error: m }); recordStat(src.label, { fail: true }); }
     tried.current.add(si); slowLeft.current.delete(si);
@@ -332,7 +353,7 @@ function Player() {
   // never trade a source this browser surely decodes for one it may not (a Dolby-audio 4KHDHub file hung 40 s that way)
   const unsure = (x: Source) => dv(x) || !!x.dolby || risky({ ...x, url: x.src });
   slowRef.current = () => {
-    if (!src || !startedAt.current || (video.current?.readyState ?? 0) >= 2 || picked.current === si) return;
+    if (!src || !startedAt.current || (video.current?.readyState ?? 0) >= 2 || picked.current === si || (ms && provider(src.label) === ms)) return; // a mirror's HLS takes ~6 s: only an error leaves it
     const st = loadStats(), nx = fallbackOrder(sources, { lang: want, orig: orig.current, height: target.current, stats: st })
       .find((i) => i !== si && !tried.current.has(i) && (sources[i].height ?? 0) === (src.height ?? 0) && !slowStart(sources[i], st) && (unsure(src) || !unsure(sources[i])));
     if (nx === undefined) return;
@@ -597,7 +618,8 @@ function Player() {
               {...((i === si ? common : { ref: prepRef, preload: "auto", playsInline: true, referrerPolicy: "no-referrer", className: "pointer-events-none absolute inset-0 size-full opacity-0", onError: () => { console.debug(`[stream] step-up: ${x.label} failed`); setUp((u) => u.slice(1)); } }) as object)} />); })}
           <Attach media={() => src && medias.current[si]} />
           {src && !src.dolby && p?.kind !== "live" && <SeekPreview key={`p${si}${pkey}${nonce}`} src={src.src} hls={src.hls} duration={() => video.current?.duration ?? 0} />}
-          {!src && !err && <div className="pointer-events-none absolute inset-0 grid place-items-center"><div className="flex flex-col items-center gap-4"><ReelMark className="size-14 animate-spin [animation-duration:1.6s]" /><p className="text-sm text-foreground/72">{p ? "Finding a stream" : "Joining the room"}</p></div></div>}
+          {!src && !err && <div className="pointer-events-none absolute inset-0 grid place-items-center"><div className="flex flex-col items-center gap-4"><ReelMark className="size-14 animate-spin [animation-duration:1.6s]" /><p className="text-sm text-foreground/72">{!p ? "Joining the room" : mwait ? `Opening the ${ms}` : "Finding a stream"}</p>
+            {mwait === 2 && <button onClick={() => skipMirror.current()} className={cn(pill.secondary, "pointer-events-auto")}>Play from another source now</button>}</div></div>}
 
           {/* pause marquee */}
           {showMq && (
