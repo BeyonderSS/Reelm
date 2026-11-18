@@ -233,6 +233,8 @@ const KIND_FIX: Record<string, string> = { dramacool: "kdrama", kissKh: "kdrama"
 export const kindOf = (p: string, type?: string) => KIND_FIX[p] ?? type ?? "global";
 /** Never asked for a movie or series: anime (anime titles have their own sources), live TV and YouTube (no title catalog). */
 const OFF_TITLE = ["anime", "live", "video"];
+/** Providers with no movies (kissKh is K-drama episodes only): asked for series alone. */
+const SERIES_ONLY = ["kissKh"];
 /** Need to read Set-Cookie and send Cookie (NetMirror's ad-verify session), which browser fetch can't; they run on Android only. */
 export const WEB_SKIP = ["netflixMirror", "primeMirror", "disneyMirror"];
 const types = new Map<string, Promise<Record<string, string>>>();
@@ -275,7 +277,7 @@ export async function fanOut<T>(ps: string[], one: (p: string) => Promise<T[]>, 
 /** Every title provider, most reliable first, 5 at a time (2 once there's enough), each up to 45 s, all within 60 s. `on` gets each file as soon as it's verified. */
 export async function streams(title: string, year: number, type: "movie" | "series", season: number, episode: number, f: F = vf, on: (x: Awaited<ReturnType<typeof resolve>>) => void = () => {}) {
   const reg = await registry(), kinds = await manifestTypes(reg.base), r = { title, year, type, season, episode }, stats = loadStats(), br = breakers(), now = Date.now();
-  const ps = order(reg.enabled.filter((p) => !WEB_SKIP.includes(p) && !OFF_TITLE.includes(kindOf(p, kinds[p])) && !tripped(br[p], now)), (p) => reliability(stats[NAMES[p] ?? p], now));
+  const ps = order(reg.enabled.filter((p) => !WEB_SKIP.includes(p) && !OFF_TITLE.includes(kindOf(p, kinds[p])) && !(type === "movie" && SERIES_ONLY.includes(p)) && !tripped(br[p], now)), (p) => reliability(stats[NAMES[p] ?? p], now));
   const t0 = Date.now(), all: VegaFile[] = [], add = (x: VegaFile) => { if (Date.now() - t0 < 60000) { all.push(x); on([x]); } };
   const one = async (p: string) => {
     // the provider's own fetches, so a search whose requests failed can be told from one that found nothing

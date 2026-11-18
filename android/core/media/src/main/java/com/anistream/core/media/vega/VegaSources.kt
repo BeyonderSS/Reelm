@@ -75,7 +75,7 @@ class VegaSources @Inject constructor(
         val kinds = runCatching { kinds(reg.commit) }.getOrDefault(emptyMap())
         val now = System.currentTimeMillis()
         val stats = context.getSharedPreferences("src_stats", Context.MODE_PRIVATE) // SourceRank's, keyed by source name
-        val providers = FanOut.order(reg.enabled.filter { kindOf(it, kinds[it]) !in OFF_TITLE && !FanOut.tripped(breakers.getString(it, null), now) }) {
+        val providers = FanOut.order(reg.enabled.filter { kindOf(it, kinds[it]) !in OFF_TITLE && !(type == MediaType.MOVIE && it in SERIES_ONLY) && !FanOut.tripped(breakers.getString(it, null), now) }) {
             FanOut.reliability(stats.getString(DISPLAY[it] ?: it, null), now)
         }
         val target = if (lowEnd) 720 else 1080
@@ -237,6 +237,8 @@ class VegaSources @Inject constructor(
         fun kindOf(p: String, type: String?) = KIND_FIX[p] ?: type ?: "global"
         /** Never asked for a movie or series: anime (anime titles have their own sources), live TV, YouTube. */
         val OFF_TITLE = setOf("anime", "live", "video")
+        /** Providers with no movies (kissKh is K-drama episodes only): asked for series alone. */
+        val SERIES_ONLY = setOf("kissKh")
         private val DISPLAY = mapOf(
             "hdhub4u" to "HdHub4u", "drive" to "MoviesDrive", "vega" to "VMovies", "mod" to "MoviesMod", "topmovies" to "TopMovies"
         )

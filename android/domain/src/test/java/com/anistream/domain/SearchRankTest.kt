@@ -37,6 +37,10 @@ class SearchSpacingTypoTest {
         i("mb:v4", "VisionQuest [Hindi]", 2026, 8.3), i("mb:v5", "VisionQuest Sound", 2015)
     )
 
+    @Test fun dubTagNotShownWhenAnotherSourceHasTheCanonicalTitle() {
+        val r = rankSearch("inception", listOf(listOf(i("mb:i", "Inception [Hindi]", 2010)), listOf(i("tt1375666", "Inception", 2010))), true)
+        assertEquals(listOf("mb:i" to "Inception"), r.map { it.id to it.title })
+    }
     @Test fun spacingAndPopularity() = listOf("vision quest", "visionquest", "visoin quest", "Vision-Quest").forEach { assertEquals(it, "VisionQuest [Hindi]", first(it, vq)) }
 
     @Test fun typos() {

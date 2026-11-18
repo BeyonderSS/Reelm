@@ -1,5 +1,5 @@
 import { exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 const call = (path: string, init: RequestInit & { token?: string; json?: unknown } = {}) =>
   exports.default.fetch(new Request(`https://api.test${path}`, {
@@ -262,5 +262,13 @@ describe("proxy", () => {
     expect(out).toContain("https://p/v1/proxy?u=https%3A%2F%2Fx.zokoanime.video%2Fa%2Fk.key");
     expect(out).toContain("u=https%3A%2F%2Fx.zokoanime.video%2Fa%2Fseg%2F1.ts&r=");
     expect((await call("/v1/proxy?u=" + encodeURIComponent("https://example.com/a.m3u8"))).status).toBe(403);
+  });
+
+  it("resolves relative uris against the redirected playlist, not the short link (Pluto via jmp2.uk 414)", async () => {
+    const real = "https://ipv4.pluto.tv/hls/ch/master.m3u8?jwt=abc";
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementationOnce(async () => Object.defineProperty(new Response("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n1/playlist.m3u8?jwt=abc\n", { headers: { "content-type": "application/vnd.apple.mpegurl" } }), "url", { value: real }));
+    const text = await (await call("/v1/proxy?any=1&u=" + encodeURIComponent("https://jmp2.uk/plu-x.m3u8"))).text();
+    spy.mockRestore();
+    expect(text).toContain("u=" + encodeURIComponent("https://ipv4.pluto.tv/hls/ch/1/playlist.m3u8?jwt=abc"));
   });
 });
