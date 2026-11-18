@@ -119,12 +119,13 @@ internal object SourceRank {
     fun keepsAudio(next: MediaStream, cur: MediaStream, o: Origin) = dubRank(next, o) <= maxOf(dubRank(cur, o), 1)
 
     /**
-     * Indexes of [list] to try, in order: [lang]'s sources first; within them what this device can decode at all ([undecodable] last, whatever its height); [height] itself, then each lower height (nearest first), then higher;
+     * Indexes of [list] to try, in order: a mirror title's own [mirror] streams first (the viewer chose that mirror; unless they won't decode); then [lang]'s sources; within them what this device can decode at all ([undecodable] last, whatever its height); [height] itself, then each lower height (nearest first), then higher;
      * within a height: the title's own audio ([dubRank] by [origin]), a seekable file when [resume], what this device can decode, then what starts fast ([slowStart] last), then provider reliability, then list order.
      */
-    fun fallbackOrder(list: List<MediaStream>, lang: String?, height: Int, stats: Map<String, SrcStat>, now: Long, canPlay: (MediaStream) -> Boolean = { true }, undecodable: (MediaStream) -> Boolean = { false }, origin: Origin? = null, resume: Boolean = false): List<Int> {
+    fun fallbackOrder(list: List<MediaStream>, lang: String?, height: Int, stats: Map<String, SrcStat>, now: Long, canPlay: (MediaStream) -> Boolean = { true }, undecodable: (MediaStream) -> Boolean = { false }, origin: Origin? = null, resume: Boolean = false, mirror: String? = null): List<Int> {
         val anyLang = lang != null && list.any { lang in it.languages }
         return list.indices.sortedWith(compareBy(
+            { if (mirror != null && list[it].sourceName == mirror && !undecodable(list[it])) 0 else 1 },
             { if (anyLang && lang !in list[it].languages) 1 else 0 },
             { if (undecodable(list[it])) 1 else 0 },
             { list[it].height.let { h -> if (h == height) 0 else if (h < height) 1 else 2 } },

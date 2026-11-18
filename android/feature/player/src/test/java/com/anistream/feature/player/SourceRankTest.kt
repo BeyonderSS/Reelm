@@ -165,6 +165,16 @@ class SourceRankTest {
     }
 
     @Test
+    fun mirrorTitlePlaysItsMirrorFirst() {
+        val list = listOf(
+            MediaStream(url = "https://v.example/a.mp4", qualityLabel = "1080p", height = 1080, sourceName = "VMovies", languages = listOf("ko")), // 0
+            MediaStream(url = "https://m.example/b.m3u8", qualityLabel = "Auto 1080p", height = 1080, sourceName = "Netflix mirror")) // 1
+        assertEquals(listOf(0, 1), SourceRank.fallbackOrder(list, "ko", 1080, emptyMap(), 0))
+        assertEquals(listOf(1, 0), SourceRank.fallbackOrder(list, "ko", 1080, emptyMap(), 0, mirror = "Netflix mirror"))
+        assertEquals(listOf(0, 1), SourceRank.fallbackOrder(list, "ko", 1080, emptyMap(), 0, undecodable = { it.sourceName == "Netflix mirror" }, mirror = "Netflix mirror"))
+    }
+
+    @Test
     fun resumePrefersSeekableOfEqualHeight() {
         val list = listOf(
             MediaStream(url = "https://video-downloads.googleusercontent.com/x", qualityLabel = "GDrive 1080p", height = 1080, sourceName = "A"), // 0

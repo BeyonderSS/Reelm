@@ -219,7 +219,8 @@ class MediaPlayerViewModel @Inject constructor(
     private var picked: String? = null
     private fun isTried(i: Int) = _uiState.value.request?.streams?.getOrNull(i)?.url in tried
     private fun order(r: PlaybackRequest, height: Int) =
-        SourceRank.fallbackOrder(r.streams, prefLang(r), height, SourceRank.load(appContext), System.currentTimeMillis(), canPlay, undecodable, origin(r), pendingResume != null || player.currentPosition > RESUME_MIN_MS)
+        SourceRank.fallbackOrder(r.streams, prefLang(r), height, SourceRank.load(appContext), System.currentTimeMillis(), canPlay, undecodable, origin(r), pendingResume != null || player.currentPosition > RESUME_MIN_MS,
+            com.anistream.domain.model.Mirrors.of(r.mediaId)?.let(com.anistream.domain.model.Mirrors::source))
     /** best-ranked untried source of [height] (or below); fallbacks continue from there */
     private fun choose(r: PlaybackRequest, height: Int): Int {
         target = height
@@ -490,7 +491,9 @@ class MediaPlayerViewModel @Inject constructor(
                 startedAt > 0 && _uiState.value.streamIndex == index && !isTried(index) && r != null && order(r, target).any { it != index && !isTried(it) }
             }
             delay(SLOW_SWITCH_MS)
-            if (waiting() && stream.url != picked && player.totalBufferedDuration < DECODE_BUFFERED_MS) _uiState.value.request?.let { r ->
+            // a mirror title's own mirror (HLS, ~6 s to a first frame) is the viewer's choice too: only an error or the timeouts below leave it
+            val chosen = stream.url == picked || com.anistream.domain.model.Mirrors.of(request.mediaId)?.let(com.anistream.domain.model.Mirrors::source) == stream.sourceName
+            if (waiting() && !chosen && player.totalBufferedDuration < DECODE_BUFFERED_MS) _uiState.value.request?.let { r ->
                 val stats = SourceRank.load(appContext)
                 order(r, target).firstOrNull { val o = r.streams[it]
                     // never trade a source this device surely decodes for one it may not
