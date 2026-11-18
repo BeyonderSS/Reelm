@@ -77,7 +77,11 @@ fun rankSearch(query: String, lists: List<List<MediaItem>>, hideMature: Boolean 
         .forEach { (item, _) ->
             val key = dedupeKey(item.title)
             val i = out.indexOfFirst { dedupeKey(it.title) == key && (it.year == null || item.year == null || abs(it.year!! - item.year!!) <= 1) }
-            if (i < 0) out += item else if (prefer(item.id) < prefer(out[i].id)) out[i] = item
+            if (i < 0) out += item else {
+                val (w, l) = if (prefer(item.id) < prefer(out[i].id)) item to out[i] else out[i] to item
+                // the streamable MovieBox copy is "Inception [Hindi]"; show the other source's canonical title
+                out[i] = if (TAGS.containsMatchIn(w.title) && !TAGS.containsMatchIn(l.title)) w.copy(title = l.title) else w
+            }
         }
     return out
 }

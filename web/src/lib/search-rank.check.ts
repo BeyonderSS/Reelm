@@ -29,4 +29,5 @@ const NS = [mb("n1", "Naruto Shippuden the Movie: Blood Prison", 2011, ["Animati
 assert.equal(first("naruto shipuden", NS), "Naruto: Shippuden [Hindi]");
 const SV = [mb("s1", "Hum Suryavasham Hain", 2022, ["Drama"]), { ...mb("s2", "Sooryavansham [Hindi]", 1999, ["Action", "Drama"]), rating: 6.4 }, mb("s3", "Suryavanshi", 1992, ["Action"])];
 assert.ok(rank("suryavansam", { mb: SV, tm: [], cm: [] }, false).some((i) => i.title === "Sooryavansham [Hindi]"));
+assert.deepEqual(rank("inception", { mb: [mb("i", "Inception [Hindi]", 2010, ["Sci-Fi"])], tm: [], cm: [{ id: "tt1375666", title: "Inception", year: 2010 }] }, false).map((i) => [i.id, i.title]), [["mb:i", "Inception"]]);
 console.log("ok");

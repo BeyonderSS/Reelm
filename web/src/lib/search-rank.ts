@@ -13,6 +13,7 @@ export function visible(i: R, mature: boolean) {
   return !g.length || (!g.some((x) => ADULT.includes(x)) && g.some((x) => FILM.includes(x)));
 }
 
+const TAG = /\[[^\]]*\]/;
 const words = (t: string) => t.toLowerCase().replace(/\[[^\]]*\]/g, " ").replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean);
 const tokens = (t: string) => { const w = words(t).filter((x) => x !== "part"); return w[0] === "the" ? w.slice(1) : w; };
 /** "Part 1" is the film itself ("Gangs of Wasseypur [Hindi]" = "... - Part 1"); "Part 2" is another title. */
@@ -60,6 +61,10 @@ export function rank<T extends R>(q: string, src: { mb: T[]; tm: T[]; cm: T[] },
   const all = [...src.mb.filter((i) => visible(i, mature)), ...src.tm, ...src.cm].map((it, o) => ({ it, o, s: score(q, it.title), p: it.id.startsWith("mb:") ? 0 : it.id.startsWith("tmdb:") ? 2 : 1 })).filter((x) => x.s >= 0.6);
   const kept: typeof all = [];
   for (const x of [...all].sort((a, b) => a.p - b.p || a.o - b.o))
-    if (!kept.some((k) => key(k.it.title) === key(x.it.title) && (!k.it.year || !x.it.year || Math.abs(k.it.year - x.it.year) <= 1))) kept.push(x);
+  {
+    const k = kept.find((k) => key(k.it.title) === key(x.it.title) && (!k.it.year || !x.it.year || Math.abs(k.it.year - x.it.year) <= 1));
+    if (!k) kept.push(x);
+    else if (TAG.test(k.it.title) && !TAG.test(x.it.title)) k.it = { ...k.it, title: x.it.title }; // the streamable MovieBox copy is "Inception [Hindi]"; show the canonical title
+  }
   return kept.sort((a, b) => band(b.s) - band(a.s) || stars(b.it) - stars(a.it) || (b.it.year ?? 0) - (a.it.year ?? 0) || a.o - b.o).map((x) => x.it);
 }
