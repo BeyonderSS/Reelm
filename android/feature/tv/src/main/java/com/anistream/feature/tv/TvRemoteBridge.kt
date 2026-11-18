@@ -61,7 +61,7 @@ internal fun TvRemoteBridge(player: Player, hooks: RemoteHooks, info: RemoteInfo
         val t = System.currentTimeMillis()
         hub.sendState(Now(h.title, h.subtitle, h.poster, player.isPlaying, player.currentPosition.coerceAtLeast(0),
             player.duration.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0) ?: 0, h.hasNext, h.hasPrev, t,
-            i.rev, sc.first, sc.second?.let { (it - t).coerceAtLeast(0) }))
+            i.rev, sc.first, sc.second?.let { (it - t).coerceAtLeast(0) }, player.isCurrentMediaItemSeekable))
     }
     DisposableEffect(player) {
         bridges++

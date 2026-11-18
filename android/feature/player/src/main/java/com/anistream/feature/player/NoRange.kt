@@ -57,7 +57,7 @@ private class RangeGuard(private val up: HttpDataSource, private val noRange: Mu
             if (dataSpec.position != 0L || (e.responseCode != 403 && e.responseCode != 416)) throw e
             up.clearRequestProperty("Range"); up.open(dataSpec)
         }
-        if (dataSpec.position == 0L) noRange[host] = up.responseCode == 200
+        if (dataSpec.position == 0L) { noRange[host] = up.responseCode == 200; if (noRange[host] == true) SourceRank.learned += host.lowercase() }
         return n
     }
 }

@@ -5,7 +5,7 @@ import { deviceId, wire, WS, type Play } from "./core";
 import { useSession } from "./session";
 
 export type Now = { title: string; subtitle?: string; poster?: string; playing: boolean; positionMs: number; durationMs: number; hasNext: boolean; hasPrev: boolean; at: number;
-  rev?: number; skip?: { label: string; endMs: number } | null; nextInMs?: number | null };
+  rev?: number; skip?: { label: string; endMs: number } | null; nextInMs?: number | null; seekable?: boolean };
 type Track = { id: string; label: string };
 /** What a TV reports about its player (CONTRACT §3), answered to `describe`. Any part may be missing on older/idle TVs. */
 export type Info = { rev: number; title?: string; season?: number; episode?: number; payload?: any;

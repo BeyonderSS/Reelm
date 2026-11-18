@@ -217,7 +217,7 @@ export function RemotePanel({ tv, fallback, onPlayHere, onClose, className }: { 
     if (k === "Escape") { e.stopPropagation(); return onClose(); }
     if (t.closest("[role=tablist],[role=radiogroup],[data-pad]")) return;
     if (k === " " && t.tagName !== "BUTTON") c("toggle");
-    else if (k === "ArrowLeft" || k === "ArrowRight") c("seekBy", k === "ArrowLeft" ? -10_000 : 10_000);
+    else if ((k === "ArrowLeft" || k === "ArrowRight") && now?.seekable !== false) c("seekBy", k === "ArrowLeft" ? -10_000 : 10_000);
     else return;
     e.preventDefault(); e.stopPropagation(); // the player's own hotkeys are for the local video
   };
@@ -244,17 +244,17 @@ export function RemotePanel({ tv, fallback, onPlayHere, onClose, className }: { 
           <div className="min-w-0"><h2 className="line-clamp-2 font-display text-2xl leading-tight font-extrabold md:text-3xl">{title || "Nothing playing"}</h2>{sub && <p className="truncate text-sm text-[#cfcbd9]">{sub}</p>}</div>
         </div>
         <div>
-          <input type="range" aria-label="Position" min={0} max={dur || 1} step={1000} value={Math.min(pos, dur || 1)} disabled={off || !dur}
+          <input type="range" aria-label="Position" min={0} max={dur || 1} step={1000} value={Math.min(pos, dur || 1)} disabled={off || !dur || n?.seekable === false}
             onChange={(e) => setDrag(Number(e.target.value))} onPointerUp={(e) => c("seekTo", Number(e.currentTarget.value))}
             className="w-full accent-primary disabled:opacity-40" />
           <div className="flex justify-between text-xs text-[#a3a1ae] tabular-nums"><span>{clock(pos)}</span><span>{dur ? `-${clock(dur - pos)}` : "--:--"}</span></div>
         </div>
         <div className="flex items-center justify-center gap-1 sm:gap-2">
           <button aria-label="Previous episode" disabled={off || !n?.hasPrev} onClick={() => c("prev")} className={btn}><SkipBack /></button>
-          <button aria-label="Back 10 seconds" disabled={off || !now} onClick={() => c("seekBy", -10_000)} className={btn}><RotateCcw /></button>
+          <button aria-label="Back 10 seconds" disabled={off || !now || now.seekable === false} onClick={() => c("seekBy", -10_000)} className={btn}><RotateCcw /></button>
           <button aria-label={now?.playing ? "Pause" : "Play"} disabled={off || !now} onClick={() => c("toggle")} className="beam grid size-16 place-items-center rounded-full bg-primary text-primary-foreground hover:bg-[#f6c57a] disabled:opacity-40 [&_svg]:size-7">
             {now?.playing ? <Pause className="fill-current" /> : <Play className="fill-current" />}</button>
-          <button aria-label="Forward 10 seconds" disabled={off || !now} onClick={() => c("seekBy", 10_000)} className={btn}><RotateCw /></button>
+          <button aria-label="Forward 10 seconds" disabled={off || !now || now.seekable === false} onClick={() => c("seekBy", 10_000)} className={btn}><RotateCw /></button>
           <button aria-label="Next episode" disabled={off || !n?.hasNext} onClick={() => c("next")} className={btn}><SkipForward /></button>
         </div>
         <div className="flex flex-wrap gap-2">

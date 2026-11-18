@@ -24,6 +24,8 @@ export const slowStart = (x: Pickable, stats: Stats) => {
   if (seen) return seen > 3000;
   return /download only/i.test(x.label ?? "") || u.includes("video-downloads.googleusercontent.com") || (u.includes("pixeldrain") && u.includes("download")) || (!!x.hls && (x.height ?? 0) >= 2160);
 };
+/** Hosts that ignore Range: the file always starts at 0:00. */
+export const noSeek = (x: Pickable) => (x.url ?? x.src ?? "").toLowerCase().includes("video-downloads.googleusercontent.com");
 /** Updates the provider's record; a first-frame time also goes to the host's (`url`) for slowStart. */
 export function recordStat(label: string | undefined, e: { ok?: boolean; fail?: boolean; stall?: boolean; ttff?: number }, url?: string) {
   try {
@@ -48,12 +50,12 @@ export const langRank = (x: Pickable, orig: string[] = []) => { const l = x.lang
 
 /** Indexes of `list` to try, in order: the chosen language's sources first; `height` itself, then each lower height (nearest first), then higher;
  *  within a height: never a single-language dub of another original first, what the browser can decode, the audio (langRank),
- *  then what starts fast (slowStart last), then provider reliability, then list order. `orig`: the title's original languages (origLangs). */
-export function fallbackOrder(list: Pickable[], o: { lang?: string; orig?: string[]; height: number; stats: Stats; now?: number }): number[] {
+ *  a seekable file when `resume`, then what starts fast (slowStart last), then provider reliability, then list order. `orig`: the title's original languages (origLangs). */
+export function fallbackOrder(list: Pickable[], o: { lang?: string; orig?: string[]; height: number; stats: Stats; now?: number; resume?: boolean }): number[] {
   const now = o.now ?? Date.now(), has = (x: Pickable) => !o.lang || !!x.langs?.includes(o.lang), anyLang = list.some(has), og = [...(o.orig ?? []), ...(o.lang ? [o.lang] : [])];
   const key = (i: number) => {
     const x = list[i], h = x.height ?? 0, lr = langRank(x, og);
-    return [anyLang && !has(x) ? 1 : 0, h === o.height ? 0 : h < o.height ? 1 : 2, h < o.height ? -h : h, lr === 3 ? 1 : 0, dv(x) ? 2 : risky(x) || x.dolby ? 1 : 0, lr, slowStart(x, o.stats) ? 1 : 0, -score(o.stats[provider(x.label)], now), i];
+    return [anyLang && !has(x) ? 1 : 0, h === o.height ? 0 : h < o.height ? 1 : 2, h < o.height ? -h : h, lr === 3 ? 1 : 0, dv(x) ? 2 : risky(x) || x.dolby ? 1 : 0, lr, o.resume && noSeek(x) ? 1 : 0, slowStart(x, o.stats) ? 1 : 0, -score(o.stats[provider(x.label)], now), i];
   };
   const keys = list.map((_, i) => key(i));
   return list.map((_, i) => i).sort((a, b) => { for (let k = 0; k < keys[a].length; k++) if (keys[a][k] !== keys[b][k]) return keys[a][k] - keys[b][k]; return 0; });

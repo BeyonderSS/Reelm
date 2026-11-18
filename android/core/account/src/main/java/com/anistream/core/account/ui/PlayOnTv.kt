@@ -344,7 +344,7 @@ fun TvRemoteHost(onPlayHere: (WatchHistory) -> Unit) {
                         value = scrub ?: if (dur > 0) pos.toFloat() / dur else 0f,
                         onValueChange = { scrub = it },
                         onValueChangeFinished = { scrub?.let { ctl("seekTo", (it * dur).toLong()) }; scrub = null },
-                        enabled = now != null && dur > 0,
+                        enabled = now != null && dur > 0 && now.seekable,
                         colors = SliderDefaults.colors(thumbColor = Accent.main, activeTrackColor = Accent.main, inactiveTrackColor = Ink.hairline)
                     )
                     Row(Modifier.fillMaxWidth()) {
@@ -354,7 +354,7 @@ fun TvRemoteHost(onPlayHere: (WatchHistory) -> Unit) {
                     }
                     Row(Modifier.fillMaxWidth().padding(top = Space.sm), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.md, Alignment.CenterHorizontally)) {
                         RemoteIcon(Icons.Rounded.SkipPrevious, "Previous episode", now?.hasPrev == true) { ctl("prev", null) }
-                        RemoteIcon(Icons.Rounded.Replay10, "Back 10 seconds", now != null) { ctl("seekBy", -10_000L) }
+                        RemoteIcon(Icons.Rounded.Replay10, "Back 10 seconds", now != null && now.seekable) { ctl("seekBy", -10_000L) }
                         Box(
                             contentAlignment = Alignment.Center,
                             modifier = Modifier.size(72.dp).clip(Radius.round).background(if (now != null) Accent.main else Ink.hairline)
@@ -362,10 +362,11 @@ fun TvRemoteHost(onPlayHere: (WatchHistory) -> Unit) {
                         ) {
                             Icon(if (now?.playing == true) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, contentDescription = if (now?.playing == true) "Pause" else "Play", tint = Accent.on, modifier = Modifier.size(36.dp))
                         }
-                        RemoteIcon(Icons.Rounded.Forward10, "Forward 10 seconds", now != null) { ctl("seekBy", 10_000L) }
+                        RemoteIcon(Icons.Rounded.Forward10, "Forward 10 seconds", now != null && now.seekable) { ctl("seekBy", 10_000L) }
                         RemoteIcon(Icons.Rounded.SkipNext, "Next episode", now?.hasNext == true) { ctl("next", null) }
                     }
                 }
+                if (now?.seekable == false) Text("This source can't skip ahead", style = AppType.caption, modifier = Modifier.padding(top = Space.sm))
                 RemoteBanner(now, t, send)
                 if (dpad) DPad(send)
                 else if (now != null) RemoteSections(info, now, pos, vm, send)
