@@ -68,6 +68,7 @@ private const val STEP_AHEAD_MS = 8_000L
 private const val STEP_GIVE_UP_MS = 30_000L
 /** a resume point past this is worth a seekable source */
 private const val RESUME_MIN_MS = 30_000L
+private const val NO_SKIP = "This source can't skip ahead — starting from the beginning"
 
 /** how long auto-pick waits for the title's country (dub-safe pick) before ranking without it */
 private const val ORIGIN_WAIT_MS = 600L
@@ -285,6 +286,7 @@ class MediaPlayerViewModel @Inject constructor(
     val uiState: StateFlow<MediaPlayerUiState> = _uiState.asStateFlow()
 
     private var pendingResume: Float? = null
+    private var switchedAt = 0L
     /** 10-bit video formats skipped as undecodable here (see onTracksChanged) */
     private val skipped = mutableSetOf<androidx.media3.common.Format>()
     /** the title's runtime in minutes (an earlier play's duration, else TMDB/Cinemeta) for the placeholder-clip check */
@@ -329,6 +331,8 @@ class MediaPlayerViewModel @Inject constructor(
                             stepUp()
                         }
                         applyResume()
+                        if (switchedAt > RESUME_MIN_MS && !player.isCurrentMediaItemSeekable) _uiState.update { it.copy(message = NO_SKIP) }
+                        switchedAt = 0
                     }
                     Player.STATE_BUFFERING -> _uiState.value.let { s ->
                         if (startedAt == 0L && !s.isLive && stalledIndex != s.streamIndex && System.currentTimeMillis() - lastSeekAt > 3000) {
@@ -425,6 +429,7 @@ class MediaPlayerViewModel @Inject constructor(
         val source = mediaSource(request, stream)
         // live: no position = start at the live edge
         startedAt = System.currentTimeMillis()
+        switchedAt = startMs ?: 0 // a source switch mid-play: a source that can't seek restarts at 0:00 (see STATE_READY)
         if (request.isLive || startMs == null) swap.exo.setMediaSource(source) else swap.exo.setMediaSource(source, startMs)
         _uiState.update { it.copy(streamIndex = index, isLoading = true, error = null, ended = false) }
         // subtitles: the file's own tracks (MKV/MP4/HLS) and the sideloaded ones are all Media3 text tracks; the selector
@@ -673,7 +678,7 @@ class MediaPlayerViewModel @Inject constructor(
         if (duration == C.TIME_UNSET || duration <= 0) return
         pendingResume = null
         val at = (fraction * duration).toLong()
-        if (!player.isCurrentMediaItemSeekable) { if (at > RESUME_MIN_MS) _uiState.update { it.copy(message = "This source can't skip ahead — starting from the beginning") }; return }
+        if (!player.isCurrentMediaItemSeekable) { if (at > RESUME_MIN_MS) _uiState.update { it.copy(message = NO_SKIP) }; return }
         player.seekTo(at)
     }
 

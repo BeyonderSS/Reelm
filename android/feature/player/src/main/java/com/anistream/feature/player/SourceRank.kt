@@ -69,7 +69,11 @@ internal object SourceRank {
     }
 
     /** Hosts that ignore Range (see NoRange.kt): the file always starts at 0:00. */
-    fun noSeek(s: MediaStream) = "video-downloads.googleusercontent.com" in s.url.lowercase()
+    fun noSeek(s: MediaStream) = "video-downloads.googleusercontent.com" in s.url.lowercase() || hostOf(s.url) in learned
+
+    /** Hosts seen answering `Range: bytes=0-` with the whole file (see RangeGuard), until the process ends. */
+    val learned: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    fun hostOf(url: String) = Regex("""^\w+://([^/:?#]+)""").find(url)?.groupValues?.get(1)?.lowercase().orEmpty()
 
     /** The title's audio as far as auto-pick needs it: [lang] its original language when known, [indian] an Indian original. */
     data class Origin(val lang: String?, val indian: Boolean)
