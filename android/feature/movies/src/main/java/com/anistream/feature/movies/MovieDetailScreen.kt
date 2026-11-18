@@ -319,6 +319,10 @@ fun MovieDetailScreen(
             )
         }
 
+        val svc = uiState.mirrorWait
+        var waitHidden by remember(svc) { mutableStateOf(false) }
+        if (detail != null && svc != null && !waitHidden) MirrorWaitSheet(detail, svc, onOther = viewModel::playElsewhere, onDismiss = { waitHidden = true })
+
         if (detail != null && uiState.sheetOpen) {
             val season = uiState.selectedSeason
             val isSeries = detail.type == MediaType.SERIES
@@ -580,6 +584,31 @@ private fun DetailSkeleton() {
         }
         Column(Modifier.padding(Space.lg), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
             repeat(3) { LoadingShimmer(Modifier.fillMaxWidth(if (it == 2) 0.7f else 1f).height(16.dp)) }
+        }
+    }
+}
+
+/**
+ * A mirror title's Play while its mirror unlocks (first play in 12 h, ~40 s): the wait, a bar over that time, and the
+ * other sources straight away. Dismissing keeps waiting.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun MirrorWaitSheet(detail: com.anistream.domain.model.MediaDetail, service: String, onOther: () -> Unit, onDismiss: () -> Unit) {
+    val bar = remember { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(Unit) { bar.animateTo(1f, androidx.compose.animation.core.tween(37_000, easing = androidx.compose.animation.core.LinearEasing)) }
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Bg.raised) {
+        Column(Modifier.padding(start = Space.lg, end = Space.lg, bottom = Space.xl), verticalArrangement = Arrangement.spacedBy(Space.md)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                ArtworkImage(detail.posterUrl, null, modifier = Modifier.width(58.dp).height(87.dp).clip(Radius.md))
+                Text(detail.title, style = AppType.heading, maxLines = 2)
+            }
+            Text("Opening the $service mirror. The first time today takes about 40 s; after that it's about 1 to 2 s for 12 hours.",
+                style = AppType.caption.copy(color = com.anistream.core.ui.theme.Ink.body))
+            Box(Modifier.fillMaxWidth().height(4.dp).clip(Radius.pill).background(Bg.overlay)) {
+                Box(Modifier.fillMaxWidth(bar.value).height(4.dp).background(com.anistream.core.ui.theme.Accent.main))
+            }
+            SecondaryButton("Play from another source now", onOther, Modifier.fillMaxWidth())
         }
     }
 }

@@ -111,4 +111,12 @@ class VegaPickTest {
         assertEquals("s3", pick(2021, 3))
         assertEquals("challenge", VegaPick.post("Squid Game: The Challenge", 2023, true, 1, posts)!!["link"]!!.jsonPrimitive.content)
     }
+
+    /** Netflix answered two filters with one list, Prime once three: only the first of a repeat stays (order within a row ignored). */
+    @Test
+    fun mirrorRowsDropRepeats() {
+        fun item(l: String) = o("""{"title":"$l","link":"$l||$l"}""")
+        val rows = listOf("A" to listOf(item("1"), item("2")), "B" to listOf(item("2"), item("1")), "C" to emptyList(), "D" to listOf(item("3")))
+        assertEquals(listOf("A", "D"), VegaPick.distinctRows(rows).map { it.first })
+    }
 }

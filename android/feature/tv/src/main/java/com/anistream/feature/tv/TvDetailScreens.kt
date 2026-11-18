@@ -211,13 +211,14 @@ fun TvMovieDetailScreen(
         wash = d.backdropUrl ?: d.posterUrl, poster = d.posterUrl, title = d.title,
         meta = listOfNotNull(if (series) "Series" else "Movie", d.year?.toString(), d.runtime, scoreLabel(d.rating), genreLine(d.genres)),
         synopsis = d.description,
-        note = message ?: if (!d.playable) "Not available to stream in the app" else null,
+        note = message ?: s.mirrorWait?.let { "The first $it mirror play today takes about 40 s; after that it is 1 to 2 s for 12 hours." } ?: if (!d.playable) "Not available to stream in the app" else null,
         actions = {
             val web = s.webFallback
             if (!d.playable && web != null) {
                 MarqueeBtn("Watch in web player", { vm.openWebPlayer(web) }, primary = true, modifier = Modifier.focusRequester(playFocus))
             } else MarqueeBtn(
                 text = when {
+                    s.mirrorWait != null -> "Opening the ${s.mirrorWait} mirror…"
                     s.resolving -> "Finding sources…"
                     r != null && r.episode > 0 -> "Resume S${r.season} E${r.episode}"
                     r != null -> "Resume"
@@ -228,6 +229,7 @@ fun TvMovieDetailScreen(
                 onClick = { if (r != null) vm.play(r.season, r.episode) else if (series) vm.play(firstSeason, 1) else vm.play(0, 0) },
                 primary = true, modifier = Modifier.focusRequester(playFocus)
             )
+            if (s.mirrorWait != null) MarqueeBtn("Play from another source now", vm::playElsewhere)
             // streams came back empty for a playable title: offer the web player next to Play
             if (d.playable && web != null) MarqueeBtn("Web player", { vm.openWebPlayer(web) })
             FavouriteBtn(s.isFavorite, vm::toggleFavorite)

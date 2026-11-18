@@ -264,7 +264,9 @@ internal fun LivingHero(
     vm: HomeViewModel,
     onPlay: (HeroItem) -> Unit,
     onToggleList: (HeroItem) -> Unit,
-    onDetails: (HeroItem) -> Unit
+    onDetails: (HeroItem) -> Unit,
+    /** Mirror mode: "Plays from the Netflix mirror" over the title */
+    via: String? = null
 ) {
     val pagerState = rememberPagerState { items.size }
     val scope = rememberCoroutineScope()
@@ -332,7 +334,7 @@ internal fun LivingHero(
                 val item = items[p]
                 HeroInfo(
                     item = item, vm = vm, inList = item.card.slug in myList, live = showLive && item == cur,
-                    onPlay = { onPlay(item) }, onToggleList = { onToggleList(item) }, onDetails = { onDetails(item) }
+                    onPlay = { onPlay(item) }, onToggleList = { onToggleList(item) }, onDetails = { onDetails(item) }, via = via
                 )
             }
             if (showLive) {
@@ -364,7 +366,7 @@ internal fun LivingHero(
 }
 
 @Composable
-private fun HeroInfo(item: HeroItem, vm: HomeViewModel, inList: Boolean, live: Boolean, onPlay: () -> Unit, onToggleList: () -> Unit, onDetails: () -> Unit) {
+private fun HeroInfo(item: HeroItem, vm: HomeViewModel, inList: Boolean, live: Boolean, onPlay: () -> Unit, onToggleList: () -> Unit, onDetails: () -> Unit, via: String? = null) {
     val logo by rememberLogo(vm, item)
     val extra by rememberExtra(vm, item)
     val scale by animateFloatAsState(if (live) 0.85f else 1f, tween(500, easing = Motion.emphasized), label = "logoScale")
@@ -374,6 +376,8 @@ private fun HeroInfo(item: HeroItem, vm: HomeViewModel, inList: Boolean, live: B
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(Space.md)
         ) {
+            if (via != null) Text(via, style = AppType.captionStrong.copy(color = Accent.text),
+                modifier = Modifier.background(Bg.overlay, Radius.pill).padding(horizontal = Space.md, vertical = Space.xs))
             TitleLogo(
                 logo, item.card.title, 64.dp, 210.dp, center = true,
                 modifier = Modifier.graphicsLayer { scaleX = scale; scaleY = scale; translationY = (1f - scale) * 40f }

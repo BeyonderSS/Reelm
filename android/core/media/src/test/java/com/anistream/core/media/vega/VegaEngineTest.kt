@@ -177,5 +177,32 @@ class VegaEngineTest {
         assertTrue(results.joinToString(), results.all { "FAIL" !in it && !it.contains(" 0 streams") })
     }
 
+    /** Live: Mirror mode's rows per mirror, then the first row title's streams by its mirror id (no search). Run with -Pvega.live. */
+    @Test
+    fun mirrorRowsAndPlay() = runBlocking {
+        assumeTrue(System.getProperty("vega.live") == "true")
+        val base = "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@70f69e58af852bb39b7a24a57a000622dfc35d0b/dist"
+        val out = listOf("netflixMirror", "primeMirror", "disneyMirror").map { p ->
+            val files = listOf("catalog", "posts", "meta", "stream", "episodes").associateWith { f ->
+                client.newCall(Request.Builder().url("$base/$p/$f.js").build()).execute().use { VegaSources.patch(it.body!!.string()) }
+            }
+            var t = System.currentTimeMillis()
+            val rows = withTimeout(120_000) { engine.mirrorRows(files, p) }
+            val rowsMs = System.currentTimeMillis() - t
+            val first = rows.first().second.first()
+            t = System.currentTimeMillis()
+            val streams = withTimeout(120_000) {
+                engine.streams(files, p, p, first["title"]!!.jsonPrimitive.content, null, MediaType.MOVIE, 0, 0, lowEnd = false, known = first)
+                    .ifEmpty { engine.streams(files, p, p, first["title"]!!.jsonPrimitive.content, null, MediaType.SERIES, 1, 1, lowEnd = false, known = first) }
+            }
+            val playlist = streams.firstOrNull()?.let { s ->
+                client.newCall(Request.Builder().url(s.url).apply { s.headers.forEach { (k, v) -> header(k, v) } }.build()).execute().use { r -> "${r.code} ${r.body!!.string().lines().take(2)}" }
+            }
+            "$p: ${rows.size} rows ${rows.map { "${it.first}(${it.second.size})" }} in $rowsMs ms; ${first["title"]} -> ${streams.size} streams in ${System.currentTimeMillis() - t} ms, playlist $playlist"
+        }
+        println("=== mirrors\n" + out.joinToString("\n"))
+        assertTrue(out.joinToString(), out.none { "-> 0 streams" in it })
+    }
+
     private data class Quad(val a: String, val b: Int, val c: Int, val d: Int)
 }
