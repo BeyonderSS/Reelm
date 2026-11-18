@@ -1,7 +1,9 @@
 "use client";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { get, GUEST_HIDE, kindOf, loadSession, reelm, shows, storeSession, type Kind, type Session } from "./core";
+import { toast } from "sonner";
+import { Toaster } from "@/components/ui/sonner";
+import { get, GUEST_HIDE, SESSION_ENDED, kindOf, loadSession, reelm, shows, storeSession, type Kind, type Session } from "./core";
 
 type Ctx = { s: Session; ready: boolean; set: (s: Session) => void; setHide: (h: Kind[]) => Promise<void> };
 const C = createContext<Ctx>({ s: {}, ready: false, set: () => {}, setHide: async () => {} });
@@ -13,6 +15,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const path = usePathname(), router = useRouter();
   useEffect(() => { setS(loadSession()); setReady(true); }, []);
+  // reelm() cleared the stored session after a 401: drop it from state (the redirect effect below routes to /welcome) and say so once
+  useEffect(() => {
+    const h = () => { setS({}); toast("Your session ended \u2014 sign in again", { id: "session-ended" }); };
+    window.addEventListener(SESSION_ENDED, h);
+    return () => window.removeEventListener(SESSION_ENDED, h);
+  }, []);
   const set = (n: Session) => { storeSession(n); setS(n); };
   // "What you watch": applies at once, then saves (guests: this browser; accounts: the profile on the server). A failed save puts it back.
   const setHide = async (hide: Kind[]) => {
@@ -43,7 +51,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       : path.startsWith("/title") ? !shows(p, kindOf({ kind: "movie", type })) : false;
     if (off) router.replace("/");
   }, [ready, s.profile, path, router]);
-  return <C.Provider value={{ s, ready, set, setHide }}>{children}</C.Provider>;
+  return <C.Provider value={{ s, ready, set, setHide }}>{children}<Toaster position="bottom-right" /></C.Provider>;
 }
 
 /** Fetch a content route; `null` path skips. */

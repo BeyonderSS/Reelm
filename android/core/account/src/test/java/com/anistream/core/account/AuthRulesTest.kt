@@ -32,3 +32,11 @@ class AuthRulesTest {
         assertEquals(24, FluentEmojis.groups.sumOf { it.second.size })
     }
 }
+
+class SessionRevokedTest {
+    @Test fun onlyTheCurrentTokenEndsTheSession() {
+        assertTrue(shouldEndSession("t1", "t1"))
+        assertFalse(shouldEndSession("t1", null)) // guest, or already signed out by an earlier 401
+        assertFalse(shouldEndSession("old", "t2")) // stale token after a new sign-in
+    }
+}

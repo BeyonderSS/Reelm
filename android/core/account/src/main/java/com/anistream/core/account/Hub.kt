@@ -149,7 +149,7 @@ class HubClient @Inject constructor(private val account: AccountRepository, priv
                     }
                     override fun onMessage(webSocket: WebSocket, text: String) = handle(text)
                     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { closed.trySend(true) }
-                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { closed.trySend(true) }
+                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { if (response?.code == 401) api.onUnauthorized?.invoke(token); closed.trySend(true) }
                 }
             )
             socket = ws

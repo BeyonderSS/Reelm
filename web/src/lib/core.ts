@@ -29,13 +29,18 @@ export function get<T = any>(path: string): Promise<T> {
   return p;
 }
 
-/** Reelm account API (server/API.md). */
+export const SESSION_ENDED = "reelm:session-ended";
+/** Reelm account API (server/API.md). A 401 on an authenticated call signs the session out (see SessionProvider). */
 export async function reelm<T = any>(path: string, o: { method?: string; json?: unknown; token?: string } = {}): Promise<T> {
   const r = await fetch(API + path, {
     method: o.method ?? (o.json ? "POST" : "GET"),
     headers: { ...(o.json ? { "content-type": "application/json" } : {}), ...(o.token ? { Authorization: `Bearer ${o.token}` } : {}) },
     body: o.json ? JSON.stringify(o.json) : undefined,
   });
+  if (r.status === 401 && o.token && typeof window !== "undefined" && loadSession().token === o.token) {
+    storeSession({}); // revoked server-side; the first 401 wins, later ones carry a stale token and are ignored
+    window.dispatchEvent(new Event(SESSION_ENDED));
+  }
   if (r.status === 204) return undefined as T;
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error ?? `HTTP ${r.status}`);
