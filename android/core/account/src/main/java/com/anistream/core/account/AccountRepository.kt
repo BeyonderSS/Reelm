@@ -20,6 +20,9 @@ import kotlinx.serialization.json.put
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** A 401 ends the session only when it was for the token we still hold. */
+internal fun shouldEndSession(revoked: String, current: String?) = current != null && revoked == current
+
 data class PairCode(val code: String, val expiresAt: Long)
 
 /**
@@ -29,7 +32,7 @@ data class PairCode(val code: String, val expiresAt: Long)
  */
 @Singleton
 class AccountRepository @Inject constructor(
-    @ApplicationContext context: Context,
+    @ApplicationContext private val context: Context,
     private val api: AccountApi
 ) {
     val enabled: Boolean get() = api.enabled
@@ -88,6 +91,19 @@ class AccountRepository @Inject constructor(
         if (_session.value == null) ContentPrefs.set(guestHide()) // guests keep their "What you watch" choice on this device
     }
 
+    init { api.onUnauthorized = { t -> endSessionIfCurrent(t) } }
+
+    /**
+     * The server revoked [revoked]: sign out locally (no server call) and say so once. A stale token (already signed out,
+     * or another call got here first) and guests (no token) are ignored, so a burst of 401s toasts and routes once.
+     */
+    private fun endSessionIfCurrent(revoked: String) {
+        synchronized(this) { if (!shouldEndSession(revoked, token)) return; clearLocal() }
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            android.widget.Toast.makeText(context, "Your session ended — sign in again", android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun publish(token: String, user: User, activeId: String?) {
         val active = _profiles.value.firstOrNull { it.id == activeId }
         _session.value = Session(token, user, active)
@@ -133,6 +149,10 @@ class AccountRepository @Inject constructor(
 
     suspend fun logout() {
         token?.let { runCatching { api.call("POST", "/v1/auth/logout", token = it) } }
+        clearLocal()
+    }
+
+    private fun clearLocal() {
         prefs.edit().clear().putString("deviceId", deviceId).putString("deviceName", prefs.getString("deviceName", null)).putString("lastTv", prefs.getString("lastTv", null)).apply()
         _profiles.value = emptyList()
         _session.value = null

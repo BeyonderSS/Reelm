@@ -24,6 +24,9 @@ class AccountApi @Inject constructor() {
     val baseUrl: String = BuildConfig.REELM_API_URL.trim().trimEnd('/')
     val enabled: Boolean get() = baseUrl.isNotBlank()
 
+    /** Set by [AccountRepository]: a 401 on a call made with `token` means the server revoked that session. */
+    @Volatile var onUnauthorized: ((String) -> Unit)? = null
+
     val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
@@ -43,6 +46,7 @@ class AccountApi @Inject constructor() {
             client.newCall(req).execute().use { res ->
                 val text = res.body?.string().orEmpty()
                 if (!res.isSuccessful) {
+                    if (res.code == 401 && token != null) onUnauthorized?.invoke(token) // third-party hosts never come through here
                     val msg = runCatching { Json.parseToJsonElement(text).jsonObject["error"]?.jsonPrimitive?.contentOrNull }.getOrNull()
                     throw ApiException(msg ?: "Request failed (${res.code})", res.code)
                 }

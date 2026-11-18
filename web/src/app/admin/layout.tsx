@@ -4,7 +4,6 @@ import type { ReactNode } from "react";
 import { AdminSidebar } from "@/components/admin";
 import { Notice, pill } from "@/components/app";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { fixtureMode } from "@/lib/admin";
 import { useSession } from "@/lib/session";
@@ -20,7 +19,6 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
       <SidebarProvider>
         <AdminSidebar />
         <SidebarInset className="min-w-0 bg-background">{children}</SidebarInset>
-        <Toaster position="bottom-right" />
       </SidebarProvider>
     </TooltipProvider>
   );
