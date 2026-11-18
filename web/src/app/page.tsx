@@ -1,8 +1,8 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { Info, Play } from "lucide-react";
-import { animeCard, ContinueStrip, Marquee, kidsOk, mediaCard, pill, Rail, Row, useContinue } from "@/components/app";
+import { ChevronDown, Info, Play } from "lucide-react";
+import { animeCard, ContinueStrip, Marquee, kidsOk, mediaCard, pill, Rail, RailSkeleton, Row, useContinue } from "@/components/app";
 import { Logo, Meta, PeekProvider, SoundButton, TrailerSurface, useTrailer } from "@/components/trailers";
 import { keyOf, useOverlayOpen, usePreviewGate } from "@/lib/trailer";
 import { audioLang, HomeRecs } from "@/components/home-recs";
@@ -11,6 +11,7 @@ import { ShimmerButton } from "@/components/ui/shimmer-button";
 import { useApi, useSession } from "@/lib/session";
 import { entryHref, entrySub, shows, syncFavs, watchHref, type Entry } from "@/lib/core";
 import { cn } from "@/lib/utils";
+import { helperMirror, MIRRORS } from "@/lib/bridge";
 import { useRouter } from "next/navigation";
 
 type Slide = { key: string; title: string; poster?: string; backdrop?: string; desc?: string; rating?: string | number; year?: number; genres?: string[]; extra: (string | number | undefined)[]; href: string; play?: string; cta?: string; anime?: string };
@@ -124,6 +125,17 @@ function Hero({ slides }: { slides: Slide[] }) {
 
 type Filter = "all" | "movies" | "series" | "anime";
 
+/** Mirror mode: one mirror's rows (Helper 1.4+). Cold, the mirror first unlocks (~40 s, then 12 h). */
+function MirrorRows({ p }: { p: string }) {
+  const { s } = useSession(), { data, error } = useApi<{ title: string; items: any[] }[]>(`movies/mirror?p=${p}`);
+  if (error) return <p className="px-4 pt-6 text-foreground/60 md:px-10">The {MIRRORS[p]} mirror didn&apos;t answer. Try again in a minute.</p>;
+  if (!data) return <><p role="status" className="px-4 pt-6 text-sm text-foreground/60 md:px-10">Opening the {MIRRORS[p]} mirror. The first open of the day can take about 40 seconds.</p><RailSkeleton /><RailSkeleton /></>;
+  return <>
+    <p className="px-4 text-sm text-foreground/60 md:px-10">Playback tries the {MIRRORS[p]} mirror first, then your usual sources.</p>
+    {data.map((r) => <Rail key={r.title} title={r.title} items={r.items.map(mediaCard).filter((c) => kidsOk(c, s.profile?.kids, s.profile))} />)}
+  </>;
+}
+
 export default function HomePage() {
   const { s } = useSession();
   useEffect(() => { if (s.token && s.profile) syncFavs(s.profile.id, s.token).catch(() => {}); }, [s.token, s.profile?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -134,6 +146,9 @@ export default function HomePage() {
   const [lang] = useState(audioLang); // "" on the server; only reorders rows that load client side
   const [cw, removeCw] = useContinue();
   const [f, setF] = useState<Filter>("all");
+  // Mirror mode: the chip leads the filters with Helper 1.4+ (hidden otherwise); picking a service swaps Home to its rows
+  const [canMirror, setCanMirror] = useState(false), [mOpen, setMOpen] = useState(false), [mirror, setMirror] = useState("");
+  useEffect(() => { if (helperMirror()) { setCanMirror(true); import("@/lib/vega").then((v) => v.prewarm()); } }, []);
   const k = s.profile?.kids;
   const is = (x: Filter) => f === "all" || f === x;
   // Indian rows lead for viewers in India or who chose an Indian audio language; otherwise they follow the Cinemeta rows
@@ -156,9 +171,15 @@ export default function HomePage() {
     <PeekProvider>
     <main className="pb-16">
       <div role="radiogroup" aria-label="Show" className="no-scrollbar flex gap-2 overflow-x-auto px-4 pt-1 pb-3 md:px-10">
-        {chips.map(([x, l]) => <button key={x} type="button" role="radio" aria-checked={f === x} onClick={() => setF(x)} className="opt flex-none">{l}</button>)}
+        {canMirror && (sh("movies") || sh("series")) && <>
+          <button type="button" aria-expanded={mOpen || !!mirror} onClick={() => setMOpen(!mOpen)} className="opt flex-none" aria-pressed={!!mirror}>
+            Mirrors<ChevronDown className={cn("size-3.5 transition-transform", (mOpen || mirror) && "rotate-180")} /></button>
+          {(mOpen || mirror) && Object.entries(MIRRORS).map(([x, l]) => <button key={x} type="button" role="radio" aria-checked={mirror === x} onClick={() => setMirror(x)} className="opt solid flex-none">{l}</button>)}
+        </>}
+        {chips.map(([x, l]) => <button key={x} type="button" role="radio" aria-checked={!mirror && f === x} onClick={() => { setF(x); setMirror(""); setMOpen(false); }} className="opt flex-none">{l}</button>)}
         {sh("live") && <Link href="/live" className="opt flex-none">Live TV</Link>}
       </div>
+      {mirror ? <MirrorRows key={mirror} p={mirror} /> : <>
       {loading && !slides.length ? <div className="skel mx-4 h-[500px] rounded-[24px] md:mx-10 md:h-[min(620px,74vh)]" /> : slides.length ? <Hero slides={slides} /> : <div className="h-8" />}
       <div className="relative z-10 mt-6 md:mt-8"><ContinueStrip items={cw} onRemove={removeCw} /></div>
       {f === "all" ? <HomeRecs /> : null}
@@ -170,6 +191,7 @@ export default function HomePage() {
       {sh("anime") && is("anime") && <Row title="Top airing" path="anime/home" map={(d) => d.topAiring.map(animeCard)} />}
       {sh("anime") && is("anime") && <Row title="Most popular anime" path="anime/home" map={(d) => d.popular.map(animeCard)} />}
       {sh("anime") && is("anime") && <Row title="Latest episodes" path="anime/home" map={(d) => d.recent.map(animeCard)} />}
+      </>}
     </main>
     </PeekProvider>
   );

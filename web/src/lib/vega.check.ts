@@ -52,7 +52,7 @@ const slow = makeAxios(() => new Promise(() => {})); assert.equal((await tx(slow
 // test titles by provider kind
 assert.equal(kindOf("kissKh", "english"), "kdrama"); assert.equal(kindOf("anikoto", "anime"), "anime"); assert.equal(kindOf("x"), "global");
 assert.equal(casesFor("live"), null); assert.equal(casesFor("italy")?.movie.title, "Spider-Man: Into the Spider-Verse"); assert.equal(casesFor("anime")?.series.title, "Jujutsu Kaisen");
-const nm = await checkProvider("x", "primeMirror", "movie", async () => { throw new Error("no network expected"); }); assert.ok(nm.skipped && nm.error?.startsWith("Android only"));
+const nm = await checkProvider("x", "primeMirror", "movie", async () => { throw new Error("no network expected"); }); assert.ok(nm.skipped && nm.error?.startsWith("Needs Reelm Helper 1.4")); // no Helper here
 // fan-out: reliability first, admin order on ties; early stop; breaker
 assert.deepEqual(order(["a", "b", "c", "d"], (p) => ({ c: 0.9, d: 0.2 } as any)[p] ?? 0.5), ["c", "a", "b", "d"]);
 const H = (...hs: number[]) => hs.map((height) => ({ height }));

@@ -58,3 +58,5 @@ const fast = { "@googleusercontent.com": { ok: 0, fail: 0, stall: 0, ttff: 1000,
 assert.deepEqual(fallbackOrder(gd, { height: 1080, stats: fast, now }), [0, 1]);
 assert.deepEqual(fallbackOrder(gd, { height: 1080, stats: fast, now, resume: true }), [1, 0]);
 console.log("resume seekable ok");
+// a mirror title's own mirror leads, whatever its height or reliability
+assert.equal(fallbackOrder([{ label: "MovieBox · 1080p", height: 1080 }, { label: "Netflix mirror · Netflix Low HD", height: 480 }], { height: 1080, stats: {}, now, mirror: "Netflix mirror" })[0], 1);

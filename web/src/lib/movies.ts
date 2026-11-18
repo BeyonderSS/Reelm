@@ -3,9 +3,9 @@ import * as misc from "@/lib/server/misc";
 import * as dr from "@/lib/server/dramachi";
 import * as tm from "@/lib/server/tmdb";
 import { bestTitle, rank, visible } from "@/lib/search-rank";
-import { bridge, helperOld, helperVega, helperVersion } from "@/lib/bridge";
+import { bridge, helperMirror, helperOld, helperVega, helperVersion, MIRRORS, mirrorOf } from "@/lib/bridge";
 import { langs } from "@/lib/langs";
-import type { Play } from "@/lib/core";
+import { mirrorTitle, normTitle, type Play } from "@/lib/core";
 
 // MovieBox refuses datacenter IPs (Cloudflare, Vercel: HTTP 440) but allows CORS, so the browser runs these
 // from the viewer's own connection (see get() in core.ts). The API route keeps them for local dev.
@@ -39,6 +39,7 @@ export const movieRoutes: Record<string, (q: URLSearchParams) => Promise<unknown
   "movies/tmdb": (q) => (q.get("id") ? tm.detail(q.get("id")!) : tm.search(q.get("q") ?? "")),
   "movies/detail": async (q) => {
     const id = q.get("id")!;
+    if (mirrorOf(id)) return mirrorDetail(id);
     const d: any = id.startsWith("tmdb:") ? await (typeof window === "undefined" ? tm.detail(id) : json(`/api/movies/tmdb?id=${encodeURIComponent(id)}`))
       : id.startsWith("mb:") ? await mb.detail(id.slice(3)) : await misc.cinemetaDetail(id, q.get("type") === "series" ? "series" : "movie");
     return { ...d, cast: [...new Set(d.cast ?? [])] }; // sources list a person once per role ("Tom Holland, Tom Holland")
@@ -51,7 +52,37 @@ export const movieRoutes: Record<string, (q: URLSearchParams) => Promise<unknown
   // Dramachi has no CORS, so the browser asks our server for it (below); a source that fails drops out alone.
   "movies/dramachi": (q) => dr.streams(q.get("title") ?? "", num(q.get("year")), q.get("type") === "series" ? "series" : "movie", num(q.get("s")), num(q.get("e"))),
   "movies/stream": (q) => streamAll(q),
+  // Mirror mode: a mirror's rows, each title with Cinemeta's art when a Cinemeta title has exactly its name, else the mirror's image
+  "movies/mirror": async (q) => {
+    const t0 = Date.now(), p = q.get("p")!, rows = await (await import("./vega")).mirrorRows(p);
+    console.debug(`[vega] ${p}: ${rows.length} rows in ${Date.now() - t0} ms`);
+    if (!rows.length) throw new Error(`The ${MIRRORS[p]} mirror didn't answer`);
+    return Promise.all(rows.map(async (r) => ({ title: r.title, items: await Promise.all(r.items.map(async (x) => {
+      const h = await byTitle(x.title);
+      return { id: `nm:${p}:${x.link}`, type: h?.type ?? "movie", title: x.title, poster: h?.poster ?? x.image, year: h?.year, rating: h?.rating, genres: h?.genres };
+    })) })));
+  },
 };
+
+/** Cinemeta's title with exactly this name, newest first when a film and a series share it (Android's cinemetaByTitle).
+ *  ponytail: name only, so a same-named older title can lend its art; play still goes to the mirror's own id. */
+const titles = new Map<string, Promise<Awaited<ReturnType<typeof misc.cinemetaSearch>>[number] | undefined>>();
+const byTitle = (t: string) => {
+  const n = normTitle(t);
+  if (!titles.has(n)) titles.set(n, misc.cinemetaSearch(t).then((l) => l.filter((x) => normTitle(x.title) === n).sort((a, b) => (b.year ?? 0) - (a.year ?? 0))[0], () => (titles.delete(n), undefined)));
+  return titles.get(n)!;
+};
+/** A mirror title's page: Cinemeta's detail when the name matched (fast, has seasons), else the mirror's own meta (may wait for its unlock). */
+async function mirrorDetail(id: string) {
+  const p = mirrorOf(id)!, title = mirrorTitle(id), h = await byTitle(title);
+  if (h) return { ...(await misc.cinemetaDetail(h.id, h.type)), id };
+  if (!helperMirror()) throw new Error("This title needs Reelm Helper 1.4");
+  const m = await (await import("./vega")).mirrorMeta(p, id.slice(`nm:${p}:`.length)), series = m.type === "series";
+  const tags: string[] = (m.tags ?? []).map(String);
+  return { id, type: series ? "series" : "movie", title: m.title || title, description: m.synopsis, poster: m.image, backdrop: m.image, playable: true,
+    year: tags.map(Number).find((y) => y > 1900 && y < 2100), genres: tags.filter((t) => isNaN(+t) && !t.includes("IMDb")), cast: (m.cast ?? []).map(String),
+    seasons: series ? (m.linkList ?? []).map((l: { title?: string }, i: number) => ({ season: +String(l.title ?? "").replace(/\D/g, "") || i + 1, episodes: m.counts[i] ?? 0 })) : [] };
+}
 
 /** Every source for a title. `on` gets each part (MovieBox, Dramachi, 4KHDHub, each Vega provider) as it lands, so the player can start before the slow ones finish. */
 export async function streamAll(q: URLSearchParams, on: (part: any[]) => void = () => {}) {
@@ -82,7 +113,7 @@ export async function streamAll(q: URLSearchParams, on: (part: any[]) => void = 
   // Vega providers (open-source scrapers, see vega.ts): same gate, needs Helper 1.2+ (any host, Referer rules).
   const vegaPart = async () => {
     if (typeof document === "undefined" || !q.get("title") || !helperVega()) return [];
-    return (await import("./vega")).streams(q.get("title")!, num(q.get("year")), q.get("type") === "series" ? "series" : "movie", num(q.get("s")), num(q.get("e")), undefined, on);
+    return (await import("./vega")).streams(q.get("title")!, num(q.get("year")), q.get("type") === "series" ? "series" : "movie", num(q.get("s")), num(q.get("e")), undefined, on, mirrorOf(id)); // a mirror title asks its own mirror first, by its id (the watch page)
   };
   const t0 = Date.now(), log = (n: string) => <T,>(p: Promise<T>) => p.then((x: any) => (console.debug(`[stream] ${n}: ${x?.length} in ${Date.now() - t0} ms`), x), (e) => { console.debug(`[stream] ${n}: ${e?.message} after ${Date.now() - t0} ms`); throw e; });
   const r = await Promise.allSettled([log("moviebox")(mbPart().then(emit)), log("dramachi")(drPart().then(emit)), log("4khdhub")(fkPart().then(emit)), log("vega")(vegaPart())]);
