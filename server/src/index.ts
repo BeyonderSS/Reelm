@@ -1097,7 +1097,7 @@ async function proxy({ req, url }: Ctx) {
   } });
   const ct = up.headers.get("content-type") ?? "";
   if (up.ok && (u.pathname.endsWith(".m3u8") || /mpegurl/i.test(ct))) {
-    const body = rewritePlaylist(await up.text(), u.href, `${url.origin}/v1/proxy`, referer, any);
+    const body = rewritePlaylist(await up.text(), up.url || u.href, `${url.origin}/v1/proxy`, referer, any);
     return new Response(body, { headers: { "content-type": "application/vnd.apple.mpegurl", "cache-control": "no-store" } });
   }
   const h = new Headers();
