@@ -324,6 +324,8 @@ function Player() {
   }, [src]); // eslint-disable-line react-hooks/exhaustive-deps
   const onPlaying = () => {
     if (room && roomKnown.current && !roomSrc.current && src) { roomSrc.current = describe(src); setRoomCopy(roomSrc.current); sendRoom({ type: "source", source: roomSrc.current }); }
+    // a slow seek or stall left us behind a playing room: catch up now that frames flow (syncTo only seeks past DRIFT_MS)
+    if (room && g.current.ready && roomNow.current?.playing) syncTo();
     setErr(""); // a source that plays (a fallback or a manual pick) clears the last one's error overlay
     // a codec the browser can't decode (Dramachi's HEVC) still plays the sound over a black picture: treat that as a failure
     const v = video.current;
@@ -461,7 +463,7 @@ function Player() {
     const v = video.current, st = roomNow.current;
     if (!v || !st || v.readyState < 1) return false;
     const now = serverNow(), want = fromMs(roomPos(st, now)), seek = Math.abs(v.currentTime - want) * 1000 > DRIFT_MS;
-    hold(g.current, Date.now(), seek); // eslint-disable-line react-hooks/purity -- runs in handlers, not render
+    hold(g.current, Date.now(), seek ? toMs(want) : undefined); // eslint-disable-line react-hooks/purity -- runs in handlers, not render
     if (seek) v.currentTime = want;
     clearTimeout(lightsT.current);
     if (st.playing && st.at > now) { // lights down: hold still until countdownAt, then everyone starts together
@@ -511,7 +513,7 @@ function Player() {
   /** our own play/pause/seek, unless the guard says it's an echo or too early */
   const tell = (type: "play" | "pause" | "seek") => {
     const now = Date.now(), v = video.current; // eslint-disable-line react-hooks/purity -- runs in handlers, not render
-    if (!room || !v || !(type === "seek" ? ownSeek(g.current, now) : canSend(g.current, now))) return;
+    if (!room || !v || !(type === "seek" ? ownSeek(g.current, now, toMs(v.currentTime)) : canSend(g.current, now))) return;
     sendRoom({ type, position: toMs(v.currentTime) });
   };
   // a copy other than the room's: move to the room's copy when it's here and hasn't failed, else say the scenes may not line up

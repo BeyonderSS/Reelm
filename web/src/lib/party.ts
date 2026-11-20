@@ -15,14 +15,19 @@ export const nextOffset = (prev: number | null, at: number, now: number) => (pre
 
 /** Echo guard: nothing is broadcast before the room's state reached a ready player, during the first 2 s after join,
  *  or while a remote event is being applied (its play/pause/seeked events would bounce back). */
-export type Guard = { joined: number; ready: boolean; until: number; quietSeeks: number; quietUntil: number };
-export const JOIN_QUIET_MS = 2000, APPLY_MS = 800, SEEK_MS = 5000;
-export const guard = (now: number): Guard => ({ joined: now, ready: false, until: 0, quietSeeks: 0, quietUntil: 0 });
+export type Guard = { joined: number; ready: boolean; until: number; seekTo: number | null };
+export const JOIN_QUIET_MS = 2000, APPLY_MS = 800;
+export const guard = (now: number): Guard => ({ joined: now, ready: false, until: 0, seekTo: null });
 export const canSend = (g: Guard, now: number) => g.ready && now - g.joined >= JOIN_QUIET_MS && now >= g.until;
-/** a remote event is being applied: hold sends, and swallow the `seeked` it causes even if the seek outlasts the hold */
-export const hold = (g: Guard, now: number, seeked = false) => { g.until = Math.max(g.until, now + APPLY_MS); if (seeked) { g.quietSeeks++; g.quietUntil = now + SEEK_MS; } };
-/** call from `seeked`: true when this seek was the user's own (two seeks set before one `seeked` fire it once: the count expires) */
-export const ownSeek = (g: Guard, now: number) => { if (g.quietSeeks > 0 && now < g.quietUntil) { g.quietSeeks--; return false; } g.quietSeeks = 0; return canSend(g, now); };
+/** a remote event is being applied: hold sends; `seekTo` (ms) marks the seek it causes, whose `seeked` may come much later
+ *  (a slow host can take 30 s+ to land a deep seek) */
+export const hold = (g: Guard, now: number, seekTo?: number) => { g.until = Math.max(g.until, now + APPLY_MS); if (seekTo !== undefined) g.seekTo = seekTo; };
+/** call from `seeked` with where it landed (ms): false when it is the seek we applied (it lands on our target), else the user's */
+export const ownSeek = (g: Guard, now: number, at: number) => {
+  const ours = g.seekTo !== null && Math.abs(at - g.seekTo) <= 1000;
+  g.seekTo = null;
+  return !ours && canSend(g, now);
+};
 /** seeking only when off by more than this (a smaller fix stutters more than it helps) */
 export const DRIFT_MS = 1500;
 

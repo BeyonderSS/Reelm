@@ -14,12 +14,12 @@ const g = guard(0);
 assert.equal(canSend(g, 5000), false); // state not applied yet: a late joiner must not broadcast play 0
 g.ready = true;
 assert.equal(canSend(g, 1999), false); assert.equal(canSend(g, 2000), true);
-hold(g, 3000, true);
+hold(g, 3000, 60000);
 assert.equal(canSend(g, 3500), false); assert.equal(canSend(g, 3800), true);
-assert.equal(ownSeek(g, 4500), false, "the applied seek's `seeked` is swallowed even after the hold");
-assert.equal(ownSeek(g, 4600), true, "the next seek is the user's");
-hold(g, 10000, true); hold(g, 10001, true); assert.equal(ownSeek(g, 10500), false);
-assert.equal(ownSeek(g, 16000), true, "a coalesced seek's leftover count expires");
+assert.equal(ownSeek(g, 40000, 60000), false, "the applied seek's `seeked` is swallowed however late it lands");
+assert.equal(ownSeek(g, 41000, 90000), true, "the next seek is the user's");
+hold(g, 50000, 120000); assert.equal(ownSeek(g, 51000, 300000), true, "the user seeked elsewhere before ours landed: theirs wins");
+assert.equal(ownSeek(g, 52000, 120000), true, "the mark is used once");
 
 // ducking: 150 ms of voice ducks to 35 %, 400 ms of silence brings it back (ramping)
 let d = duck0();
