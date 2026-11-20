@@ -508,7 +508,7 @@ function Player() {
         if (v) setToast(`${nameOf(m.by)} ${m.type === "play" ? "pressed play" : m.type === "pause" ? "paused" : `jumped to ${clock(m.position)}`}`);
       }
     };
-    return () => { clearTimeout(lightsT.current); setLightsAt(0); setRoomCopy(null); ws.close(); wsRef.current = null; };
+    return () => { clearTimeout(lightsT.current); setLightsAt(0); setRoomCopy(null); ws.onerror = null; ws.close(); wsRef.current = null; }; // our own close is no join error
   }, [room]); // eslint-disable-line react-hooks/exhaustive-deps
   /** our own play/pause/seek, unless the guard says it's an echo or too early */
   const tell = (type: "play" | "pause" | "seek") => {
