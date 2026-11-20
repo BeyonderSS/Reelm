@@ -25,4 +25,3 @@
 # libwebrtc ships only in the phone flavor; the TV build compiles watch-party video out (see feature/party PartyRtc)
 -dontwarn org.webrtc.**
 -dontwarn io.getstream.webrtc.**
--keep class org.webrtc.** { *; }

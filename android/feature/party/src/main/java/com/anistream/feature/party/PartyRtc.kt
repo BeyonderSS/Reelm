@@ -178,7 +178,7 @@ class PartyRtc @Inject constructor(
     }
 
     /** GET /v1/rtc/ice once per room: TURN credentials, and whether video is set up at all. */
-    private fun iceServers(): List<PeerConnection.IceServer> = ice ?: (call("GET", "/ice")["iceServers"] as? JsonArray).orEmpty().mapNotNull { s ->
+    private fun iceServers(): List<PeerConnection.IceServer> = ice ?: call("GET", "/ice")["iceServers"].let { it as? JsonArray ?: listOfNotNull(it as? JsonObject) }.mapNotNull { s ->
         val o = s as? JsonObject ?: return@mapNotNull null
         val urls = when (val u = o["urls"]) {
             is JsonArray -> u.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
