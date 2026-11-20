@@ -6,7 +6,7 @@ import { selectControls, useMediaAttach, usePlayer } from "@videojs/react";
 import { HlsJsVideo } from "@videojs/react/media/hlsjs-video";
 import { Video, VideoPlayer, VideoSkin } from "@videojs/react/video";
 import "@videojs/react/video/skin.css";
-import { ArrowLeft, Check, Copy, RotateCcw, Settings2, SkipForward, Users, X } from "lucide-react";
+import { ArrowLeft, RotateCcw, Settings2, SkipForward, Users, X } from "lucide-react";
 import { Avatar, Chips, Marquee, pill, timeLeft } from "@/components/app";
 import { ReelMark } from "@/components/reel";
 import { SeekPreview } from "@/components/seek-preview";
@@ -22,9 +22,10 @@ import { useApi, useSession } from "@/lib/session";
 import { languageName, trackLabel, useAudioTracks, useLibavAudio } from "@/lib/use-libav-audio";
 import { iso1, origLangs } from "@/lib/langs";
 import { cn } from "@/lib/utils";
+import { canSend, describe, DRIFT_MS, fromMs, guard, hold, matchSource, nextOffset, ownSeek, roomPos, sameCopy, toMs, clock, type SourceDesc } from "@/lib/party";
+import { Countdown, Faces, Marks, TogetherPanel, useParty, Voices } from "@/components/party";
 type Source = { src: string; hls: boolean; label: string; codec?: string; dolby?: boolean; height?: number; langs?: string[] };
 type Sub = { url: string; label: string; lang: string; default?: boolean };
-type Member = { id: string; name: string; avatar: string };
 type Skip = { s: number; e: number; type: string };
 
 // remembered audio language, ISO 639-1 ("hi"); older builds stored the track's 639-2 tag ("hin")
@@ -123,7 +124,10 @@ function Player() {
   const t0 = Number(q.get("t")) || 0, f0 = Number(q.get("f")) || 0;
   const video = useRef<HTMLVideoElement>(null), keep = useRef(0);
   const wsRef = useRef<WebSocket | null>(null);
-  const applying = useRef(false), youId = useRef("");
+  // watch together: the echo guard, the server clock offset, the room's playhead and copy of the film
+  const g = useRef(guard(0)), off = useRef<number | null>(null), youId = useRef("");
+  const roomNow = useRef<{ playing: boolean; position: number; at: number } | null>(null), roomKnown = useRef(false), beginRef = useRef(() => {});
+  const roomSrc = useRef<SourceDesc | null>(null), [roomCopy, setRoomCopy] = useState<SourceDesc | null>(null), [lightsAt, setLightsAt] = useState(0), lightsT = useRef(0);
   const [sources, setSources] = useState<Source[]>([]), [si, setSi] = useState(0), [tag, setTag] = useState({ i: -1, pin: 0 });
   const [subs, setSubs] = useState<Sub[]>([]), [subIdx, setSubIdx] = useState(-1);
   const [err, setErr] = useState(""), [nonce, setNonce] = useState(0), [embed, setEmbed] = useState(false);
@@ -131,10 +135,10 @@ function Player() {
   // TMDB-only titles ("tmdb:movie:<n>") use ?tmdb=
   const ext = p && p.kind === "movie" ? (/^tt\d+$/.test(p.id) ? `imdb=${p.id}` : /^tmdb:(movie|tv):\d+$/.test(p.id) ? `tmdb=${p.id.split(":")[2]}` : "") : "";
   const embedUrl = ext && (p!.type === "series" ? `https://vsembed.ru/embed/tv?${ext}&season=${p!.season ?? 1}&episode=${p!.episode ?? 1}` : `https://vsembed.ru/embed/movie?${ext}`);
-  const [members, setMembers] = useState<Member[]>([]), [remote, setRemote] = useState<string | null>(null); // remote: the TV this page handed off to
+  const [remote, setRemote] = useState<string | null>(null); // remote: the TV this page handed off to
   const [eps, setEps] = useState<any[]>([]), [skips, setSkips] = useState<Skip[]>([]);
   const [cur, setCur] = useState(0), [dur, setDur] = useState(0), [paused, setPaused] = useState(true), [panel, setPanel] = useState<Tab | null>(null);
-  const [copied, setCopied] = useState(false), [roomErr, setRoomErr] = useState("");
+  const [roomErr, setRoomErr] = useState("");
   const [want, setWant] = useState(savedLang); // the audio language to prefer, "" = any
   // quality-first: the chip picked (0 = Auto), the height fallbacks aim for, sources already tried, a note when it had to go lower
   const [qsel, setQsel] = useState(0), [note, setNote] = useState(""), [toast, setToast] = useState(""), [more, setMore] = useState(false);
@@ -198,18 +202,23 @@ function Player() {
       let acc: Source[] = [], started = false, grace: ReturnType<typeof setTimeout> | undefined, subbed = false;
       // a mirror title: nothing starts before its mirror answers (its own id, no title matching) or the viewer asks for another source;
       // the usual sources look in parallel meanwhile and stay listed as the fallback
-      let held = !!ms, ladderDone = false;
+      let held = !!ms, ladderDone = false, copyWait: ReturnType<typeof setTimeout> | undefined, copyGaveUp = false;
+      beginRef.current = () => begin();
       const ready = () => acc.some((x) => !risky({ ...x, url: x.src }) && !dv(x));
       const tl = Date.now();
       const begin = () => {
         if (started || !live || !acc.length || held) return;
-        started = true; clearTimeout(grace);
+        // in a room: wait for its state (it names the copy everyone plays), then for that copy while sources still arrive (up to 15 s)
+        if (room && !roomKnown.current) return;
+        const mi = matchSource(acc, roomSrc.current);
+        if (roomSrc.current && mi < 0 && !ladderDone && !copyGaveUp) { copyWait ??= setTimeout(() => { copyGaveUp = true; begin(); }, 15000); return; }
+        started = true; clearTimeout(grace); clearTimeout(copyWait);
         const pin = getPin(playKey(p)) ?? 0, lang = savedLang(), saver = !!(navigator as any).connection?.saveData;
         let h = acc[pickFor(acc, lang, pin)].height ?? 0;
         // auto: start 4K titles at 1080p (starts faster) and step up once a 4K copy has buffered in the background; Data Saver stays at 1080p
         armed.current = !pin && !room && !saver;
         if ((armed.current || (!pin && saver)) && h >= 2160 && acc.some((x) => x.height === 1080)) h = 1080;
-        const i = choose(acc, lang, h);
+        const i = mi >= 0 ? (choose(acc, lang, acc[mi].height ?? 0), mi) : choose(acc, lang, h);
         setQsel(pin ? h : 0); setSi(i); setTag({ i, pin: pin && acc[i].height === pin ? pin : 0 });
         console.debug(`[stream] start ${acc[i].label} (of ${acc.length}) after ${Date.now() - tl} ms`);
         if (ms) setToast(provider(acc[i].label) === ms ? `Playing from the ${ms}` : `Playing from ${provider(acc[i].label)} instead of the ${ms}`);
@@ -238,6 +247,7 @@ function Player() {
         if (files.length || ladderDone || ready()) begin(); else grace = setTimeout(begin, 5000);
       })() : null;
       const ladder = mv.streamShared(mv.streamQuery(p), onPart, nonce > 0).finally(() => { ladderDone = true; });
+      if (room && !roomKnown.current) setTimeout(() => { roomKnown.current = true; begin(); }, 5000); // no state yet: don't wait forever
       await (mirrorRun ? Promise.all([ladder.catch(() => {}), mirrorRun]) : ladder).finally(() => live && setMore(false));
       begin();
       if (mirrorRun && !acc.length) throw new Error("No streams found");
@@ -313,6 +323,7 @@ function Player() {
     return () => clearTimeout(t);
   }, [src]); // eslint-disable-line react-hooks/exhaustive-deps
   const onPlaying = () => {
+    if (room && roomKnown.current && !roomSrc.current && src) { roomSrc.current = describe(src); setRoomCopy(roomSrc.current); sendRoom({ type: "source", source: roomSrc.current }); }
     setErr(""); // a source that plays (a fallback or a manual pick) clears the last one's error overlay
     // a codec the browser can't decode (Dramachi's HEVC) still plays the sound over a black picture: treat that as a failure
     const v = video.current;
@@ -437,37 +448,85 @@ function Player() {
   const save = useCallback(() => { const v = video.current; if (p && v && v.currentTime > 5 && isFinite(v.duration)) saveProgress(pid, s.token, p, creditsAt != null && v.currentTime >= creditsAt ? v.duration : v.currentTime, v.duration); }, [p, pid, s.token, creditsAt]);
   useEffect(() => { const i = setInterval(save, 10000); return () => { clearInterval(i); save(); }; }, [save]);
 
-  // watch together
+  // watch together. Positions on the wire are integer ms. Nothing is broadcast until the room's state reached a ready
+  // player, in the first 2 s after join, or while a remote event is applied (the echo guard in lib/party).
   const sendRoom = (m: object) => wsRef.current?.readyState === 1 && wsRef.current.send(JSON.stringify(m));
-  const apply = (fn: () => void) => { applying.current = true; fn(); setTimeout(() => (applying.current = false), 400); };
+  const party = useParty(room, sendRoom, video, () => toMs(video.current?.currentTime ?? 0));
+  const members = party.members, names = useRef(members);
+  useEffect(() => { names.current = members; }, [members]); // the socket handler outlives renders
+  const serverNow = () => Date.now() + (off.current ?? 0); // eslint-disable-line react-hooks/purity -- runs in handlers, not render
+  const nameOf = (id: string) => names.current.find((m) => m.id === id)?.name ?? "Someone";
+  /** bring the player to the room's playhead; false while there's no ready player (then loadedmetadata does it) */
+  const syncTo = () => {
+    const v = video.current, st = roomNow.current;
+    if (!v || !st || v.readyState < 1) return false;
+    const now = serverNow(), want = fromMs(roomPos(st, now)), seek = Math.abs(v.currentTime - want) * 1000 > DRIFT_MS;
+    hold(g.current, Date.now(), seek); // eslint-disable-line react-hooks/purity -- runs in handlers, not render
+    if (seek) v.currentTime = want;
+    clearTimeout(lightsT.current);
+    if (st.playing && st.at > now) { // lights down: hold still until countdownAt, then everyone starts together
+      v.pause(); setLightsAt(st.at - (off.current ?? 0));
+      lightsT.current = window.setTimeout(() => { hold(g.current, Date.now()); video.current?.play().catch(() => {}); }, st.at - now);
+    } else if (st.playing) v.play().catch(() => {}); else v.pause();
+    g.current.ready = true;
+    return true;
+  };
   useEffect(() => {
     if (!room) return;
     const ws = new WebSocket(`${WS}/v1/rooms/${room}`);
-    wsRef.current = ws;
-    ws.onopen = () => ws.send(JSON.stringify({ type: "join", name: s.profile?.name ?? "Guest", avatar: s.profile?.avatar ?? "grinning_face" }));
+    wsRef.current = ws; g.current = guard(Date.now()); roomKnown.current = false; roomNow.current = null; roomSrc.current = null; // eslint-disable-line react-hooks/purity -- runs in handlers, not render
+    ws.onopen = () => ws.send(JSON.stringify({ type: "join", name: s.profile?.name ?? "Guest", avatar: s.profile?.avatar ?? "grinning_face", device: "web", cam: false, mic: false }));
     ws.onerror = () => setRoomErr("Couldn't join the room. Check the code and try again.");
     ws.onmessage = (ev) => {
-      const m = JSON.parse(ev.data), v = video.current;
+      const m = JSON.parse(ev.data), v = video.current, mine = m.by === youId.current;
+      // server clock: play/pause/seek/load are stamped as they're sent; `state` carries the last event's stamp (old), so only its `now` if any
+      const stamp = m.type === "state" ? m.now : /^(play|pause|seek|load)$/.test(m.type) ? m.at : undefined;
+      if (typeof stamp === "number") off.current = nextOffset(off.current, stamp, Date.now());
+      party.onMsg(m);
       if (m.type === "state") {
-        youId.current = m.you; setMembers(m.members);
-        const theirs = toPlay(m.payload);
-        if (theirs && JSON.stringify(theirs) !== pkey) return router.replace(href(theirs, `&room=${room}`));
-        if (v) apply(() => { v.currentTime = m.position + (m.playing ? (Date.now() - m.at) / 1000 : 0); if (m.playing) v.play().catch(() => {}); });
-      } else if (m.type === "members") setMembers(m.members);
-      else if (m.type === "load") { const np = toPlay(m.payload); if (np && m.by !== youId.current) router.replace(href(np, `&room=${room}`)); }
-      else if (v && m.by !== youId.current) apply(() => {
-        if (m.type === "seek") v.currentTime = m.position;
-        if (m.type === "play") { v.currentTime = m.position + (Date.now() - m.at) / 1000; v.play().catch(() => {}); }
-        if (m.type === "pause") { v.pause(); v.currentTime = m.position; }
-      });
+        youId.current = m.you; roomKnown.current = true;
+        roomSrc.current = m.source ?? null; setRoomCopy(roomSrc.current);
+        const theirs = toPlay(m.payload), st = { playing: !!m.playing, position: m.position ?? 0, at: m.at ?? 0 };
+        if (theirs && JSON.stringify(theirs) !== pkey) { roomNow.current = st; return router.replace(href(theirs, `&room=${room}`)); }
+        if ((m.members?.length ?? 0) <= 1 && !m.source) {
+          // the room is ours alone (we just started it): our player is the truth, so tell the room instead of taking its state
+          g.current.ready = true; g.current.joined = 0;
+          if (v && v.readyState >= 1) sendRoom({ type: v.paused ? "pause" : "play", position: toMs(v.currentTime) });
+        } else { roomNow.current = st; syncTo(); }
+        beginRef.current();
+      } else if (m.type === "load") {
+        roomSrc.current = null; setRoomCopy(null); roomNow.current = { playing: false, position: 0, at: m.at ?? 0 };
+        const np = toPlay(m.payload); if (np && !mine) router.replace(href(np, `&room=${room}`));
+      } else if (m.type === "source") { if (!roomSrc.current) { roomSrc.current = m.source; setRoomCopy(m.source); } }
+      else if (m.type === "lights") { roomNow.current = { playing: true, position: m.position, at: m.countdownAt }; syncTo(); }
+      else if (m.type === "play" || m.type === "pause" || m.type === "seek") {
+        roomNow.current = { playing: m.type === "seek" ? !!roomNow.current?.playing : m.type === "play", position: m.position, at: m.at };
+        if (mine) return; // broadcasts include the sender
+        syncTo();
+        if (v) setToast(`${nameOf(m.by)} ${m.type === "play" ? "pressed play" : m.type === "pause" ? "paused" : `jumped to ${clock(m.position)}`}`);
+      }
     };
-    return () => ws.close();
+    return () => { clearTimeout(lightsT.current); setLightsAt(0); setRoomCopy(null); ws.close(); wsRef.current = null; };
   }, [room]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** our own play/pause/seek, unless the guard says it's an echo or too early */
+  const tell = (type: "play" | "pause" | "seek") => {
+    const now = Date.now(), v = video.current; // eslint-disable-line react-hooks/purity -- runs in handlers, not render
+    if (!room || !v || !(type === "seek" ? ownSeek(g.current, now) : canSend(g.current, now))) return;
+    sendRoom({ type, position: toMs(v.currentTime) });
+  };
+  // a copy other than the room's: move to the room's copy when it's here and hasn't failed, else say the scenes may not line up
+  useEffect(() => {
+    if (!room || !src || !roomCopy || sameCopy(src, roomCopy)) return;
+    const i = matchSource(sources, roomCopy);
+    if (i >= 0 && !tried.current.has(i)) { tried.current.add(si); setSi(i); }
+    else setToast("Playing a different copy — scenes may be off by a few minutes");
+  }, [room, srcKey, roomCopy, sources.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const startRoom = async () => {
     setRoomErr("");
     try { const { code } = await reelm("/v1/rooms", { json: { payload: p } }); router.replace(href(p!, `&room=${code}`)); }
     catch (e) { setRoomErr((e as Error).message); }
   };
+  const leave = () => { setPanel(null); router.replace(href(p!, `&t=${Math.round(pos())}`)); };
   const roomLink = () => `${location.origin}/watch?room=${room}${p ? `&p=${encodeURIComponent(pkey)}` : ""}`;
   const pos = () => video.current?.currentTime ?? 0;
 
@@ -594,12 +653,12 @@ function Player() {
 
   const common = {
     ref: video, autoPlay: true, playsInline: true, referrerPolicy: "no-referrer", className: "size-full",
-    onLoadedMetadata: (e: React.SyntheticEvent<HTMLVideoElement>) => { onMeta(e.currentTarget); e.currentTarget.playbackRate = speed; setDur(e.currentTarget.duration || 0); },
+    onLoadedMetadata: (e: React.SyntheticEvent<HTMLVideoElement>) => { onMeta(e.currentTarget); if (room) syncTo(); e.currentTarget.playbackRate = speed; setDur(e.currentTarget.duration || 0); },
     onError: () => fail("The video failed to load."),
     onPlaying: () => { setPaused(false); onPlaying(); },
-    onPlay: (e: React.SyntheticEvent<HTMLVideoElement>) => { if (remote) return e.currentTarget.pause(); setPaused(false); if (!applying.current) sendRoom({ type: "play", position: pos() }); },
-    onPause: (e: React.SyntheticEvent<HTMLVideoElement>) => { if (e.currentTarget !== video.current) return; setPaused(true); save(); if (!applying.current) sendRoom({ type: "pause", position: pos() }); }, // not the element a 4K step-up replaced
-    onSeeked: () => !applying.current && sendRoom({ type: "seek", position: pos() }),
+    onPlay: (e: React.SyntheticEvent<HTMLVideoElement>) => { if (remote) return e.currentTarget.pause(); setPaused(false); tell("play"); },
+    onPause: (e: React.SyntheticEvent<HTMLVideoElement>) => { if (e.currentTarget !== video.current) return; setPaused(true); save(); tell("pause"); }, // not the element a 4K step-up replaced
+    onSeeked: () => tell("seek"),
     onTimeUpdate: (e: React.SyntheticEvent<HTMLVideoElement>) => { if (e.currentTarget !== video.current) return; keep.current = e.currentTarget.currentTime; setCur(keep.current); },
     onWaiting: (e: React.SyntheticEvent<HTMLVideoElement>) => { const v = e.currentTarget; if (!startedAt.current && !v.seeking && v.currentTime > 1 && stalled.current !== srcKey) { stalled.current = srcKey; recordStat(src?.label, { stall: true }); } },
     onDurationChange: (e: React.SyntheticEvent<HTMLVideoElement>) => setDur(e.currentTarget.duration || 0),
@@ -647,6 +706,7 @@ function Player() {
             </div>
           )}
 
+          {room && <><Faces party={party} /><Marks party={party} dur={dur} />{lightsAt > 0 && <Countdown until={lightsAt} />}</>}
           {toast && <p role="status" className="pointer-events-none absolute top-20 left-1/2 z-30 -translate-x-1/2 rounded-full bg-dusk/80 px-4 py-2 text-sm ring-1 ring-white/15 backdrop-blur">{toast}</p>}
           {audioNote && <p role="status" className="pointer-events-none absolute bottom-28 left-1/2 z-10 -translate-x-1/2 rounded-full bg-dusk/80 px-4 py-2 text-sm ring-1 ring-white/15 backdrop-blur">{audioNote}</p>}
           {skip && !credits && !err && !(pref.autoSkip && /op|recap/.test(skip.type)) && (
@@ -751,19 +811,9 @@ function Player() {
                     <p className="text-xs text-[#a3a1ae]">Works where the episode's intro is known: most anime and many series.</p>
                   </>}
                   {panel === "together" && <>
-                    <h3 className={h3}>Together</h3>
-                    {room ? <>
-                      <div className="rounded-[18px] border-l-2 border-dashed border-white/25 bg-white/5 p-5 text-center">
-                        <p className="text-sm text-foreground/60">Room code</p>
-                        <p className="mt-1 font-display text-4xl font-bold tracking-[0.18em] text-primary">{room}</p>
-                        <button className={cn(pill.primary, "mt-4 w-full")} onClick={() => { navigator.clipboard?.writeText(roomLink()); setCopied(true); setTimeout(() => setCopied(false), 1800); }}>{copied ? <Check /> : <Copy />}{copied ? "Link copied" : "Copy invite link"}</button>
-                        <p className="mt-3 text-xs text-foreground/52">Friends open the link, or enter the code from their avatar menu. Play, pause and seeking stay in sync.</p>
-                      </div>
-                      <p className="pt-2 text-sm font-semibold">{members.length} watching</p>
-                      <ul className="space-y-1">{members.map((m) => <li key={m.id} className="flex items-center gap-3 rounded-xl px-2 py-1.5"><Avatar id={m.avatar} size={34} /><span className="flex-1">{m.name}</span>{m.id === youId.current && <span className="text-xs text-foreground/52">You</span>}</li>)}</ul>
-                      <button className={pill.ghost} onClick={() => { setPanel(null); router.replace(href(p)); }}>Leave room</button>
-                    </> : <>
-                      <p className="text-foreground/72">Start a room and share the code. Everyone in it plays, pauses and seeks together.</p>
+                    {room ? <TogetherPanel party={party} link={roomLink} onLights={() => { sendRoom({ type: "lights" }); setPanel(null); }} onLeave={leave} /> : <>
+                      <h3 className={h3}>Together</h3>
+                      <p className="text-foreground/72">Start a room and share the link. Everyone in it plays, pauses and seeks together, and can turn on a camera or mic to watch face to face.</p>
                       <button className={pill.primary} onClick={startRoom}><Users />Start a room</button>
                     </>}
                     {tvs.length > 0 && <div className="pt-2"><PlayOnTv get={toTv} onSent={sentTo} className={pill.secondary} /></div>}
@@ -775,6 +825,7 @@ function Player() {
           )}
         </VideoSkin>
       </VideoPlayer>
+      {room && <Voices party={party} />}
       {remote && p && (
         <div className="absolute inset-0 z-[60] flex items-end justify-center bg-[#06060a]/80 p-2 backdrop-blur-md md:items-center">
           <RemotePanel tv={remote} fallback={{ title: p.title, subtitle: sub, poster: p.poster }} onPlayHere={playHere} onClose={() => setRemote(null)} />
