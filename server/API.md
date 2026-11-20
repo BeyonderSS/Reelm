@@ -60,10 +60,36 @@ Hello on connect: `{type:"hello", deviceId, deviceName, kind:"phone"|"tv"}` → 
 
 ## Watch together (Durable Object `Room`, keyed by room code; no account needed)
 - `POST /v1/rooms` `{payload}` → `{code}` (6 chars, A–Z/2–9). `payload` = what to play (same opaque shape as history).
-- `GET  /v1/rooms/:code` WebSocket. Client sends `{type:"join", name, avatar}`; server replies
-  `{type:"state", you, payload, playing, position, at, members:[{id,name,avatar}]}`.
+- `GET  /v1/rooms/:code` WebSocket. Client sends `{type:"join", name, avatar, device?:"phone"|"web"|"tv", cam?, mic?}`; server replies
+  `{type:"state", you, payload, playing, position, at, source?, mode:"friends"|"date", countdownAt?, members:[{id, name, avatar, device, cam, mic, rtc?}]}`
+  (`device` defaults to `"phone"`, `cam`/`mic` to false). Everyone else gets `{type:"members", members}` on every join/leave.
+- Every `position` is integer **ms**: the server stores and broadcasts `Math.round(Number(position))` and drops non-finite ones.
 - Any member sends `{type:"play"|"pause"|"seek", position}`; server stamps `at` (server ms) and broadcasts
   `{type, position, at, by}`. Clients apply `position + (now - at)` when playing. Room dies 1 h after the last member leaves.
+- Watch party (all broadcasts go to every member, sender included):
+  - `{type:"source", source}`: `source` is an object ≤ 1 KB JSON (`{provider, quality, host?, label?}`); kept only if none is stored for
+    this payload (first player wins), then broadcast `{type:"source", source, by}`. `load` clears it.
+  - `{type:"mode", mode:"friends"|"date"}` → stored, broadcast `{type:"mode", mode, by}`.
+  - `{type:"media", cam, mic}` → stored on the member, broadcast `{type:"media", from, cam, mic}`.
+  - `{type:"rtc", sessionId, tracks:[{trackName, kind:"audio"|"video"}]}` (≤ 4 tracks) → stored on the member, broadcast
+    `{type:"rtc", from, sessionId, tracks}`. `sessionId:null` = stopped (broadcast with `tracks:[]`). When 4 other members already
+    publish video the sender gets `{type:"rtc_full"}` and its video tracks are dropped (audio still stored and broadcast).
+  - `{type:"react", kind:"heart"|"laugh"|"gasp"|"cry", at}` (`at` = media ms) → broadcast `{type:"react", kind, at, by}`, not stored.
+    A heart from a different member within 1.5 s of the previous heart also broadcasts `{type:"sync_heart", at}` (the second heart's `at`).
+  - `{type:"lights"}` → `countdownAt = now + 3500`; stores `playing:true`, `at:countdownAt`, keeps `position`; broadcasts
+    `{type:"lights", countdownAt, position}`. Clients count down and start at `countdownAt` (server clock). `load` clears it.
+
+### Watch party video (Cloudflare Realtime proxy; no account needed)
+Every call needs `X-Room-Member: <code>:<memberId>` (`memberId` = `state.you`, still connected), else `403 not in room`.
+Secrets `REALTIME_APP_ID` + `REALTIME_APP_TOKEN` missing → `503 {error:"video not configured"}` (clients hide camera/mic, keep sync).
+Bodies and responses pass through unchanged from `https://rtc.live.cloudflare.com/v1/apps/<appId>/…` (status included).
+- `GET  /v1/rtc/ice` → `{iceServers:[…]}` for `RTCPeerConnection` (TURN creds, TTL 6 h, from `TURN_KEY_ID`/`TURN_KEY_TOKEN`;
+  STUN only `[{urls:["stun:stun.cloudflare.com:3478"]}]` when those are missing or TURN fails).
+- `POST /v1/rtc/sessions` → `201 {sessionId}` (`sessions/new`).
+- `POST /v1/rtc/sessions/:id/tracks` → `tracks/new`. Push: `{sessionDescription:{type:"offer", sdp}, tracks:[{location:"local", mid, trackName}]}`;
+  pull: `{tracks:[{location:"remote", sessionId, trackName}]}`. Reply `{requiresImmediateRenegotiation, sessionDescription?, tracks:[{mid, trackName, errorCode?}]}`.
+- `PUT  /v1/rtc/sessions/:id/renegotiate` `{sessionDescription:{type:"answer", sdp}}` (after `requiresImmediateRenegotiation`).
+- `PUT  /v1/rtc/sessions/:id/tracks/close` `{tracks:[{mid}], sessionDescription?, force}`.
 
 - Any member switching media (episode, season, movie, new title) sends `{type:"load", payload, position:0}`; the server stores
   `payload`, resets `position` to 0 and `playing` to false, stamps `at`, and broadcasts `{type:"load", payload, at, by}` to everyone

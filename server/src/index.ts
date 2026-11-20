@@ -9,6 +9,10 @@ export interface Env {
   CF_ACCOUNT_ID?: string;
   GITHUB_TOKEN?: string; // secret, optional; unauthenticated GitHub API calls share Cloudflare's egress IPs and get 403 rate-limited
   APKS?: R2Bucket; // optional; release.yml uploads APKs + latest.json here. Unbound/missing objects fall back to GitHub via Cloudflare's cache
+  REALTIME_APP_ID?: string; // secrets for watch-party video (Cloudflare Realtime SFU); missing -> /v1/rtc/* answer 503
+  REALTIME_APP_TOKEN?: string;
+  TURN_KEY_ID?: string; // optional; missing -> /v1/rtc/ice is STUN only
+  TURN_KEY_TOKEN?: string;
 }
 
 class HttpError extends Error {
@@ -351,6 +355,32 @@ async function joinRoom(c: Ctx) {
   await logEvent(c.env, c.req, "room_join", null, { code: c.params[0].toUpperCase() });
   return c.env.ROOM.getByName(c.params[0].toUpperCase()).fetch(c.req);
 }
+
+// ---- watch party video: thin proxy to Cloudflare Realtime so the app token stays here --------------------------------
+const RTC = "https://rtc.live.cloudflare.com/v1";
+const STUN = [{ urls: ["stun:stun.cloudflare.com:3478"] }];
+async function rtcAuth(c: Ctx) {
+  const [code, id] = (c.req.headers.get("X-Room-Member") ?? "").split(":");
+  if (!code || !id || (await c.env.ROOM.getByName(code.toUpperCase()).fetch(`https://room/member?id=${encodeURIComponent(id)}`)).status !== 204)
+    fail(403, "not in room");
+  if (!c.env.REALTIME_APP_ID || !c.env.REALTIME_APP_TOKEN) fail(503, "video not configured");
+}
+async function rtcIce(c: Ctx) {
+  await rtcAuth(c);
+  if (!c.env.TURN_KEY_ID || !c.env.TURN_KEY_TOKEN) return json({ iceServers: STUN });
+  const r = await fetch(`${RTC}/turn/keys/${c.env.TURN_KEY_ID}/credentials/generate-ice-servers`, { method: "POST",
+    headers: { authorization: `Bearer ${c.env.TURN_KEY_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ ttl: 6 * 3600 }) }).catch(() => null);
+  return json(r?.ok ? await r.json() : { iceServers: STUN });
+}
+// ponytail: any room member may touch any session id; bind session ids to members in the DO if that matters.
+const rtcProxy = (tail: string) => async (c: Ctx) => {
+  await rtcAuth(c);
+  const b = await c.req.text();
+  const r = await fetch(`${RTC}/apps/${c.env.REALTIME_APP_ID}/sessions/${c.params[0] ? c.params[0] + "/" : ""}${tail}`, { method: c.req.method,
+    headers: { authorization: `Bearer ${c.env.REALTIME_APP_TOKEN}`, "content-type": "application/json" }, body: b || undefined })
+    .catch(() => fail(502, "video upstream failed"));
+  return new Response(r.body, { status: r.status, headers: { "content-type": "application/json" } });
+};
 
 // ---- telemetry ----------------------------------------------------------
 const TELEMETRY_KINDS = ["play", "play_error", "crash", "source_used", "heartbeat", "search_empty", "update_offered", "update_installed"];
@@ -988,6 +1018,11 @@ const routes: [string, RegExp, (c: Ctx) => Response | Promise<Response>][] = [
   ["GET", /^\/v1\/hub$/, hub],
   ["POST", /^\/v1\/rooms$/, createRoom],
   ["GET", /^\/v1\/rooms\/([^/]+)$/, joinRoom],
+  ["GET", /^\/v1\/rtc\/ice$/, rtcIce],
+  ["POST", /^\/v1\/rtc\/sessions$/, rtcProxy("new")],
+  ["POST", /^\/v1\/rtc\/sessions\/([\w-]{1,64})\/tracks$/, rtcProxy("tracks/new")],
+  ["PUT", /^\/v1\/rtc\/sessions\/([\w-]{1,64})\/renegotiate$/, rtcProxy("renegotiate")],
+  ["PUT", /^\/v1\/rtc\/sessions\/([\w-]{1,64})\/tracks\/close$/, rtcProxy("tracks/close")],
   ["GET", /^\/\.well-known\/assetlinks\.json$/, (c) =>
     new Response(c.env.ASSET_LINKS || "[]", { headers: { "content-type": "application/json" } })],
 ];
@@ -1108,7 +1143,7 @@ async function proxy({ req, url }: Ctx) {
 const CORS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-  "access-control-allow-headers": "authorization,content-type,range",
+  "access-control-allow-headers": "authorization,content-type,range,x-room-member",
   "access-control-expose-headers": "content-length,content-range",
 };
 
@@ -1229,13 +1264,26 @@ export class UserHub extends DurableObject<Env> {
   webSocketError(ws: WebSocket) { this.broadcastDevices(ws); }
 }
 
-type Member = { id: string; name: string; avatar: string };
+type Track = { trackName: string; kind: "audio" | "video" };
+type Member = { id: string; name: string; avatar: string; device: string; cam: boolean; mic: boolean; rtc?: { sessionId: string; tracks: Track[] } };
 const HOUR = 3_600_000;
+const MAX_VIDEO = 4;
+const REACTS = ["heart", "laugh", "gasp", "cry"];
+/** Room positions are integer ms; null when not a finite number. */
+export const toMs = (v: unknown) => {
+  const n = typeof v === "number" || (typeof v === "string" && v.trim()) ? Math.round(Number(v)) : NaN;
+  return Number.isFinite(n) ? n : null;
+};
 
 /** One per watch-together room code. State lives in storage so it survives hibernation. */
 export class Room extends DurableObject<Env> {
+  private heart?: { by: string; t: number }; // ponytail: in memory, a hibernation between two hearts just misses one sync_heart
+
   async fetch(req: Request): Promise<Response> {
     const s = this.ctx.storage;
+    const u = new URL(req.url);
+    if (u.pathname === "/member") // internal: /v1/rtc/* checks X-Room-Member here
+      return this.members().some((m) => m.id === u.searchParams.get("id")) ? none() : json({ error: "not in room" }, 403);
     if (req.method === "POST") { // internal init
       const { payload } = await req.json<any>();
       await s.put({ payload, playing: false, position: 0, at: now() });
@@ -1268,9 +1316,11 @@ export class Room extends DurableObject<Env> {
     if (!m) return;
     if (m.type === "join") {
       const id = uuid();
-      ws.serializeAttachment({ id, name: String(m.name ?? "Guest").slice(0, 32), avatar: String(m.avatar ?? "").slice(0, 64) } satisfies Member);
-      const st = await s.get(["payload", "playing", "position", "at"]);
-      send(ws, { type: "state", you: id, payload: st.get("payload"), playing: st.get("playing"), position: st.get("position"), at: st.get("at"), members: this.members() });
+      ws.serializeAttachment({ id, name: String(m.name ?? "Guest").slice(0, 32), avatar: String(m.avatar ?? "").slice(0, 64),
+        device: ["phone", "web", "tv"].includes(m.device) ? m.device : "phone", cam: m.cam === true, mic: m.mic === true } satisfies Member);
+      const st = await s.get(["payload", "playing", "position", "at", "source", "mode", "countdownAt"]);
+      send(ws, { type: "state", you: id, payload: st.get("payload"), playing: st.get("playing"), position: st.get("position"), at: st.get("at"),
+        source: st.get("source"), mode: st.get("mode") ?? "friends", countdownAt: st.get("countdownAt"), members: this.members() });
       this.broadcast({ type: "members", members: this.members() }, ws);
       this.mirror(this.members());
       return;
@@ -1281,16 +1331,65 @@ export class Room extends DurableObject<Env> {
       if (!m.payload || typeof m.payload !== "object") return;
       const at = now();
       await s.put({ payload: m.payload, playing: false, position: 0, at });
+      await s.delete(["source", "countdownAt"]); // a new payload gets its own first-player source
       this.ctx.waitUntil(logEvent(this.env, null, "room_load", null, { code: this.ctx.id.name, title: (m.payload as any).title }));
       this.mirror(this.members(), (m.payload as any).title);
       this.broadcast({ type: "load", payload: m.payload, at, by: me.id });
       return;
     }
-    if (!["play", "pause", "seek"].includes(m.type) || typeof m.position !== "number") return;
+    if (m.type === "source") { // first player wins, once per payload
+      if (!m.source || typeof m.source !== "object" || big(m.source, 1024) || (await s.get("source"))) return;
+      await s.put("source", m.source);
+      return this.broadcast({ type: "source", source: m.source, by: me.id });
+    }
+    if (m.type === "mode") {
+      if (m.mode !== "friends" && m.mode !== "date") return;
+      await s.put("mode", m.mode);
+      return this.broadcast({ type: "mode", mode: m.mode, by: me.id });
+    }
+    if (m.type === "media") {
+      me.cam = m.cam === true; me.mic = m.mic === true;
+      ws.serializeAttachment(me);
+      return this.broadcast({ type: "media", from: me.id, cam: me.cam, mic: me.mic });
+    }
+    if (m.type === "rtc") {
+      if (m.sessionId == null) {
+        delete me.rtc;
+        ws.serializeAttachment(me);
+        return this.broadcast({ type: "rtc", from: me.id, sessionId: null, tracks: [] });
+      }
+      if (typeof m.sessionId !== "string" || !Array.isArray(m.tracks)) return;
+      let tracks: Track[] = m.tracks.filter((t: any) => typeof t?.trackName === "string" && (t.kind === "audio" || t.kind === "video"))
+        .slice(0, 4).map((t: any) => ({ trackName: t.trackName.slice(0, 64), kind: t.kind }));
+      if (tracks.some((t) => t.kind === "video") && this.members(ws).filter((o) => o.rtc?.tracks.some((t) => t.kind === "video")).length >= MAX_VIDEO) {
+        send(ws, { type: "rtc_full" });
+        tracks = tracks.filter((t) => t.kind !== "video"); // stays voice-only
+      }
+      me.rtc = { sessionId: m.sessionId.slice(0, 64), tracks };
+      ws.serializeAttachment(me);
+      return this.broadcast({ type: "rtc", from: me.id, ...me.rtc });
+    }
+    if (m.type === "react") {
+      const at = toMs(m.at);
+      if (!REACTS.includes(m.kind) || at === null) return;
+      this.broadcast({ type: "react", kind: m.kind, at, by: me.id });
+      if (m.kind !== "heart") return;
+      const h = this.heart, t = now();
+      this.heart = { by: me.id, t };
+      if (h && h.by !== me.id && t - h.t <= 1500) { this.heart = undefined; this.broadcast({ type: "sync_heart", at }); }
+      return;
+    }
+    if (m.type === "lights") { // 3-2-1 then everyone starts at countdownAt (server clock)
+      const countdownAt = now() + 3500, position = (await s.get<number>("position")) ?? 0;
+      await s.put({ playing: true, at: countdownAt, countdownAt });
+      return this.broadcast({ type: "lights", countdownAt, position });
+    }
+    const position = toMs(m.position);
+    if (!["play", "pause", "seek"].includes(m.type) || position === null) return;
     const at = now();
     const playing = m.type === "seek" ? await s.get("playing") : m.type === "play";
-    await s.put({ playing, position: m.position, at });
-    this.broadcast({ type: m.type, position: m.position, at, by: me.id });
+    await s.put({ playing, position, at });
+    this.broadcast({ type: m.type, position, at, by: me.id });
   }
 
   private async left(ws: WebSocket) {
