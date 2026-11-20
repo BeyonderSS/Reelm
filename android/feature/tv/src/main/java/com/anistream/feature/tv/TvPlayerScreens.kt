@@ -222,6 +222,8 @@ private fun TvPlayerChrome(
     skipSetting: Boolean = false,
     /** what is playing, for "Watch together" and for telling the room when it changes; null = not shareable (live) */
     partyPayload: JsonObject? = null,
+    /** the copy playing, as a watch-party `source` (joiners try the same one first) */
+    partySource: JsonObject? = null,
     meta: EpisodeMeta = EpisodeMeta(),
     /** candidate streams, for the "Audio language" choices */
     streams: List<MediaStream> = emptyList(),
@@ -447,7 +449,7 @@ private fun TvPlayerChrome(
             // captions would run over the pause marquee's next-episode card
             showCaptions = !marquee
         )
-        com.anistream.feature.party.PartyOverlay(player, Modifier.align(Alignment.TopEnd), payload = partyPayload)
+        com.anistream.feature.party.PartyOverlay(player, Modifier.align(Alignment.TopEnd), payload = partyPayload, source = partySource)
         val cq = maxWidth / 100
         if (marquee) {
             Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to Color(0xD106060A), 0.55f to Color(0x9906060A), 1f to Color(0xCC06060A))))
@@ -1056,6 +1058,7 @@ fun TvMediaPlayerScreen(
         onAudioLanguage = vm::selectAudioLanguage,
         upNextImage = r?.posterUrl,
         partyPayload = r?.takeIf { !s.isLive }?.let(::mediaPayload),
+        partySource = s.stream?.takeIf { !s.isLive && !s.isLoading }?.let { com.anistream.feature.player.partySource(it) },
         meta = if (r == null) EpisodeMeta() else EpisodeMeta(
             show = if (r.season > 0 && r.episode > 0) "${r.title}, season ${r.season}, episode ${r.episode}" else null,
             name = if (r.episode > 0) ge?.title?.takeIf { it.isNotBlank() } ?: "Episode ${r.episode}" else r.title,

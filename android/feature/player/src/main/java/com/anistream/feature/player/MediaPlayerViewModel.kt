@@ -118,7 +118,7 @@ internal fun MediaStream.detailLabel(): String = (listOfNotNull(
 internal fun MediaStream.label(): String = listOf(sourceName, detailLabel()).filter { it.isNotBlank() }.joinToString(" · ")
 
 /** This stream as a watch-party `source` descriptor: joiners try the same copy first (cuts differ between copies). */
-internal fun partySource(s: MediaStream) =
+fun partySource(s: MediaStream) =
     com.anistream.feature.party.sourceOf(SourceRank.provider(s), s.qualityLabel, android.net.Uri.parse(s.url).host, s.label())
 
 private fun formatBytes(bytes: Long): String {
