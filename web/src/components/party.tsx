@@ -311,6 +311,7 @@ export function TogetherPanel({ party, link, onLights, onLeave }: { party: Party
         </button>
       </div>
       {party.ok && !party.cam && !party.mic && me && <p className="text-xs text-foreground/55">Camera and mic stay off until you turn them on.</p>}
+      {party.ok === false && <p className="text-xs text-foreground/55">Video and voice aren&apos;t set up on this server. Play, pause and seeking still stay in sync.</p>}
       {party.note && <p role="status" className="text-sm text-foreground/72">{party.note}</p>}
       <div role="toolbar" aria-label="React (R)" className="flex justify-between gap-1 rounded-full bg-[#1F2127] p-1">
         {(Object.keys(REACTS) as ReactKind[]).map((k) => <button key={k} onClick={() => party.react(k)} aria-label={k} className="beam grid h-10 flex-1 place-items-center rounded-full text-2xl hover:bg-white/8">{REACTS[k]}</button>)}
