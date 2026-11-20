@@ -167,7 +167,7 @@ class PartyRtc @Inject constructor(
         val r = client.room.value ?: throw IOException("no room")
         val me = client.selfId ?: throw IOException("no member id")
         val req = Request.Builder().url("${BuildConfig.REELM_API_URL}/v1/rtc$path").header("X-Room-Member", "${r.code}:$me")
-            .method(method, body?.toString()?.toRequestBody("application/json".toMediaType()))
+            .method(method, (body?.toString() ?: if (method == "GET") null else "").let { it?.toRequestBody("application/json".toMediaType()) }) // OkHttp refuses a POST/PUT without a body
             .build()
         http.client.newCall(req).execute().use { res ->
             if (res.code == 503) { configured.value = false; throw NotConfigured }
@@ -210,9 +210,9 @@ class PartyRtc @Inject constructor(
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
         }
-        val p = factory.createPeerConnection(config, Observer) ?: throw IOException("no peer connection")
-        pc = p
         session = (call("POST", "/sessions")["sessionId"] as? JsonPrimitive)?.contentOrNull ?: throw IOException("no session")
+        val p = factory.createPeerConnection(config, Observer) ?: throw IOException("no peer connection")
+        pc = p // only once there's a session, so a failed call is retried in full
         levelsJob = scope.launch { pollLevels() }
         return p
     }
