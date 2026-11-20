@@ -83,6 +83,80 @@ class PartyTest {
         assertTrue(shouldSeek(12_000, 10_000))
     }
 
+    @Test fun positionsAreIntegerMsAndDecimalsRound() {
+        fun p(s: String) = ms(Json.parseToJsonElement(s))
+        assertEquals(153_000L, p("153000"))
+        assertEquals(119L, p("118.67")) // an old web client's float is rounded, not dropped
+        assertEquals(0L, p("0"))
+        assertNull(p("\"abc\""))
+        assertNull(p("null"))
+        assertNull(ms(null))
+    }
+
+    @Test fun lightsDownHoldsUntilCountdownEnds() {
+        // `at` = countdownAt in the future: stay on the frame
+        assertEquals(60_000L, targetPosition(60_000, at = 10_000, serverNow = 7_000, playing = true))
+        assertEquals(61_000L, targetPosition(60_000, at = 10_000, serverNow = 11_000, playing = true))
+    }
+
+    @Test fun echoGuardKeepsJoinerQuiet() {
+        var now = 1_000L
+        val joiner = EchoGuard({ now }, host = false)
+        assertFalse(joiner.mayBroadcast()) // before the room state is applied (autoplay at 0 must not go out)
+        now += 60_000
+        assertFalse(joiner.mayBroadcast())
+        joiner.applying()
+        assertFalse(joiner.mayBroadcast())
+        joiner.joined()
+        now += JOIN_QUIET_MS - 1
+        assertFalse(joiner.mayBroadcast())
+        now += 1
+        assertTrue(joiner.mayBroadcast())
+        joiner.applying()
+        now += APPLY_QUIET_MS - 1
+        assertFalse(joiner.mayBroadcast()) // applying a remote event: the player's own echo stays local
+        now += 1
+        assertTrue(joiner.mayBroadcast())
+
+        val host = EchoGuard({ now }, host = true)
+        assertTrue(host.mayBroadcast())
+        host.applying()
+        assertFalse(host.mayBroadcast())
+    }
+
+    @Test fun duckingWaitsThenRecovers() {
+        val d = Ducker()
+        assertEquals(1f, d.volume(0, loud = true))
+        assertEquals(1f, d.volume(100, loud = true)) // a click under 150 ms doesn't duck
+        assertEquals(DUCK_LEVEL, d.volume(160, loud = true))
+        assertEquals(DUCK_LEVEL, d.volume(1_000, loud = true))
+        assertEquals(DUCK_LEVEL, d.volume(1_100, loud = false))
+        val mid = d.volume(1_300, loud = false)
+        assertTrue(mid > DUCK_LEVEL && mid < 1f)
+        assertEquals(1f, d.volume(1_500, loud = false))
+        assertEquals(1f, d.volume(1_600, loud = true)) // a fresh 150 ms is needed again
+    }
+
+    @Test fun sourceMatching() {
+        val room = sourceOf("Hotstar", "1080p", "cdn.a.com", "Hotstar · 1080p · 2.1 GB")
+        val ours = listOf(
+            sourceOf("VegaMovies", "1080p", "v.com", "VegaMovies · 1080p"),
+            sourceOf("hotstar", "720p", "cdn.a.com", "Hotstar · 720p"),
+            sourceOf("Hotstar", "1080p", "cdn.b.com", "Hotstar · 1080p · 2.1 GB")
+        )
+        assertEquals(2, matchSource(room, ours)) // exact label
+        assertEquals(1, matchSource(sourceOf("Hotstar", "4K", "cdn.a.com", null), ours)) // provider + host
+        assertNull(matchSource(sourceOf("castle", "1080p", null, null), ours))
+        assertTrue(sameSource(room, ours[2]))
+        assertFalse(sameSource(room, ours[0]))
+        assertFalse(sameSource(room, null))
+    }
+
+    @Test fun clockFormat() {
+        assertEquals("1:02:14", clock(3_734_000))
+        assertEquals("4:05", clock(245_400))
+    }
+
     @Test fun echoDetection() {
         assertTrue(isEcho("me", "me"))
         assertFalse(isEcho("you", "me"))

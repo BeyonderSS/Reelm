@@ -52,7 +52,9 @@ import com.anistream.core.ui.theme.Ink
 import com.anistream.core.ui.theme.Radius
 import com.anistream.core.ui.theme.Space
 import com.anistream.feature.party.PartyOverlay
-import com.anistream.feature.party.WatchTogetherSection
+import com.anistream.feature.party.PartyButton
+import com.anistream.feature.party.PartyCouch
+import com.anistream.feature.party.PartyFaces
 import com.anistream.feature.party.mediaPayload
 
 /**
@@ -104,8 +106,10 @@ fun MediaPlayerScreen(
             tweaks = tweaks,
             pip = pip,
             skips = ui.skips,
-            topAction = request?.takeIf { !it.isLive && it.historyKey != null }?.let { r -> {
-                com.anistream.core.account.ui.PlayOnTvButton(
+            overlay = if (request?.isLive != false) null else { controls, fit -> if (fullscreen) PartyFaces(viewModel.player, controls, fit) },
+            topAction = request?.takeIf { !it.isLive }?.let { r -> {
+                PartyButton()
+                if (r.historyKey != null) com.anistream.core.account.ui.PlayOnTvButton(
                     item = { com.anistream.domain.model.WatchHistory(r.historyKey ?: "", r.title, posterUrl = r.posterUrl, totalEpisodes = r.seasonEpisodeCount, lastEpisodeWatched = r.episode, watchProgress = viewModel.player.progressFraction(), kind = "media", season = r.season, mediaId = r.mediaId, subtitle = r.subtitle, durationMs = viewModel.player.duration.coerceAtLeast(0)) },
                     positionMs = { viewModel.player.currentPosition }, source = { ui.stream?.label() }, onSent = viewModel.player::pause,
                     onPlayHere = { viewModel.player.seekTo(it); viewModel.player.play() }
@@ -136,6 +140,7 @@ fun MediaPlayerScreen(
                 Box(Modifier.background(Color.Black).statusBarsPadding()) {
                     video(Modifier.fillMaxWidth().aspectRatio(16f / 9f))
                 }
+                if (!ui.isLive) PartyCouch(viewModel.player)
                 Column(
                     Modifier
                         .weight(1f)
@@ -191,7 +196,10 @@ fun MediaPlayerScreen(
             }
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
-        PartyOverlay(viewModel.player, Modifier.align(Alignment.TopEnd), payload = request?.takeIf { !ui.isLive }?.let(::mediaPayload))
+        PartyOverlay(
+            viewModel.player, Modifier.align(Alignment.TopEnd), payload = request?.takeIf { !ui.isLive }?.let(::mediaPayload),
+            source = ui.stream?.takeIf { !ui.isLive && !ui.isLoading }?.let(::partySource)
+        )
     }
 
     if (showSettings && request != null) {
@@ -220,7 +228,6 @@ fun MediaPlayerScreen(
                     subs.forEach { o -> SheetOption(o.label, selected = o.selected) { selectText(viewModel.player, o) } }
                 }
                 PlayerTweaksSection(viewModel.player, tweaks, live = ui.isLive, autoSkipToggle = !ui.isLive)
-                if (!ui.isLive) WatchTogetherSection(mediaPayload(request))
             }
         }
     }

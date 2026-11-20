@@ -1,6 +1,7 @@
 package com.anistream.feature.party
 
-import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -18,8 +20,12 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -29,91 +35,106 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.Player
-import com.anistream.core.ui.components.PrimaryButton
-import com.anistream.core.ui.components.SecondaryButton
 import com.anistream.core.ui.theme.Accent
 import com.anistream.core.ui.theme.AppType
 import com.anistream.core.ui.theme.Bg
+import com.anistream.core.ui.theme.DisplayHeavy
 import com.anistream.core.ui.theme.Ink
 import com.anistream.core.ui.theme.Radius
 import com.anistream.core.ui.theme.Space
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 
 const val GUEST = "Guest"
+const val DIFFERENT_COPY = "Playing a different copy — scenes may be off by a few minutes"
 
 /**
- * Keeps this player in step with the room while [client] has one. Local play/pause/seek go out;
- * incoming events apply `position + (serverNow - at)` unless they are our own echo or within [DRIFT_MS].
+ * Keeps this player in step with the room while [client] has one. Local play/pause/seek go out unless [EchoGuard]
+ * holds them; incoming events apply `position + (serverNow - at)` once the player is ready, unless within [DRIFT_MS].
  */
 private class Sync(val player: Player, val client: PartyClient, host: Boolean) : Player.Listener {
-    private var muteUntil = 0L
+    private val guard = EchoGuard(SystemClock::elapsedRealtime, host)
     private var pendingInitial = !host
+    private val main = Handler(Looper.getMainLooper())
 
     init {
         if (host) send(if (player.playWhenReady) "play" else "pause")
         else if (player.playbackState == Player.STATE_READY) initial()
     }
 
-    private fun muted() = SystemClock.elapsedRealtime() < muteUntil
-    private fun send(type: String) = client.send(type, player.currentPosition)
+    private fun send(type: String) { if (guard.mayBroadcast()) client.send(type, player.currentPosition) }
 
     fun apply(e: PartyEvent) {
+        if (pendingInitial) return // the room's latest state waits in room.last until the player is ready
+        main.removeCallbacksAndMessages(null)
         val playing = when (e.type) { "play" -> true; "pause" -> false; else -> player.playWhenReady }
-        val target = targetPosition(e.position, e.at, client.serverNow(), playing)
-        // the player echoes our own changes back through the listener; skip those briefly
-        muteUntil = SystemClock.elapsedRealtime() + 400
+        val now = client.serverNow()
+        val target = targetPosition(e.position, e.at, now, playing)
+        guard.applying()
         if (shouldSeek(player.currentPosition, target)) player.seekTo(target)
-        player.playWhenReady = playing
+        if (playing && e.at > now) {
+            // "Lights down": hold at the frame, start when the 3-2-1 ends
+            player.playWhenReady = false
+            main.postDelayed({ guard.applying(); player.playWhenReady = true }, e.at - now)
+        } else {
+            player.playWhenReady = playing
+        }
     }
 
     private fun initial() {
         pendingInitial = false
         client.room.value?.last?.let(::apply)
+        guard.joined()
     }
+
+    fun release() = main.removeCallbacksAndMessages(null)
 
     override fun onPlaybackStateChanged(state: Int) {
         if (state == Player.STATE_READY && pendingInitial) initial()
     }
 
     override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-        if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST && !muted()) send(if (playWhenReady) "play" else "pause")
+        if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) send(if (playWhenReady) "play" else "pause")
     }
 
     override fun onPositionDiscontinuity(old: Player.PositionInfo, new: Player.PositionInfo, reason: Int) {
-        if (reason == Player.DISCONTINUITY_REASON_SEEK && !muted()) client.send("seek", new.positionMs)
+        if (reason == Player.DISCONTINUITY_REASON_SEEK && guard.mayBroadcast()) client.send("seek", new.positionMs)
     }
 }
 
 /**
- * Drop into the player's root Box: syncs [player] with the current party (nothing when there is none)
- * and draws the member avatar strip at the top end.
+ * Drop into the player's root Box: syncs [player] with the current party (nothing when there is none).
+ * Phone: hosts the party sheet, ducks the film while people talk, and shows the notes, the 3-2-1 and the shared
+ * heart; reports [source] (the copy playing) or warns when it differs from the room's. TV: the member avatar strip.
  */
 @Composable
-fun PartyOverlay(player: Player, modifier: Modifier = Modifier, payload: JsonObject? = null, vm: PartyViewModel = hiltViewModel()) {
+fun PartyOverlay(player: Player, modifier: Modifier = Modifier, payload: JsonObject? = null, source: JsonObject? = null, vm: PartyViewModel = hiltViewModel()) {
     val room by vm.client.room.collectAsStateWithLifecycle()
+    val rtc = vm.rtc
+    if (vm.sheet && payload != null && rtc != null) PartySheet(payload, vm, rtc)
     val r = room ?: return
     val sync = remember(player) { Sync(player, vm.client, r.host) }
     DisposableEffect(sync) {
         player.addListener(sync)
         onDispose {
             player.removeListener(sync)
-            // leaving the player leaves the party, unless a `load` is swapping this screen for the next one
+            sync.release()
+            player.volume = 1f
+            // leaving the player leaves the party (and stops camera and mic), unless a `load` is swapping this screen for the next one
             if (vm.client.switching) vm.client.switching = false else vm.client.leave()
         }
     }
@@ -127,14 +148,52 @@ fun PartyOverlay(player: Player, modifier: Modifier = Modifier, payload: JsonObj
     LaunchedEffect(sync) {
         vm.client.events.collect { if (!isEcho(it.by, vm.client.selfId)) sync.apply(it) }
     }
-    Row(
-        modifier.statusBarsPadding().padding(Space.md),
-        horizontalArrangement = Arrangement.spacedBy((-6).dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        r.members.take(6).forEach { Avatar(it) }
-        if (r.members.size > 6) Text("+${r.members.size - 6}", style = AppType.caption, modifier = Modifier.padding(start = Space.sm + 6.dp))
+    // the first player's copy becomes the room's; anyone on another copy is told scenes may be off
+    LaunchedEffect(source, r.source) {
+        val rs = r.source
+        if (source == null) return@LaunchedEffect
+        if (rs == null) vm.client.reportSource(source) else if (!sameSource(source, rs)) vm.say(DIFFERENT_COPY, 6000)
     }
+    if (rtc == null) {
+        Row(
+            modifier.statusBarsPadding().padding(Space.md),
+            horizontalArrangement = Arrangement.spacedBy((-6).dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            r.members.take(6).forEach { Avatar(it) }
+            if (r.members.size > 6) Text("+${r.members.size - 6}", style = AppType.caption, modifier = Modifier.padding(start = Space.sm + 6.dp))
+        }
+        return
+    }
+    LaunchedEffect(rtc) { rtc.duck.collect { player.volume = it } }
+    Box(Modifier.fillMaxSize()) {
+        vm.note?.let {
+            Text(
+                it, style = AppType.label, maxLines = 2,
+                modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 60.dp, start = Space.lg, end = Space.lg)
+                    .background(Bg.badge, Radius.pill).padding(horizontal = Space.md, vertical = 6.dp)
+            )
+        }
+        r.countdownAt?.let { Countdown(it, vm.client, Modifier.align(Alignment.Center)) }
+        vm.syncHeart?.let { at ->
+            Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("❤️❤️", fontSize = 44.sp)
+                Text("You both tapped at ${clock(at)}", style = AppType.label, modifier = Modifier.background(Bg.badge, Radius.pill).padding(horizontal = Space.md, vertical = 4.dp))
+            }
+        }
+    }
+}
+
+/** 3-2-1 until server time [at], then nothing. */
+@Composable
+private fun Countdown(at: Long, client: PartyClient, modifier: Modifier) {
+    var left by remember(at) { mutableLongStateOf(at - client.serverNow()) }
+    LaunchedEffect(at) { while (left > 0) { delay(100); left = at - client.serverNow() } }
+    if (left > 0) Text(
+        "${((left + 999) / 1000).coerceAtMost(3)}",
+        style = AppType.title.copy(fontFamily = DisplayHeavy, fontSize = 120.sp, lineHeight = 120.sp, color = Accent.main),
+        modifier = modifier
+    )
 }
 
 @Composable
@@ -145,37 +204,13 @@ private fun Avatar(m: Member) {
     ) { Text(m.name.take(1).uppercase(), style = AppType.label) }
 }
 
-/** Phone player sheet: "Watch together" (create a room, show the code, share it) or the live room with Leave. */
+/** Player top bar: opens the party sheet (start a party, or the live one). Amber while in a room. */
 @Composable
-fun WatchTogetherSection(payload: JsonObject, vm: PartyViewModel = hiltViewModel()) {
-    if (!vm.client.enabled) return
+fun PartyButton(vm: PartyViewModel = hiltViewModel()) {
+    if (!vm.client.enabled || vm.rtc == null) return
     val room by vm.client.room.collectAsStateWithLifecycle()
-    val scope = rememberCoroutineScope()
-    val context = LocalContext.current
-    var busy by remember { mutableStateOf(false) }
-    var failed by remember { mutableStateOf(false) }
-    Spacer(Modifier.height(Space.xl))
-    Text("Watch together", style = AppType.heading)
-    Spacer(Modifier.height(Space.sm))
-    val r = room
-    if (r == null) {
-        PrimaryButton(if (busy) "Creating room…" else "Start a party", enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
-            busy = true; failed = false
-            scope.launch { failed = vm.create(payload) == null; busy = false }
-        })
-        if (failed) Text("Couldn't create a room", style = AppType.caption.copy(color = Accent.danger), modifier = Modifier.padding(top = Space.sm))
-    } else {
-        Text(r.code, style = AppType.heading.copy(letterSpacing = 6.sp), textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
-        Text("${r.members.size} watching. Friends enter this code under Join party.", style = AppType.caption, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
-        Spacer(Modifier.height(Space.md))
-        Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
-            PrimaryButton("Share", modifier = Modifier.weight(1f), onClick = {
-                val send = Intent(Intent.ACTION_SEND).setType("text/plain")
-                    .putExtra(Intent.EXTRA_TEXT, "Watch ${(payload["title"] as? JsonPrimitive)?.content ?: "with me"} on Reelm. Join party code: ${r.code}")
-                context.startActivity(Intent.createChooser(send, "Share party code").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            })
-            SecondaryButton("Leave", modifier = Modifier.weight(1f), onClick = vm.client::leave)
-        }
+    IconButton(onClick = { vm.sheet = true }) {
+        Icon(Icons.Rounded.Groups, contentDescription = "Watch together", tint = if (room != null) Accent.main else Ink.high)
     }
 }
 

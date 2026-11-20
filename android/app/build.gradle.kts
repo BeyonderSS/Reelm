@@ -58,6 +58,8 @@ android {
             dimension = "device"
             minSdk = 26 // phone keeps API 26+; only tv drops to 22 (Fire TV Stick 2nd gen, Fire OS 5)
             isDefault = true
+            // libwebrtc (watch-party video) is ~12 MB per ABI: no 32-bit x86 phones exist; x86_64 stays for the emulator
+            ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
         }
         create("tv") {
             dimension = "device"
@@ -76,6 +78,9 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    // native libs compressed in the APK (smaller download over slow lines; the TV build at minSdk 22 already does this)
+    packaging { jniLibs { useLegacyPackaging = true } }
 
     buildFeatures {
         compose = true
@@ -107,6 +112,8 @@ dependencies {
     implementation(project(":feature:livetv"))
     implementation(project(":feature:admin"))
     "tvImplementation"(project(":feature:tv"))
+    "phoneImplementation"(libs.webrtc) // watch-party video and voice (feature/party PartyRtc); kept out of the TV APK
+    "phoneImplementation"(libs.webrtc.ui)
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
