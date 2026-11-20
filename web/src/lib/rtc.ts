@@ -116,7 +116,9 @@ export class Call {
       const tr = this.pc.getTransceivers().find((t) => t.mid === mid);
       if (s && tr) s.removeTrack(tr.receiver.track);
       if (s && !s.getTracks().length) this.streams.delete(w.member);
-      tr?.stop(); this.mids.delete(mid); this.keys.delete(w.key);
+      // not tr.stop(): stopping the m-line that carries the bundled transport kills the connection for every later push and pull
+      // (Realtime then answers 410 Gone); Realtime stops sending on its side, the idle receiver costs nothing
+      this.mids.delete(mid); this.keys.delete(w.key);
     }
     this.onChange();
     await this.api(`/sessions/${await this.id}/tracks/close`, "PUT", { tracks: mids.map((mid) => ({ mid })), force: true });
