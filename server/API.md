@@ -61,7 +61,7 @@ Hello on connect: `{type:"hello", deviceId, deviceName, kind:"phone"|"tv"}` → 
 ## Watch together (Durable Object `Room`, keyed by room code; no account needed)
 - `POST /v1/rooms` `{payload}` → `{code}` (6 chars, A–Z/2–9). `payload` = what to play (same opaque shape as history).
 - `GET  /v1/rooms/:code` WebSocket. Client sends `{type:"join", name, avatar, device?:"phone"|"web"|"tv", cam?, mic?}`; server replies
-  `{type:"state", you, payload, playing, position, at, source?, mode:"friends"|"date", countdownAt?, members:[{id, name, avatar, device, cam, mic, rtc?}]}`
+  `{type:"state", you, payload, playing, position, at, source?, mode:"friends"|"date", countdownAt?, now (server ms), members:[{id, name, avatar, device, cam, mic, rtc?}]}`
   (`device` defaults to `"phone"`, `cam`/`mic` to false). Everyone else gets `{type:"members", members}` on every join/leave.
 - Every `position` is integer **ms**: the server stores and broadcasts `Math.round(Number(position))` and drops non-finite ones.
 - Any member sends `{type:"play"|"pause"|"seek", position}`; server stamps `at` (server ms) and broadcasts

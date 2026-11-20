@@ -59,14 +59,14 @@ describe("watch party room", () => {
 
   it("lets four members publish video, the fifth gets rtc_full and stays voice-only", async () => {
     const { open } = await room();
-    const ms = [];
+    const ms: any[] = [];
     for (let i = 0; i < 5; i++) ms.push(await open(`m${i}`));
     const tracks = (i: number) => [{ trackName: `a${i}`, kind: "audio" }, { trackName: `v${i}`, kind: "video" }];
     for (let i = 0; i < 4; i++) { ms[i].send({ type: "rtc", sessionId: `s${i}`, tracks: tracks(i) }); await ms[4].wait("rtc", i + 1); }
     ms[4].send({ type: "rtc", sessionId: "s4", tracks: tracks(4) });
     await ms[4].wait("rtc_full");
     expect(await ms[0].wait("rtc", 5)).toEqual({ type: "rtc", from: ms[4].id, sessionId: "s4", tracks: [{ trackName: "a4", kind: "audio" }] });
-    expect(ms[0].msgs.some((m) => m.type === "rtc_full")).toBe(false);
+    expect(ms[0].msgs.some((m: any) => m.type === "rtc_full")).toBe(false);
     // one stops: the fifth can now publish video
     ms[0].send({ type: "rtc", sessionId: null });
     expect(await ms[4].wait("rtc", 6)).toMatchObject({ from: ms[0].id, sessionId: null, tracks: [] });

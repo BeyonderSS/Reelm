@@ -1320,7 +1320,7 @@ export class Room extends DurableObject<Env> {
         device: ["phone", "web", "tv"].includes(m.device) ? m.device : "phone", cam: m.cam === true, mic: m.mic === true } satisfies Member);
       const st = await s.get(["payload", "playing", "position", "at", "source", "mode", "countdownAt"]);
       send(ws, { type: "state", you: id, payload: st.get("payload"), playing: st.get("playing"), position: st.get("position"), at: st.get("at"),
-        source: st.get("source"), mode: st.get("mode") ?? "friends", countdownAt: st.get("countdownAt"), members: this.members() });
+        source: st.get("source"), mode: st.get("mode") ?? "friends", countdownAt: st.get("countdownAt"), now: now(), members: this.members() });
       this.broadcast({ type: "members", members: this.members() }, ws);
       this.mirror(this.members());
       return;
@@ -1380,8 +1380,11 @@ export class Room extends DurableObject<Env> {
       return;
     }
     if (m.type === "lights") { // 3-2-1 then everyone starts at countdownAt (server clock)
-      const countdownAt = now() + 3500, position = (await s.get<number>("position")) ?? 0;
-      await s.put({ playing: true, at: countdownAt, countdownAt });
+      const st = await s.get(["position", "playing", "at"]), base = (st.get("position") as number) ?? 0;
+      // a playing room has moved on since its last event; start from where it is now
+      const position = st.get("playing") ? base + Math.max(0, now() - ((st.get("at") as number) ?? now())) : base;
+      const countdownAt = now() + 3500;
+      await s.put({ playing: true, position, at: countdownAt, countdownAt });
       return this.broadcast({ type: "lights", countdownAt, position });
     }
     const position = toMs(m.position);
