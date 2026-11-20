@@ -23,9 +23,15 @@ fun shouldSeek(local: Long, target: Long) = abs(local - target) >= DRIFT_MS
 /** Own broadcast coming back; [self] is null when the server never told us our id. */
 fun isEcho(by: String, self: String?) = self != null && by == self
 
-/** Same title, season and episode: the identity of what is playing, ignoring art and other display fields. */
-fun samePayload(a: JsonObject?, b: JsonObject?): Boolean =
-    a != null && b != null && listOf("kind", "slug", "mediaId", "season", "episode").all { a[it] == b[it] }
+/** Same title, season and episode: the identity of what is playing, ignoring art and other display fields.
+ *  Only the id that names the title counts (mediaId, or slug for anime): the web's payload also carries a movie slug. */
+fun samePayload(a: JsonObject?, b: JsonObject?): Boolean {
+    if (a == null || b == null) return false
+    fun s(o: JsonObject, k: String) = (o[k] as? JsonPrimitive)?.contentOrNull
+    fun n(o: JsonObject, k: String) = (o[k] as? JsonPrimitive)?.doubleOrNull?.toInt() ?: 0
+    val id = if (s(a, "kind") == "anime") "slug" else "mediaId"
+    return s(a, "kind") == s(b, "kind") && s(a, id) != null && s(a, id) == s(b, id) && n(a, "season") == n(b, "season") && n(a, "episode") == n(b, "episode")
+}
 
 /** Room positions are integer ms; old web clients sent float seconds, so decimals are rounded, never dropped. */
 fun ms(el: JsonElement?): Long? = (el as? JsonPrimitive)?.doubleOrNull?.takeIf { it.isFinite() }?.roundToLong()

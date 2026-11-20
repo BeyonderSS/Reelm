@@ -1,7 +1,9 @@
 package com.anistream.feature.party
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -161,5 +163,13 @@ class PartyTest {
         assertTrue(isEcho("me", "me"))
         assertFalse(isEcho("you", "me"))
         assertFalse(isEcho("me", null))
+    }
+
+    @Test fun webPayloadIsTheSameTitle() {
+        val phone = buildJsonObject { put("kind", "media"); put("historyKey", null as String?); put("mediaId", "mb:9"); put("season", 0); put("episode", 0) }
+        val web = buildJsonObject { put("kind", "media"); put("id", "mb:9"); put("slug", "movie:mb:9"); put("mediaId", "mb:9"); put("season", 0); put("episode", 0) }
+        assertTrue(samePayload(phone, web)) // the web's extra slug must not read as another title (that sent `load` and reset the room)
+        assertFalse(samePayload(phone, buildJsonObject { put("kind", "media"); put("mediaId", "mb:9"); put("season", 1); put("episode", 2) }))
+        assertTrue(samePayload(buildJsonObject { put("kind", "anime"); put("slug", "x"); put("episode", 3) }, buildJsonObject { put("kind", "anime"); put("slug", "x"); put("episode", 3.0) }))
     }
 }
