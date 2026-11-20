@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -274,7 +275,7 @@ private fun BoxScope.DateNight(partner: Member, self: Member?, player: Player, v
                 )
             }
     ) {
-        Box(Modifier.matchParentSize().padding((-6).dp).border(2.dp, Accent.main.copy(alpha = 0.7f), Radius.round))
+        Box(Modifier.align(Alignment.Center).requiredSize(152.dp).border(2.dp, Accent.main.copy(alpha = 0.7f), Radius.round))
         Face(partner, vm, rtc, Modifier.matchParentSize(), Radius.round, ring = false)
         Text(
             partner.name, style = AppType.label.copy(fontSize = 12.sp, color = Accent.on), maxLines = 1,
