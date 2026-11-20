@@ -13,7 +13,7 @@ import { SeekPreview } from "@/components/seek-preview";
 import { hereFor, PlayOnTv, RemotePanel } from "@/components/play-on-tv";
 import { setRemoteHere, useHub, type Now } from "@/lib/hub";
 import { frac } from "@/lib/eps";
-import { get, getHistory, epKey, mirrorTitle, playKey, proxied, reelm, saveProgress, syncHistory, toPlay, unmirror, WS, type Play as P } from "@/lib/core";
+import { get, getHistory, epKey, mirrorTitle, playKey, proxied, reelm, saveProgress, syncHistory, toPlay, unmirror, wire, WS, type Play as P } from "@/lib/core";
 import { track } from "@/lib/telemetry";
 import { helperMirror, helperVega, helperVersion, mirrorOf, mirrorSource } from "@/lib/bridge";
 import { bitrate, dv, getBandwidth, getPin, pickStream, risky, saveBandwidth, setPin } from "@/lib/pick-stream";
@@ -494,6 +494,8 @@ function Player() {
           // the room is ours alone (we just started it): our player is the truth, so tell the room instead of taking its state
           g.current.ready = true; g.current.joined = 0;
           if (v && v.readyState >= 1) sendRoom({ type: v.paused ? "pause" : "play", position: toMs(v.currentTime) });
+          // already playing: no `playing` event will come to name our copy, so name it now
+          if (v && !v.paused && src) { roomSrc.current = describe(src); setRoomCopy(roomSrc.current); sendRoom({ type: "source", source: roomSrc.current }); }
         } else { roomNow.current = st; syncTo(); }
         beginRef.current();
       } else if (m.type === "load") {
@@ -525,7 +527,7 @@ function Player() {
   }, [room, srcKey, roomCopy, sources.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const startRoom = async () => {
     setRoomErr("");
-    try { const { code } = await reelm("/v1/rooms", { json: { payload: p } }); router.replace(href(p!, `&room=${code}`)); }
+    try { const { code } = await reelm("/v1/rooms", { json: { payload: wire(p!, 0, 0) } }); /* the apps read the wire shape (kind "media", mediaId) */ router.replace(href(p!, `&room=${code}`)); }
     catch (e) { setRoomErr((e as Error).message); }
   };
   const leave = () => { setPanel(null); router.replace(href(p!, `&t=${Math.round(pos())}`)); };
@@ -569,7 +571,7 @@ function Player() {
     const t = setTimeout(() => import("@/lib/movies").then((m) => m.prefetchStream(next!)), 1000);
     return () => clearTimeout(t);
   }, [nearEnd, next && epKey(next)]); // eslint-disable-line react-hooks/exhaustive-deps
-  const go = (np: P) => { save(); if (room) sendRoom({ type: "load", payload: np, position: 0 }); router.replace(href(np, extra)); };
+  const go = (np: P) => { save(); if (room) sendRoom({ type: "load", payload: wire(np, 0, 0), position: 0 }); router.replace(href(np, extra)); };
   
   // a skip inside its interval; credits that run to the end are only worth a button when a next episode follows (the card below)
   const skip = dur > 0 ? skips.find((k) => cur >= k.s && cur < Math.min(k.e, dur) - 1 && (k.type !== "ed" || k.e < dur - 1 || !!next)) : undefined;
