@@ -341,7 +341,7 @@ class PartyRtc @Inject constructor(
         }
         // faces: each member's pulled video track
         val faces = pulled.filterKeys { it in live }.values.filter { it.second == "video" }.mapNotNull { (id, _, mid) ->
-            (pc?.transceivers?.firstOrNull { it.mid == mid }?.receiver?.track() as? VideoTrack)?.let { id to it }
+            remoteVideo[mid]?.let { id to it }
         }.toMap()
         val own = camera?.let { mapOf(me.orEmpty() to it.track) }.orEmpty()
         videos.value = faces + own
@@ -395,7 +395,7 @@ class PartyRtc @Inject constructor(
         audio?.let { (s, t) -> t.dispose(); s.dispose() }
         audio = null
         pc?.dispose()
-        pc = null; session = null; ice = null; audioT = null; videoT = null; whispering = false
+        pc = null; session = null; ice = null; audioT = null; videoT = null; whispering = false; remoteVideo.clear()
         pulled.clear()
         if (cam.value || mic.value) voiceMode(false)
         cam.value = false; mic.value = false
@@ -414,8 +414,14 @@ class PartyRtc @Inject constructor(
         override fun onRemoveStream(s: MediaStream) {}
         override fun onDataChannel(d: DataChannel) {}
         override fun onRenegotiationNeeded() {}
+        // Faces come from here, never from pc.transceivers: getTransceivers() disposes every transceiver, sender, receiver and
+        // track it returned before (ours from addTransceiver too), pulling them out from under the senders and the views.
+        override fun onTrack(t: RtpTransceiver) { (t.receiver.track() as? VideoTrack)?.let { v -> t.mid?.let { remoteVideo[it] = v } } }
     }
 }
+
+/** pulled video tracks by mid, filled by [PartyRtc]'s observer (one party at a time) */
+private val remoteVideo = java.util.concurrent.ConcurrentHashMap<String, VideoTrack>()
 
 /** createOffer ([offer]) / createAnswer as a suspend call. */
 private suspend fun PeerConnection.create(offer: Boolean): SessionDescription = suspendCancellableCoroutine { c ->
