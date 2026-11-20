@@ -44,6 +44,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.horizontalDrag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -132,7 +133,9 @@ import com.anistream.core.ui.theme.Radius
 import com.anistream.core.ui.theme.Space
 import com.anistream.feature.party.PartyOverlay
 import com.anistream.feature.party.animePayload
-import com.anistream.feature.party.WatchTogetherSection
+import com.anistream.feature.party.PartyButton
+import com.anistream.feature.party.PartyCouch
+import com.anistream.feature.party.PartyFaces
 import com.anistream.feature.party.animePayload
 import kotlinx.coroutines.delay
 import com.anistream.domain.model.SkipInterval
@@ -173,7 +176,9 @@ fun PlayerScreen(
             tweaks = tweaks,
             pip = pip,
             skips = ui.skips,
+            overlay = { controls, fit -> if (fullscreen) PartyFaces(viewModel.player, controls, fit) },
             topAction = {
+                PartyButton()
                 com.anistream.core.account.ui.PlayOnTvButton(
                     item = { com.anistream.domain.model.WatchHistory(ui.animeSlug, ui.animeTitle, posterUrl = ui.posterUrl, lastEpisodeWatched = ui.episodeNumber, watchProgress = viewModel.player.progressFraction(), durationMs = viewModel.player.duration.coerceAtLeast(0)) },
                     positionMs = { viewModel.player.currentPosition }, onSent = viewModel.player::pause,
@@ -202,6 +207,7 @@ fun PlayerScreen(
                 Box(Modifier.background(Color.Black).statusBarsPadding()) {
                     video(Modifier.fillMaxWidth().aspectRatio(16f / 9f))
                 }
+                PartyCouch(viewModel.player)
                 PortraitDetails(
                     ui = ui,
                     onLanguage = viewModel::setLanguage,
@@ -234,7 +240,6 @@ fun PlayerScreen(
                 Spacer(Modifier.height(Space.md))
                 SubDubToggle(ui.language, viewModel::setLanguage)
                 PlayerTweaksSection(viewModel.player, tweaks, live = false, autoSkipToggle = true)
-                WatchTogetherSection(animePayload(ui.animeSlug, ui.animeTitle, ui.episodeNumber, ui.posterUrl))
             }
         }
     }
@@ -339,7 +344,9 @@ internal fun VideoPlayer(
     creditsNext: (@Composable (onCancel: () -> Unit) -> Unit)? = null,
     endOverlay: (@Composable () -> Unit)? = null,
     /** top-bar action left of Lock: "Play on TV" */
-    topAction: (@Composable () -> Unit)? = null
+    topAction: (@Composable () -> Unit)? = null,
+    /** drawn over the video (not in picture-in-picture): watch-party faces; args = controls showing, picture fits (black bars) */
+    overlay: (@Composable BoxScope.(controls: Boolean, fit: Boolean) -> Unit)? = null
 ) {
     var controlsVisible by remember { mutableStateOf(true) }
     var isPlaying by remember { mutableStateOf(player.isPlaying) }
@@ -743,6 +750,8 @@ internal fun VideoPlayer(
                 }
             }
         }
+
+        if (overlay != null && !pip && !locked) overlay(controlsVisible, tweaks.resize == Resize.FIT)
 
         if (endOverlay != null && !pip) {
             Box(

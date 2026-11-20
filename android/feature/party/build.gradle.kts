@@ -62,6 +62,10 @@ dependencies {
     implementation(libs.coroutines.android)
     api(libs.kotlinx.serialization.json) // payloads are JsonObject in the public API
     implementation(libs.media3.exoplayer)
+    implementation(libs.activity.compose) // camera/mic permission requests
+    // video and voice: only the phone flavor packages libwebrtc (app "phoneImplementation"); TV checks rtcAvailable
+    compileOnly(libs.webrtc)
+    compileOnly(libs.webrtc.ui)
 
     testImplementation(libs.junit)
 }

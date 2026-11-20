@@ -41,6 +41,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
@@ -116,6 +117,10 @@ internal fun MediaStream.detailLabel(): String = (listOfNotNull(
 /** "MovieBox · 1080p · HEVC · 2.1 GB" */
 internal fun MediaStream.label(): String = listOf(sourceName, detailLabel()).filter { it.isNotBlank() }.joinToString(" · ")
 
+/** This stream as a watch-party `source` descriptor: joiners try the same copy first (cuts differ between copies). */
+fun partySource(s: MediaStream) =
+    com.anistream.feature.party.sourceOf(SourceRank.provider(s), s.qualityLabel, android.net.Uri.parse(s.url).host, s.label())
+
 private fun formatBytes(bytes: Long): String {
     val mb = bytes / 1_048_576.0
     return if (mb >= 1024) String.format(Locale.US, "%.1f GB", mb / 1024) else "${mb.toLong()} MB"
@@ -164,7 +169,8 @@ class MediaPlayerViewModel @Inject constructor(
     private val history: WatchHistoryRepository,
     private val sync: com.anistream.core.account.HistorySync,
     private val downloads: DownloadRepository,
-    private val skipTimes: com.anistream.domain.repository.MediaSkipTimesRepository
+    private val skipTimes: com.anistream.domain.repository.MediaSkipTimesRepository,
+    private val party: com.anistream.feature.party.PartyClient
 ) : ViewModel() {
 
     private val lowEnd = LowEnd.isOn(context)
@@ -187,6 +193,9 @@ class MediaPlayerViewModel @Inject constructor(
         stepTo = 0
         if (r.isLive || r.streams.size < 2) { choose(r, r.streams[0].height); return 0 }
         com.anistream.core.account.HandoffHint.pickSource(r.streams.map { it.label() })?.let { choose(r, r.streams[it].height); return it } // Play on TV: the phone's source
+        // watch party: the copy the room plays first (if it fails, the usual fallback runs and the overlay says it's a different copy)
+        party.room.value?.takeIf { com.anistream.feature.party.samePayload(it.payload, com.anistream.feature.party.mediaPayload(r)) }?.source
+            ?.let { com.anistream.feature.party.matchSource(it, r.streams.map(::partySource)) }?.let { choose(r, r.streams[it].height); return it }
         val pin = QualityPick.pinned(appContext, pinKey(r))
         val want = autoHeight(r, pin)
         // 4K starts slowly (and some never do): start at 1080p and step up in the background (see stepUp)
@@ -393,6 +402,9 @@ class MediaPlayerViewModel @Inject constructor(
                 recordStart(request)
                 withTimeoutOrNull(ORIGIN_WAIT_MS) { detail?.await() } // dub-safe pick knows the title's country (usually cached by the detail page)
                 android.util.Log.d("Player", "sources: ${request.streams.size} ${request.streams.groupingBy { "${SourceRank.provider(it)}:${it.height}" }.eachCount()}")
+                // watch party joiner: give the first player up to 15 s to tell the room which copy it plays (web does the same)
+                party.room.value?.takeIf { it.source == null && it.members.size > 1 && com.anistream.feature.party.samePayload(it.payload, com.anistream.feature.party.mediaPayload(request)) }
+                    ?.let { withTimeoutOrNull(15_000) { party.room.first { r -> r?.source != null || r == null } } }
                 val first = pick(request)
                 play(first, null)
                 // a mirror title: say where it plays from (its mirror, or the source that stood in for it)
