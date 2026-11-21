@@ -13,7 +13,7 @@ import { SeekPreview } from "@/components/seek-preview";
 import { hereFor, PlayOnTv, RemotePanel } from "@/components/play-on-tv";
 import { setRemoteHere, useHub, type Now } from "@/lib/hub";
 import { frac } from "@/lib/eps";
-import { get, getHistory, epKey, mirrorTitle, playKey, proxied, reelm, saveProgress, syncHistory, toPlay, unmirror, wire, WS, type Play as P } from "@/lib/core";
+import { get, getHistory, epKey, loadSession, roomWire, mirrorTitle, playKey, proxied, reelm, saveProgress, syncHistory, toPlay, unmirror, WS, type Play as P } from "@/lib/core";
 import { track } from "@/lib/telemetry";
 import { helperMirror, helperVega, helperVersion, mirrorOf, mirrorSource } from "@/lib/bridge";
 import { bitrate, dv, getBandwidth, getPin, pickStream, risky, saveBandwidth, setPin } from "@/lib/pick-stream";
@@ -22,7 +22,7 @@ import { useApi, useSession } from "@/lib/session";
 import { languageName, trackLabel, useAudioTracks, useLibavAudio } from "@/lib/use-libav-audio";
 import { iso1, origLangs } from "@/lib/langs";
 import { cn } from "@/lib/utils";
-import { canSend, describe, DRIFT_MS, fromMs, guard, hold, matchSource, nextOffset, ownSeek, roomPos, sameCopy, toMs, clock, type SourceDesc } from "@/lib/party";
+import { canSend, describe, DRIFT_EVERY_MS, DRIFT_MS, driftFix, EVENT_QUIET_MS, fromMs, guard, hold, matchSource, nextOffset, ownSeek, pickCut, roomPos, sameCopy, sameCut, toMs, clock, type SourceDesc } from "@/lib/party";
 import { Countdown, Faces, Marks, TogetherPanel, useParty, Voices } from "@/components/party";
 type Source = { src: string; hls: boolean; label: string; codec?: string; dolby?: boolean; height?: number; langs?: string[] };
 type Sub = { url: string; label: string; lang: string; default?: boolean };
@@ -38,6 +38,18 @@ const pickFor = (all: Source[], lang: string, pin?: number) => {
 };
 const ALL_KEY = "reelm.allSources";
 const SLOW_SWITCH_MS = 6000;
+// watch together: a joiner waits COPY_WAIT_MS for the room's copy, then probes the others' lengths for PROBE_MS (12 s at most)
+const COPY_WAIT_MS = 8000, PROBE_MS = 4000;
+const hevcOk = () => !!document.createElement("video").canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"');
+/** this browser can show the picture: no Dolby Vision, and HEVC (Dramachi ships only HEVC) only where it decodes */
+const decodes = (x: { label: string; codec?: string }) => !dv(x) && (!(/hevc|x265|h\.?265/i.test(x.codec ?? "") || /^Dramachi/.test(x.label)) || hevcOk());
+/** a file's length (ms) from its metadata alone; 0 when it doesn't answer within `ms`.
+ *  ponytail: HLS copies aren't probed (no length before hls.js loads them); fetch + sum EXTINF if they matter */
+const probeMs = (x: Source, ms: number) => x.hls ? Promise.resolve(0) : new Promise<number>((res) => {
+  const v = document.createElement("video"), t = setTimeout(() => done(0), ms);
+  const done = (d: number) => { clearTimeout(t); v.onloadedmetadata = v.onerror = null; v.removeAttribute("src"); v.load(); res(d); };
+  v.preload = "metadata"; v.muted = true; v.onloadedmetadata = () => done(toMs(v.duration)); v.onerror = () => done(0); v.src = x.src;
+});
 // 4K step-up: the 4K copy buffers this far ahead of the picture, and is given up after STEP_UP_MS
 const STEP_LEAD_S = 6, STEP_UP_MS = 30_000;
 /** AniSkip and TheIntroDB (same shape from /api/introdb); no end = the end of the video */
@@ -126,6 +138,7 @@ function Player() {
   const wsRef = useRef<WebSocket | null>(null);
   // watch together: the echo guard, the server clock offset, the room's playhead and copy of the film
   const g = useRef(guard(0)), off = useRef<number | null>(null), youId = useRef("");
+  const nudge = useRef(1), lastEvt = useRef(0), lastCheck = useRef(0); // drift correction: the rate nudge in force, the last room event, the last check
   const roomNow = useRef<{ playing: boolean; position: number; at: number } | null>(null), roomKnown = useRef(false), beginRef = useRef(() => {});
   const roomSrc = useRef<SourceDesc | null>(null), [roomCopy, setRoomCopy] = useState<SourceDesc | null>(null), [lightsAt, setLightsAt] = useState(0), lightsT = useRef(0);
   const [sources, setSources] = useState<Source[]>([]), [si, setSi] = useState(0), [tag, setTag] = useState({ i: -1, pin: 0 });
@@ -203,22 +216,36 @@ function Player() {
       // a mirror title: nothing starts before its mirror answers (its own id, no title matching) or the viewer asks for another source;
       // the usual sources look in parallel meanwhile and stay listed as the fallback
       let held = !!ms, ladderDone = false, copyWait: ReturnType<typeof setTimeout> | undefined, copyGaveUp = false;
+      // the room's copy missing or undecodable here: the best-ranked copy of the same cut (by probed length), -1 none; undefined while probing
+      let cut: number | undefined, probing = false;
       beginRef.current = () => begin();
       const ready = () => acc.some((x) => !risky({ ...x, url: x.src }) && !dv(x));
       const tl = Date.now();
       const begin = () => {
         if (started || !live || !acc.length || held) return;
-        // in a room: wait for its state (it names the copy everyone plays), then for that copy while sources still arrive (up to 15 s)
+        // in a room: wait for its state (it names the copy everyone plays), then for that copy while sources still arrive (up to 8 s);
+        // missing or undecodable here: a copy within ±3 s of its length (same cut), probed for up to 4 s
         if (room && !roomKnown.current) return;
-        const mi = matchSource(acc, roomSrc.current);
-        if (roomSrc.current && mi < 0 && !ladderDone && !copyGaveUp) { copyWait ??= setTimeout(() => { copyGaveUp = true; begin(); }, 15000); return; }
+        const d = roomSrc.current, mi = matchSource(acc, d, decodes), lang = savedLang();
+        if (d && mi < 0) {
+          if (matchSource(acc, d) < 0 && !ladderDone && !copyGaveUp) { copyWait ??= setTimeout(() => { copyGaveUp = true; begin(); }, COPY_WAIT_MS); return; }
+          if (cut === undefined && d.durationMs) {
+            if (!probing) {
+              probing = true;
+              const o = fallbackOrder(acc, { lang, orig: orig.current, height: Infinity, stats: loadStats() }).filter((i) => !acc[i].hls && decodes(acc[i])).slice(0, 6);
+              Promise.all(o.map((i) => probeMs(acc[i], PROBE_MS))).then((ds) => { cut = pickCut(o, ds, d.durationMs); console.debug(`[stream] same cut: ${cut >= 0 ? acc[cut].label : "none"} of ${ds.join(", ")} ms`); begin(); });
+            }
+            return;
+          }
+        }
         started = true; clearTimeout(grace); clearTimeout(copyWait);
-        const pin = getPin(playKey(p)) ?? 0, lang = savedLang(), saver = !!(navigator as any).connection?.saveData;
+        const k = mi >= 0 ? mi : cut ?? -1;
+        const pin = getPin(playKey(p)) ?? 0, saver = !!(navigator as any).connection?.saveData;
         let h = acc[pickFor(acc, lang, pin)].height ?? 0;
         // auto: start 4K titles at 1080p (starts faster) and step up once a 4K copy has buffered in the background; Data Saver stays at 1080p
         armed.current = !pin && !room && !saver;
         if ((armed.current || (!pin && saver)) && h >= 2160 && acc.some((x) => x.height === 1080)) h = 1080;
-        const i = mi >= 0 ? (choose(acc, lang, acc[mi].height ?? 0), mi) : choose(acc, lang, h);
+        const i = k >= 0 ? (choose(acc, lang, acc[k].height ?? 0), k) : choose(acc, lang, h);
         setQsel(pin ? h : 0); setSi(i); setTag({ i, pin: pin && acc[i].height === pin ? pin : 0 });
         console.debug(`[stream] start ${acc[i].label} (of ${acc.length}) after ${Date.now() - tl} ms`);
         if (ms) setToast(provider(acc[i].label) === ms ? `Playing from the ${ms}` : `Playing from ${provider(acc[i].label)} instead of the ${ms}`);
@@ -323,7 +350,7 @@ function Player() {
     return () => clearTimeout(t);
   }, [src]); // eslint-disable-line react-hooks/exhaustive-deps
   const onPlaying = () => {
-    if (room && roomKnown.current && !roomSrc.current && src) { roomSrc.current = describe(src); setRoomCopy(roomSrc.current); sendRoom({ type: "source", source: roomSrc.current }); }
+    if (room && roomKnown.current && !roomSrc.current && src) { roomSrc.current = describe(src, toMs(video.current?.duration ?? 0)); setRoomCopy(roomSrc.current); sendRoom({ type: "source", source: roomSrc.current }); }
     // a slow seek or stall left us behind a playing room: catch up now that frames flow (syncTo only seeks past DRIFT_MS)
     if (room && g.current.ready && roomNow.current?.playing) syncTo();
     setErr(""); // a source that plays (a fallback or a manual pick) clears the last one's error overlay
@@ -346,7 +373,7 @@ function Player() {
   const fail = (m: string) => {
     if (src) { track("play_error", { ...info(), error: m }); recordStat(src.label, { fail: true }); }
     tried.current.add(si); slowLeft.current.delete(si);
-    const hevc = /hevc|h265/i.test(src?.codec ?? "") && !document.createElement("video").canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"');
+    const hevc = /hevc|h265/i.test(src?.codec ?? "") && !hevcOk();
     const nx = next1();
     if (nx === undefined) { exhausted.current = hevc ? "hevc" : m; return more ? setToast("Looking for another source…") : setErr(exhausted.current); } // late sources may still land
     const h = sources[nx].height ?? 0, t = target.current;
@@ -477,13 +504,14 @@ function Player() {
     if (!room) return;
     const ws = new WebSocket(`${WS}/v1/rooms/${room}`);
     wsRef.current = ws; g.current = guard(Date.now()); roomKnown.current = false; roomNow.current = null; roomSrc.current = null; // eslint-disable-line react-hooks/purity -- runs in handlers, not render
-    ws.onopen = () => ws.send(JSON.stringify({ type: "join", name: s.profile?.name ?? "Guest", avatar: s.profile?.avatar ?? "grinning_face", device: "web", cam: false, mic: false }));
+    ws.onopen = () => { const me = loadSession().profile; ws.send(JSON.stringify({ type: "join", name: me?.name ?? "Guest", avatar: me?.avatar ?? "grinning_face", device: "web", cam: false, mic: false })); }; // read now: on a cold load (a link or code) the session hydrates after this effect ran
     ws.onerror = () => setRoomErr("Couldn't join the room. Check the code and try again.");
     ws.onmessage = (ev) => {
       const m = JSON.parse(ev.data), v = video.current, mine = m.by === youId.current;
       // server clock: play/pause/seek/load are stamped as they're sent; `state` carries the last event's stamp (old), so only its `now` if any
       const stamp = m.type === "state" ? m.now : /^(play|pause|seek|load)$/.test(m.type) ? m.at : undefined;
       if (typeof stamp === "number") off.current = nextOffset(off.current, stamp, Date.now());
+      if (/^(state|play|pause|seek|load|lights)$/.test(m.type)) lastEvt.current = Date.now();
       party.onMsg(m);
       if (m.type === "state") {
         youId.current = m.you; roomKnown.current = true;
@@ -495,7 +523,7 @@ function Player() {
           g.current.ready = true; g.current.joined = 0;
           if (v && v.readyState >= 1) sendRoom({ type: v.paused ? "pause" : "play", position: toMs(v.currentTime) });
           // already playing: no `playing` event will come to name our copy, so name it now
-          if (v && !v.paused && src) { roomSrc.current = describe(src); setRoomCopy(roomSrc.current); sendRoom({ type: "source", source: roomSrc.current }); }
+          if (v && !v.paused && src) { roomSrc.current = describe(src, toMs(v.duration)); setRoomCopy(roomSrc.current); sendRoom({ type: "source", source: roomSrc.current }); }
         } else { roomNow.current = st; syncTo(); }
         beginRef.current();
       } else if (m.type === "load") {
@@ -518,16 +546,17 @@ function Player() {
     if (!room || !v || !(type === "seek" ? ownSeek(g.current, now, toMs(v.currentTime)) : canSend(g.current, now))) return;
     sendRoom({ type, position: toMs(v.currentTime) });
   };
-  // a copy other than the room's: move to the room's copy when it's here and hasn't failed, else say the scenes may not line up
+  // a copy other than the room's: move to the room's copy when it's here, decodes here and hasn't failed; else, once our length
+  // is known, say the scenes may not line up unless it's the same cut (within ±3 s of the room's length)
   useEffect(() => {
     if (!room || !src || !roomCopy || sameCopy(src, roomCopy)) return;
-    const i = matchSource(sources, roomCopy);
+    const i = matchSource(sources, roomCopy, decodes), v = video.current;
     if (i >= 0 && !tried.current.has(i)) { tried.current.add(si); setSi(i); }
-    else setToast("Playing a different copy — scenes may be off by a few minutes");
-  }, [room, srcKey, roomCopy, sources.length]); // eslint-disable-line react-hooks/exhaustive-deps
+    else if (v && v.readyState >= 1 && !sameCut(toMs(v.duration), roomCopy.durationMs)) setToast("Playing a different copy — scenes may be off by a few minutes");
+  }, [room, srcKey, roomCopy, sources.length, dur]); // eslint-disable-line react-hooks/exhaustive-deps
   const startRoom = async () => {
     setRoomErr("");
-    try { const { code } = await reelm("/v1/rooms", { json: { payload: wire(p!, 0, 0) } }); /* the apps read the wire shape (kind "media", mediaId) */ router.replace(href(p!, `&room=${code}`)); }
+    try { const { code } = await reelm("/v1/rooms", { json: { payload: roomWire(p!) } }); /* the apps read the wire shape (kind "media", mediaId) */ router.replace(href(p!, `&room=${code}`)); }
     catch (e) { setRoomErr((e as Error).message); }
   };
   const leave = () => { setPanel(null); router.replace(href(p!, `&t=${Math.round(pos())}`)); };
@@ -571,7 +600,7 @@ function Player() {
     const t = setTimeout(() => import("@/lib/movies").then((m) => m.prefetchStream(next!)), 1000);
     return () => clearTimeout(t);
   }, [nearEnd, next && epKey(next)]); // eslint-disable-line react-hooks/exhaustive-deps
-  const go = (np: P) => { save(); if (room) sendRoom({ type: "load", payload: wire(np, 0, 0), position: 0 }); router.replace(href(np, extra)); };
+  const go = (np: P) => { save(); if (room) sendRoom({ type: "load", payload: roomWire(np), position: 0 }); router.replace(href(np, extra)); };
   
   // a skip inside its interval; credits that run to the end are only worth a button when a next episode follows (the card below)
   const skip = dur > 0 ? skips.find((k) => cur >= k.s && cur < Math.min(k.e, dur) - 1 && (k.type !== "ed" || k.e < dur - 1 || !!next)) : undefined;
@@ -592,6 +621,22 @@ function Player() {
   const setPref = (n: Partial<Pref>) => setPrefState((o) => { const v = { ...o, ...n }; try { localStorage.setItem(PREF_KEY, JSON.stringify(v)); } catch {} return v; });
   const [speed, setSpeed] = useState(1);
   useEffect(() => { if (video.current) video.current.playbackRate = speed; }, [speed, src]);
+  // drift correction (spec, Round 2): every 5 s while the room plays, nudge the rate or quietly seek onto its timeline; never broadcast
+  useEffect(() => {
+    if (!room) return;
+    const t = setInterval(() => {
+      const v = video.current, st = roomNow.current, now = Date.now(), sn = serverNow();
+      if (!v || !st?.playing || st.at > sn || v.paused || !g.current.ready) return;
+      if (nudge.current === 1 && now - lastCheck.current < DRIFT_EVERY_MS) return; // while nudging, look every second for "within 0.1 s"
+      lastCheck.current = now;
+      const want = roomPos(st, sn), quiet = v.readyState >= 3 && !v.seeking && now >= g.current.until && now - lastEvt.current >= EVENT_QUIET_MS;
+      const f = driftFix(toMs(v.currentTime) - want, nudge.current, quiet);
+      if (f.seek) { hold(g.current, now, want); v.currentTime = fromMs(want); console.debug(`[party] drift: seek to ${clock(want)}`); }
+      if (f.rate !== nudge.current) console.debug(`[party] drift: rate ${f.rate}`);
+      nudge.current = f.rate; v.playbackRate = speed * f.rate;
+    }, 1000);
+    return () => clearInterval(t);
+  }, [room, speed]);
   useEffect(() => { if (pref.autoSkip && skip && /op|recap/.test(skip.type) && video.current) video.current.currentTime = Math.min(skip.e, dur); }, [skip?.s, pref.autoSkip]); // eslint-disable-line react-hooks/exhaustive-deps
   // subtitles: our pick shows (by label, so hls.js tracks don't shift it), the rest stay off; each cue is placed at the chosen height
   useEffect(() => {
@@ -733,7 +778,7 @@ function Player() {
             </div>
           )}
 
-          <Fade className="absolute inset-x-0 top-0 z-20 flex items-center gap-2 bg-gradient-to-b from-black/80 to-transparent px-3 pt-[max(env(safe-area-inset-top),12px)] pb-10 max-sm:pr-28 md:px-6">
+          <Fade className="absolute inset-x-0 top-0 z-20 flex items-center gap-2 bg-gradient-to-b from-black/80 to-transparent px-3 pt-[max(env(safe-area-inset-top),12px)] pb-10 max-sm:pr-32 md:px-6">
             <Link href={back} aria-label="Back" className={ctl}><ArrowLeft /></Link>
             <div className={cn("min-w-0 flex-1 transition-opacity", showMq && "opacity-0")}>
               <h1 className="truncate font-display text-lg font-semibold md:text-xl">{p?.title ?? "Watch together"}</h1>
@@ -742,12 +787,12 @@ function Player() {
             {p && p.kind !== "live" && <PlayOnTv icon get={toTv} onSent={sentTo} className={ctl} />}
             {next && <button onClick={() => go(next)} className={cn(pill.ghost, "h-10 px-3")}><SkipForward className="size-4" /><span className="hidden sm:inline">Next episode</span></button>}
             {p?.kind !== "live" && (
-              <button onClick={() => setPanel("together")} className={cn(pill.ghost, "h-10 px-4", room && "text-primary")} aria-label="Watch together">
+              <button onClick={() => setPanel("together")} className={cn(pill.ghost, "h-10 px-3 sm:px-4", room && "text-primary")} aria-label="Watch together">
                 <Users className="size-4" /><span className="hidden sm:inline">{room ? `Room ${room}` : "Watch together"}</span>
                 {room && members.length > 0 && <span className="rounded-full bg-primary/20 px-1.5 text-xs">{members.length}</span>}
               </button>
             )}
-            {p && <button onClick={() => setPanel(panel ? null : "watch")} aria-expanded={!!panel} aria-label="Settings: source, subtitles, picture and playback" className={cn(pill.ghost, "h-10 px-4 font-semibold")}>
+            {p && <button onClick={() => setPanel(panel ? null : "watch")} aria-expanded={!!panel} aria-label="Settings: source, subtitles, picture and playback" className={cn(pill.ghost, "h-10 px-3 font-semibold sm:px-4")}>
               <span className="hidden sm:inline">{src?.label.split(" · ").find((t) => /^(\d{3,4}p|auto)$/i.test(t)) ?? "Settings"}</span><Settings2 className="size-4" /></button>}
           </Fade>
 

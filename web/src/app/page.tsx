@@ -83,7 +83,7 @@ function Hero({ slides }: { slides: Slide[] }) {
           <img key={cur.key + "a"} src={art ?? cur.poster} alt="" aria-hidden referrerPolicy="no-referrer"
             className={cn("page-in absolute inset-0 size-full object-cover", !art && "md:scale-110 md:opacity-40 md:blur-2xl")} />
         )}
-        {t?.ytIds.length ? <TrailerSurface key={cur.key} t={t} playing={go} sound={sound} onLive={setLive} onProgress={setProg}
+        {t?.ytIds.length ? <TrailerSurface key={cur.key + "t"} t={t} playing={go} sound={sound} onLive={setLive} onProgress={setProg}
           onEnded={() => { setDone((d) => [...d, cur.key]); setI((x) => (x + 1) % slides.length); }} /> : null}
         <div aria-hidden className="absolute inset-0 bg-[linear-gradient(0deg,rgb(21_23_31/0.96)_8%,rgb(21_23_31/0.4)_46%,transparent_70%)] md:bg-[linear-gradient(90deg,rgb(21_23_31/0.92),rgb(21_23_31/0.4)_45%,transparent_70%),linear-gradient(0deg,rgb(21_23_31/0.85),transparent_40%)]" />
         {live && <SoundButton on={sound} set={setSound} className="absolute top-3 right-3 md:top-5 md:right-5" />}

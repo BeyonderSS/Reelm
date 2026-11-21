@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { canSend, clock, duck0, duckGain, duckStep, fromMs, guard, hold, matchSource, nextOffset, ownSeek, roomPos, sameCopy, toMs } from "./party.ts";
+import { canSend, clock, describe, driftFix, duck0, duckGain, duckStep, fromMs, guard, hold, matchSource, nextOffset, ownSeek, pickCut, roomPos, sameCopy, sameCut, toMs } from "./party.ts";
 
 // positions: integer ms on the wire (the old web sent float seconds: 153.4 meant 153 s to web, 153 ms to the phone)
 assert.equal(toMs(153.4567), 153457); assert.equal(fromMs(153457), 153.457); assert.equal(toMs(NaN), 0);
@@ -44,6 +44,22 @@ assert.equal(matchSource(list, { provider: "Hotstar mirror", quality: "720p", ho
 assert.equal(matchSource(list, { provider: "VegaMovies", quality: "1080p", label: "VegaMovies · VCloud 1080p" }), 0);
 assert.equal(matchSource(list, { provider: "castle", quality: "1080p" }), -1);
 assert.equal(sameCopy(list[0], null), true); assert.equal(sameCopy(list[0], { provider: "castle", quality: "1080p" }), false);
+// same cut, not same file: the room's copy this browser can't decode (HEVC) is skipped; a copy within ±3 s of its length is the same cut
+const hevc = { src: "https://h.io/z.mp4", label: "Dramachi · 540p", codec: "hevc" };
+const d0 = describe(hevc, 8880000);
+assert.equal(d0.durationMs, 8880000); assert.equal(d0.codec, "hevc"); assert.equal(describe(hevc).durationMs, undefined);
+assert.equal(matchSource([...list, hevc], d0), 3);
+assert.equal(matchSource([...list, hevc], d0, (x) => x.codec !== "hevc"), -1, "undecodable exact copy: no match");
+assert.equal(sameCut(8880000, 8882900), true); assert.equal(sameCut(8880000, 8883100), false); assert.equal(sameCut(8880000, undefined), false);
+assert.equal(pickCut([2, 0, 1], [8520000, 8879000, 8881000], 8880000), 0, "the best-ranked copy of the same cut");
+assert.equal(pickCut([2, 0], [8520000, 0], 8880000), -1); assert.equal(pickCut([2], [8880000], undefined), -1, "no room length: no cut match");
+
+// drift correction: nothing while not quiet, a nudge from 0.25 s until within 0.1 s, a quiet seek past 1.5 s
+assert.deepEqual(driftFix(-1000, 1, false), { rate: 1 }, "buffering or just after an event: no correction");
+assert.deepEqual(driftFix(-200, 1, true), { rate: 1 }); assert.deepEqual(driftFix(-300, 1, true), { rate: 1.05 }, "behind: faster");
+assert.deepEqual(driftFix(400, 1, true), { rate: 0.95 }, "ahead: slower"); assert.deepEqual(driftFix(-1500, 1, true), { rate: 1.05 });
+assert.deepEqual(driftFix(-150, 1.05, true), { rate: 1.05 }, "keeps nudging until within 0.1 s"); assert.deepEqual(driftFix(-80, 1.05, true), { rate: 1 });
+assert.deepEqual(driftFix(1600, 1, true), { rate: 1, seek: true }); assert.deepEqual(driftFix(-5000, 0.95, true), { rate: 1, seek: true });
 
 assert.equal(clock(3723000), "1:02:03"); assert.equal(clock(62000), "1:02");
 console.log("party ok");
