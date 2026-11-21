@@ -165,7 +165,9 @@ function Player() {
   const slowLeft = useRef(new Set<number>()), picked = useRef(-1), slowRef = useRef<() => void>(() => {});
   /** best-ranked source of height `h` (fallbacks start over from there) */
   const orig = useRef<string[]>([]); // the title's original languages (dub-safe picking), from its detail's country
-  const resuming = () => t0 > 30 || f0 > 0 || keep.current > 30 || (!!p && (getHistory(pid)[playKey(p)]?.position ?? 0) > 30);
+  // a room joiner lands on the room's playhead, so it resumes too (a copy that can't skip ahead would start everyone from 0)
+  const resuming = () => t0 > 30 || f0 > 0 || keep.current > 30 || (!!p && (getHistory(pid)[playKey(p)]?.position ?? 0) > 30)
+    || (!!roomNow.current && roomPos(roomNow.current, Date.now() + (off.current ?? 0)) > 30_000); // eslint-disable-line react-hooks/purity -- runs in handlers, not render
   const choose = (list: Source[], lang: string, h: number) => { target.current = h; tried.current = new Set(); slowLeft.current = new Set(); exhausted.current = ""; setNote(""); return fallbackOrder(list, { lang, orig: orig.current, height: h, stats: loadStats(), resume: resuming(), mirror: ms })[0]; };
   // 4K step-up: armed while auto-picking (no pinned quality, no hand pick, no room); `up`: the 4K sources to prepare, the first one in the hidden element
   const armed = useRef(false), [up, setUp] = useState<number[]>([]), upAt = useRef(0), prep = useRef<HTMLVideoElement | null>(null), medias = useRef<Record<number, unknown>>({});
@@ -232,7 +234,7 @@ function Player() {
           if (cut === undefined && d.durationMs) {
             if (!probing) {
               probing = true;
-              const o = fallbackOrder(acc, { lang, orig: orig.current, height: Infinity, stats: loadStats() }).filter((i) => !acc[i].hls && decodes(acc[i])).slice(0, 6);
+              const o = fallbackOrder(acc, { lang, orig: orig.current, height: Infinity, stats: loadStats() }).filter((i) => !acc[i].hls && decodes(acc[i]) && !(resuming() && noSeek(acc[i]))).slice(0, 6);
               Promise.all(o.map((i) => probeMs(acc[i], PROBE_MS))).then((ds) => { cut = pickCut(o, ds, d.durationMs); console.debug(`[stream] same cut: ${cut >= 0 ? acc[cut].label : "none"} of ${ds.join(", ")} ms`); begin(); });
             }
             return;
@@ -543,7 +545,7 @@ function Player() {
   /** our own play/pause/seek, unless the guard says it's an echo or too early */
   const tell = (type: "play" | "pause" | "seek") => {
     const now = Date.now(), v = video.current; // eslint-disable-line react-hooks/purity -- runs in handlers, not render
-    if (!room || !v || !(type === "seek" ? ownSeek(g.current, now, toMs(v.currentTime)) : canSend(g.current, now))) return;
+    if (!room || !v || (type === "seek" && src && noSeek(src)) || !(type === "seek" ? ownSeek(g.current, now, toMs(v.currentTime)) : canSend(g.current, now))) return;
     sendRoom({ type, position: toMs(v.currentTime) });
   };
   // a copy other than the room's: move to the room's copy when it's here, decodes here and hasn't failed; else, once our length
