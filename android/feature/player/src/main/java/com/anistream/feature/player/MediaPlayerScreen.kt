@@ -198,7 +198,7 @@ fun MediaPlayerScreen(
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
         PartyOverlay(
             viewModel.player, Modifier.align(Alignment.TopEnd), payload = request?.takeIf { !ui.isLive }?.let(::mediaPayload),
-            source = ui.stream?.takeIf { !ui.isLive && !ui.isLoading }?.let(::partySource)
+            source = ui.stream?.takeIf { !ui.isLive && !ui.isLoading }?.let { partySource(it, viewModel.player.duration) }
         )
     }
 

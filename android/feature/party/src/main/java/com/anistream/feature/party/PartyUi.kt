@@ -70,17 +70,51 @@ private class Sync(val player: Player, val client: PartyClient, host: Boolean) :
     private val guard = EchoGuard(SystemClock::elapsedRealtime, host)
     private var pendingInitial = !host
     private val main = Handler(Looper.getMainLooper())
+    private val lightsUp = Runnable { guard.applying(); player.playWhenReady = true }
+    /** a 1.05/0.95 rate nudge is on */
+    private var nudging = false
+    private val check = object : Runnable {
+        override fun run() { correct(); main.postDelayed(this, if (nudging) 1000 else DRIFT_CHECK_MS) }
+    }
 
     init {
         if (host) send(if (player.playWhenReady) "play" else "pause")
         else if (player.playbackState == Player.STATE_READY) initial()
+        main.postDelayed(check, DRIFT_CHECK_MS)
+    }
+
+    /**
+     * Drift correction while the room plays: nudge the rate for small drift, seek quietly (never broadcast) for large.
+     * Skipped while buffering, paused, before the 3-2-1 ends, within 5 s of any room event, and at a speed the viewer chose.
+     */
+    private fun correct() {
+        val last = client.room.value?.last
+        val now = client.serverNow()
+        if (last == null || last.type == "pause" || now - last.at < EVENT_QUIET_MS || pendingInitial || !player.playWhenReady ||
+            player.playbackState != Player.STATE_READY || (!nudging && player.playbackParameters.speed != 1f)) return stopNudge()
+        val target = targetPosition(last.position, last.at, now, playing = true)
+        val rate = correction(player.currentPosition - target, nudging)
+        if (rate == null) {
+            stopNudge()
+            guard.applying() // our own seek must not go out as a room seek
+            player.seekTo(target)
+        } else {
+            nudging = rate != 1f
+            if (player.playbackParameters.speed != rate) player.setPlaybackSpeed(rate)
+        }
+    }
+
+    private fun stopNudge() {
+        if (nudging) player.setPlaybackSpeed(1f)
+        nudging = false
     }
 
     private fun send(type: String) { if (guard.mayBroadcast()) client.send(type, player.currentPosition) }
 
     fun apply(e: PartyEvent) {
         if (pendingInitial) return // the room's latest state waits in room.last until the player is ready
-        main.removeCallbacksAndMessages(null)
+        main.removeCallbacks(lightsUp)
+        stopNudge()
         val playing = when (e.type) { "play" -> true; "pause" -> false; else -> player.playWhenReady }
         val now = client.serverNow()
         val target = targetPosition(e.position, e.at, now, playing)
@@ -89,7 +123,7 @@ private class Sync(val player: Player, val client: PartyClient, host: Boolean) :
         if (playing && e.at > now) {
             // "Lights down": hold at the frame, start when the 3-2-1 ends
             player.playWhenReady = false
-            main.postDelayed({ guard.applying(); player.playWhenReady = true }, e.at - now)
+            main.postDelayed(lightsUp, e.at - now)
         } else {
             player.playWhenReady = playing
         }
@@ -101,7 +135,7 @@ private class Sync(val player: Player, val client: PartyClient, host: Boolean) :
         guard.joined()
     }
 
-    fun release() = main.removeCallbacksAndMessages(null)
+    fun release() { main.removeCallbacksAndMessages(null); stopNudge() }
 
     override fun onPlaybackStateChanged(state: Int) {
         if (state == Player.STATE_READY && pendingInitial) initial()
@@ -148,11 +182,11 @@ fun PartyOverlay(player: Player, modifier: Modifier = Modifier, payload: JsonObj
     LaunchedEffect(sync) {
         vm.client.events.collect { if (!isEcho(it.by, vm.client.selfId)) sync.apply(it) }
     }
-    // the first player's copy becomes the room's; anyone on another copy is told scenes may be off
+    // the first player's copy becomes the room's; anyone on another cut (length off by > 3 s, or unknown) is told scenes may be off
     LaunchedEffect(source, r.source) {
         val rs = r.source
         if (source == null) return@LaunchedEffect
-        if (rs == null) vm.client.reportSource(source) else if (!sameSource(source, rs)) vm.say(DIFFERENT_COPY, 6000)
+        if (rs == null) vm.client.reportSource(source) else if (!sameSource(source, rs) && !sameCut(source, rs)) vm.say(DIFFERENT_COPY, 6000)
     }
     if (rtc == null) {
         Row(

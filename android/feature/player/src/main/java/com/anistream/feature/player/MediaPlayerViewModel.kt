@@ -69,6 +69,8 @@ private const val STEP_AHEAD_MS = 8_000L
 private const val STEP_GIVE_UP_MS = 30_000L
 /** a resume point past this is worth a seekable source */
 private const val RESUME_MIN_MS = 30_000L
+/** watch party: other copies a joiner tries for the room's cut before settling */
+private const val CUT_TRIES = 3
 private const val NO_SKIP = "This source can't skip ahead — starting from the beginning"
 
 /** how long auto-pick waits for the title's country (dub-safe pick) before ranking without it */
@@ -117,9 +119,9 @@ internal fun MediaStream.detailLabel(): String = (listOfNotNull(
 /** "MovieBox · 1080p · HEVC · 2.1 GB" */
 internal fun MediaStream.label(): String = listOf(sourceName, detailLabel()).filter { it.isNotBlank() }.joinToString(" · ")
 
-/** This stream as a watch-party `source` descriptor: joiners try the same copy first (cuts differ between copies). */
-fun partySource(s: MediaStream) =
-    com.anistream.feature.party.sourceOf(SourceRank.provider(s), s.qualityLabel, android.net.Uri.parse(s.url).host, s.label())
+/** This stream as a watch-party `source` descriptor: joiners try the same copy first (cuts differ between copies). [durationMs] once it plays. */
+fun partySource(s: MediaStream, durationMs: Long? = null) =
+    com.anistream.feature.party.sourceOf(SourceRank.provider(s), s.qualityLabel, android.net.Uri.parse(s.url).host, s.label(), durationMs, s.codec)
 
 private fun formatBytes(bytes: Long): String {
     val mb = bytes / 1_048_576.0
@@ -195,7 +197,9 @@ class MediaPlayerViewModel @Inject constructor(
         com.anistream.core.account.HandoffHint.pickSource(r.streams.map { it.label() })?.let { choose(r, r.streams[it].height); return it } // Play on TV: the phone's source
         // watch party: the copy the room plays first (if it fails, the usual fallback runs and the overlay says it's a different copy)
         party.room.value?.takeIf { com.anistream.feature.party.samePayload(it.payload, com.anistream.feature.party.mediaPayload(r)) }?.source
-            ?.let { com.anistream.feature.party.matchSource(it, r.streams.map(::partySource)) }?.let { choose(r, r.streams[it].height); return it }
+            ?.let { com.anistream.feature.party.matchSource(it, r.streams.map { s -> partySource(s) }) }
+            ?.takeIf { canPlay(r.streams[it]) && !undecodable(r.streams[it]) } // one this device can't decode: find the same cut instead (wrongCut)
+            ?.let { choose(r, r.streams[it].height); return it }
         val pin = QualityPick.pinned(appContext, pinKey(r))
         val want = autoHeight(r, pin)
         // 4K starts slowly (and some never do): start at 1080p and step up in the background (see stepUp)
@@ -226,6 +230,29 @@ class MediaPlayerViewModel @Inject constructor(
     private val slowLeft = mutableSetOf<String>()
     /** the source the viewer picked by hand: never left for being slow */
     private var picked: String? = null
+    /** watch-party joiner: other copies tried for the room's cut */
+    private var cutTries = 0
+
+    /**
+     * Watch-party joiner on another copy than the room's: when its length is more than 3 s off the room's (another cut),
+     * try the next source, up to [CUT_TRIES] times. The copy left stays in the fallback list, as a slow starter does.
+     * ponytail: probes by playing, since sources don't list their length; settles on the last copy tried.
+     */
+    private fun wrongCut(dur: Long): Boolean {
+        val s = _uiState.value
+        val r = s.request ?: return false
+        val stream = s.stream ?: return false
+        if (startedAt == 0L || dur <= 0 || picked != null || cutTries >= CUT_TRIES) return false
+        val want = party.room.value?.takeIf { com.anistream.feature.party.samePayload(it.payload, com.anistream.feature.party.mediaPayload(r)) }?.source ?: return false
+        val roomMs = com.anistream.feature.party.ms(want["durationMs"]) ?: return false
+        if (com.anistream.feature.party.sameSource(want, partySource(stream)) || com.anistream.feature.party.sameCut(want, partySource(stream, dur))) return false
+        tried += stream.url; slowLeft += stream.url
+        val next = nextUntried(r) ?: return false.also { tried -= stream.url; slowLeft -= stream.url }
+        cutTries++
+        android.util.Log.d("Player", "party: ${stream.label()} runs ${dur / 1000}s, the room's cut ${roomMs / 1000}s: trying ${r.streams[next].label()}")
+        play(next, player.currentPosition)
+        return true
+    }
     private fun isTried(i: Int) = _uiState.value.request?.streams?.getOrNull(i)?.url in tried
     private fun order(r: PlaybackRequest, height: Int) =
         SourceRank.fallbackOrder(r.streams, prefLang(r), height, SourceRank.load(appContext), System.currentTimeMillis(), canPlay, undecodable, origin(r), pendingResume != null || player.currentPosition > RESUME_MIN_MS,
@@ -331,6 +358,7 @@ class MediaPlayerViewModel @Inject constructor(
                         // before isLoading clears, so no progress is saved from it
                         if (startedAt > 0 && !s.isLive && SourceRank.isPlaceholder(dur, expectedMin, s.request?.season == 0))
                             return handleError(PlaybackException("Provider served a placeholder clip (${dur / 60_000} min, expected ${expectedMin ?: "a movie"})", null, ERROR_PLACEHOLDER))
+                        if (wrongCut(dur)) return
                         _uiState.update { it.copy(isLoading = false) }
                         if (startedAt > 0) {
                             track("play")
@@ -404,7 +432,7 @@ class MediaPlayerViewModel @Inject constructor(
                 android.util.Log.d("Player", "sources: ${request.streams.size} ${request.streams.groupingBy { "${SourceRank.provider(it)}:${it.height}" }.eachCount()}")
                 // watch party joiner: give the first player up to 15 s to tell the room which copy it plays (web does the same)
                 party.room.value?.takeIf { it.source == null && it.members.size > 1 && com.anistream.feature.party.samePayload(it.payload, com.anistream.feature.party.mediaPayload(request)) }
-                    ?.let { withTimeoutOrNull(15_000) { party.room.first { r -> r?.source != null || r == null } } }
+                    ?.let { withTimeoutOrNull(12_000) { party.room.first { r -> r?.source != null || r == null } } }
                 val first = pick(request)
                 play(first, null)
                 // a mirror title: say where it plays from (its mirror, or the source that stood in for it)
