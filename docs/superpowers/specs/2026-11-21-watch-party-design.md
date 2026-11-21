@@ -83,3 +83,13 @@ account needed. They proxy `https://rtc.live.cloudflare.com/v1/apps/{appId}/…`
 ## What's left to the builders
 Exact layout code, animation curves, the Android WebRTC library choice (prebuilt libwebrtc, e.g.
 `io.getstream:stream-webrtc-android`, mind APK size), echo-cancellation tuning, and how a joiner matches a `source`.
+
+## Round 2 (2026-11-21, after the first E2E)
+- **Same cut, not same file**: `source` gains `durationMs` (the film's length as played) and `codec`. A joiner that can't play
+  the room's exact copy (missing, or undecodable e.g. HEVC on web) prefers any copy whose duration is within ±3 s of
+  `durationMs` (same cut) before falling back; only then show "different copy". Joiners wait at most 12 s for the room's
+  source, never longer. If `durationMs` differs by >3 s, show the note.
+- **Drift correction while playing** (no server change): while the room is playing and no remote event is being applied,
+  every 5 s each client compares its position with the room timeline `position + (serverNow − at)` (clock offset from
+  `state.now`/events). Drift 0.25–1.5 s → playback rate 1.05 (behind) or 0.95 (ahead) until within 0.1 s; > 1.5 s →
+  quiet local seek (never broadcast). Skip while buffering or in the first 5 s after any event.
