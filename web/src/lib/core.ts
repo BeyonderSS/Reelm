@@ -196,6 +196,12 @@ export const wire = (p: Play, position: number, duration: number, eps?: Eps, sec
   ...p, slug: p.kind === "anime" ? p.id : playKey(p).slice(6), mediaId: p.id, kind: p.kind === "anime" ? "anime" : "media", episode: p.kind === "anime" ? p.ep : p.episode,
   progress: frac(position, duration), subtitle: entrySub(p), ...(secs ? { duration: Math.round(secs) } : {}), ...(eps && Object.keys(eps).length ? { eps } : {}),
 } as any);
+/** A watch-party payload: the wire shape plus the apps' PlaybackRequest fields. The apps show "title, subtitle", so the
+ *  subtitle only names an episode ("S1 · E2", as Android writes it); a movie or anime shows its bare title. */
+export const roomWire = (p: Play) => ({
+  ...wire(p, 0, 0), historyKey: p.kind === "anime" ? undefined : playKey(p).slice(6), posterUrl: p.poster,
+  subtitle: p.kind === "movie" && p.season ? `S${p.season} · E${p.episode}` : null,
+});
 /** History with every payload normalized to `Play`. Rows for the same title (kind + id) collapse to the newest, so old per-episode duplicates vanish. */
 export function getHistory(pid: string): Record<string, Entry> {
   const out: Record<string, Entry> = {};
