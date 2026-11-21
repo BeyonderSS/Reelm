@@ -85,13 +85,14 @@ private class Sync(val player: Player, val client: PartyClient, host: Boolean) :
 
     /**
      * Drift correction while the room plays: nudge the rate for small drift, seek quietly (never broadcast) for large.
-     * Skipped while buffering, paused, before the 3-2-1 ends, within 5 s of any room event, and at a speed the viewer chose.
+     * Skipped while buffering, paused, before the 3-2-1 ends, within 5 s of any room event, at a speed the viewer chose, and on a
+     * copy that can't seek (a seek there restarts it from 0:00).
      */
     private fun correct() {
         val last = client.room.value?.last
         val now = client.serverNow()
         if (last == null || last.type == "pause" || now - last.at < EVENT_QUIET_MS || pendingInitial || !player.playWhenReady ||
-            player.playbackState != Player.STATE_READY || (!nudging && player.playbackParameters.speed != 1f)) return stopNudge()
+            player.playbackState != Player.STATE_READY || !player.isCurrentMediaItemSeekable || (!nudging && player.playbackParameters.speed != 1f)) return stopNudge()
         val target = targetPosition(last.position, last.at, now, playing = true)
         val rate = correction(player.currentPosition - target, nudging)
         if (rate == null) {

@@ -235,28 +235,32 @@ class MediaPlayerViewModel @Inject constructor(
 
     /**
      * Watch-party joiner on another copy than the room's: when its length is more than 3 s off the room's (another cut),
-     * try the next source, up to [CUT_TRIES] times. The copy left stays in the fallback list, as a slow starter does.
+     * try the next source, up to [CUT_TRIES] times; when it can't seek while the room is past 30 s (it would play from 0:00,
+     * minutes behind everyone), try the next one, each source once at most. The copy left stays in the fallback list, as a slow starter does.
      * ponytail: probes by playing, since sources don't list their length; settles on the last copy tried.
      */
     private fun wrongCut(dur: Long): Boolean {
         val s = _uiState.value
         val r = s.request ?: return false
         val stream = s.stream ?: return false
-        if (startedAt == 0L || dur <= 0 || picked != null || cutTries >= CUT_TRIES) return false
+        if (startedAt == 0L || dur <= 0 || picked != null) return false
         val want = party.room.value?.takeIf { com.anistream.feature.party.samePayload(it.payload, com.anistream.feature.party.mediaPayload(r)) }?.source ?: return false
-        val roomMs = com.anistream.feature.party.ms(want["durationMs"]) ?: return false
-        if (com.anistream.feature.party.sameSource(want, partySource(stream)) || com.anistream.feature.party.sameCut(want, partySource(stream, dur))) return false
+        val roomMs = com.anistream.feature.party.ms(want["durationMs"])
+        val stuck = party.room.value?.host == false && !player.isCurrentMediaItemSeekable && partyAhead() // not capped: every source is tried once at most
+        if (!stuck && (cutTries >= CUT_TRIES || roomMs == null || com.anistream.feature.party.sameSource(want, partySource(stream)) || com.anistream.feature.party.sameCut(want, partySource(stream, dur)))) return false
         tried += stream.url; slowLeft += stream.url
         val next = nextUntried(r) ?: return false.also { tried -= stream.url; slowLeft -= stream.url }
-        cutTries++
-        android.util.Log.d("Player", "party: ${stream.label()} runs ${dur / 1000}s, the room's cut ${roomMs / 1000}s: trying ${r.streams[next].label()}")
+        if (!stuck) cutTries++
+        android.util.Log.d("Player", "party: ${stream.label()} ${if (stuck) "can't seek" else "runs ${dur / 1000}s, the room's cut ${(roomMs ?: 0) / 1000}s"}: trying ${r.streams[next].label()}")
         play(next, player.currentPosition)
         return true
     }
     private fun isTried(i: Int) = _uiState.value.request?.streams?.getOrNull(i)?.url in tried
     private fun order(r: PlaybackRequest, height: Int) =
-        SourceRank.fallbackOrder(r.streams, prefLang(r), height, SourceRank.load(appContext), System.currentTimeMillis(), canPlay, undecodable, origin(r), pendingResume != null || player.currentPosition > RESUME_MIN_MS,
+        SourceRank.fallbackOrder(r.streams, prefLang(r), height, SourceRank.load(appContext), System.currentTimeMillis(), canPlay, undecodable, origin(r), pendingResume != null || player.currentPosition > RESUME_MIN_MS || partyAhead(),
             com.anistream.domain.model.Mirrors.of(r.mediaId)?.let(com.anistream.domain.model.Mirrors::source))
+    /** a watch-party joiner lands on the room's playhead: past [RESUME_MIN_MS] it's a resume point (a copy that restarts at 0:00 can't honour it) */
+    private fun partyAhead() = party.room.value?.last?.let { com.anistream.feature.party.targetPosition(it.position, it.at, party.serverNow(), it.type != "pause") > RESUME_MIN_MS } == true
     /** best-ranked untried source of [height] (or below); fallbacks continue from there */
     private fun choose(r: PlaybackRequest, height: Int): Int {
         target = height
