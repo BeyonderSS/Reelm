@@ -154,6 +154,32 @@ class PartyTest {
         assertFalse(sameSource(room, null))
     }
 
+    @Test fun driftCorrection() {
+        assertEquals(1f, correction(200, nudging = false)) // within 0.25 s: leave it
+        assertEquals(1.05f, correction(-400, nudging = false)) // behind: speed up
+        assertEquals(0.95f, correction(1_500, nudging = false)) // ahead: slow down
+        assertEquals(1.05f, correction(-150, nudging = true)) // a nudge holds until within 0.1 s
+        assertEquals(1f, correction(-100, nudging = true))
+        assertNull(correction(-1_501, nudging = false)) // over 1.5 s: quiet seek
+        assertNull(correction(3_000, nudging = true))
+    }
+
+    @Test fun sameCutIsWithinThreeSeconds() {
+        val room = sourceOf("Hotstar", "1080p", null, null, durationMs = 8_880_000, codec = "hevc")
+        assertEquals("hevc", (room["codec"] as kotlinx.serialization.json.JsonPrimitive).content)
+        assertTrue(sameCut(room, sourceOf("castle", "720p", null, null, durationMs = 8_882_900)))
+        assertFalse(sameCut(room, sourceOf("castle", "720p", null, null, durationMs = 8_883_100)))
+        assertFalse(sameCut(room, sourceOf("castle", "720p", null, null))) // unknown length: not known to be the same cut
+        assertNull(sourceOf("x", "1080p", null, null, durationMs = Long.MIN_VALUE + 1)["durationMs"]) // C.TIME_UNSET is left out
+    }
+
+    @Test fun webPayloadTitleIsClean() {
+        assertEquals("Inception", partyTitle("Inception [Hindi]"))
+        assertEquals("", partyTitle(null))
+        assertNull(partySubtitle(0, 0)) // the web's "Movie" is not shown
+        assertEquals("S1 · E2", partySubtitle(1, 2))
+    }
+
     @Test fun clockFormat() {
         assertEquals("1:02:14", clock(3_734_000))
         assertEquals("4:05", clock(245_400))

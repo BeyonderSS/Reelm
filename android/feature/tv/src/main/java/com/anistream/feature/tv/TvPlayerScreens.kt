@@ -1058,7 +1058,7 @@ fun TvMediaPlayerScreen(
         onAudioLanguage = vm::selectAudioLanguage,
         upNextImage = r?.posterUrl,
         partyPayload = r?.takeIf { !s.isLive }?.let(::mediaPayload),
-        partySource = s.stream?.takeIf { !s.isLive && !s.isLoading }?.let { com.anistream.feature.player.partySource(it) },
+        partySource = s.stream?.takeIf { !s.isLive && !s.isLoading }?.let { com.anistream.feature.player.partySource(it, vm.player.duration) },
         meta = if (r == null) EpisodeMeta() else EpisodeMeta(
             show = if (r.season > 0 && r.episode > 0) "${r.title}, season ${r.season}, episode ${r.episode}" else null,
             name = if (r.episode > 0) ge?.title?.takeIf { it.isNotBlank() } ?: "Episode ${r.episode}" else r.title,

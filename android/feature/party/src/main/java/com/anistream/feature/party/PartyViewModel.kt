@@ -46,6 +46,12 @@ fun mediaPayload(r: PlaybackRequest): JsonObject = buildJsonObject {
     put("seasonEpisodeCount", r.seasonEpisodeCount)
 }
 
+/** The room payload's title without catalog tags: the web sends the MovieBox title ("Inception [Hindi]"). */
+fun partyTitle(t: String?) = com.anistream.domain.usecase.stripTags(t.orEmpty())
+
+/** Built from season/episode like the detail screen: the web's own `subtitle` is "Movie" / "Season 1, episode 2". */
+fun partySubtitle(season: Int, episode: Int) = if (episode > 0) "S$season · E$episode" else null
+
 /** A reaction floating up from [by]'s face; [id] keys its animation. */
 data class Reaction(val by: String, val kind: String, val id: Long)
 
@@ -146,7 +152,7 @@ class PartyViewModel @Inject constructor(
                 val id = s("mediaId") ?: return null
                 val streams = (movies.streams(id, i("season"), i("episode")) as? Result.Success)?.data?.takeIf { it.isNotEmpty() } ?: return null
                 NowPlaying.request = PlaybackRequest(
-                    historyKey = s("historyKey"), mediaId = id, title = s("title").orEmpty(), subtitle = s("subtitle"),
+                    historyKey = s("historyKey"), mediaId = id, title = partyTitle(s("title")), subtitle = partySubtitle(i("season"), i("episode")),
                     posterUrl = s("posterUrl"), streams = streams, season = i("season"), episode = i("episode"),
                     seasonEpisodeCount = i("seasonEpisodeCount")
                 )

@@ -64,6 +64,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.coerceAtLeast
+import androidx.compose.ui.unit.coerceIn
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -186,7 +188,13 @@ private fun LevelBars(level: Float, modifier: Modifier) {
 @Composable
 private fun Floater(r: Reaction, modifier: Modifier) {
     val t = remember(r.id) { Animatable(0f) }
-    LaunchedEffect(r.id) { t.animateTo(1f, tween(2000)) }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(r.id) {
+        // "Remove animations" (scale 0) would end the float on its first frame: hold it still for 1.5 s instead
+        if (android.provider.Settings.Global.getFloat(ctx.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f) {
+            kotlinx.coroutines.delay(1500); t.snapTo(1f)
+        } else t.animateTo(1f, tween(2000))
+    }
     Text(
         REACTIONS.firstOrNull { it.first == r.kind }?.second ?: return,
         fontSize = 28.sp,
@@ -224,7 +232,7 @@ fun BoxScope.PartyFaces(player: Player, controls: Boolean, fit: Boolean, vm: Par
         val bar = if (fit && aspect != null && aspect < maxWidth / maxHeight) (maxWidth - maxHeight * aspect) / 2 else 0.dp
         val partner = r.members.firstOrNull { it.id != me }
         if (r.mode == "date" && partner != null) {
-            DateNight(partner, r.members.firstOrNull { it.id == me }, player, vm, rtc, controls)
+            DateNight(partner, r.members.firstOrNull { it.id == me }, player, vm, rtc, controls, bar)
         } else {
             val faces = r.members.take(6)
             if (bar >= 88.dp) {
@@ -260,12 +268,17 @@ fun BoxScope.PartyFaces(player: Player, controls: Boolean, fit: Boolean, vm: Par
 }
 
 @Composable
-private fun BoxScope.DateNight(partner: Member, self: Member?, player: Player, vm: PartyViewModel, rtc: PartyRtc, controls: Boolean) {
+private fun BoxScope.DateNight(partner: Member, self: Member?, player: Player, vm: PartyViewModel, rtc: PartyRtc, controls: Boolean, bar: Dp) {
     val t = rememberToggles(rtc)
+    // pillarboxed: the bubble lives in the right bar, sized to it (≥ 80 dp), off the picture; no bars: bottom-right corner
+    val size = if (bar > 0.dp) (bar - 16.dp).coerceIn(80.dp, 140.dp) else 140.dp
+    val end = if (bar > 0.dp) ((bar - size) / 2).coerceAtLeast(4.dp) else 14.dp
+    val selfEnd = if (bar > 0.dp) ((bar - 46.dp) / 2).coerceAtLeast(4.dp) else 138.dp
+    val selfBottom = if (bar > 0.dp) 18.dp + size + 22.dp else 120.dp
     var hint by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) { kotlinx.coroutines.delay(6000); hint = false }
     Box(
-        Modifier.align(Alignment.BottomEnd).padding(end = 14.dp, bottom = 18.dp).size(140.dp)
+        Modifier.align(Alignment.BottomEnd).padding(end = end, bottom = 18.dp).size(size)
             .pointerInput(partner.id) {
                 var whispering = false
                 detectTapGestures(
@@ -275,14 +288,14 @@ private fun BoxScope.DateNight(partner: Member, self: Member?, player: Player, v
                 )
             }
     ) {
-        Box(Modifier.align(Alignment.Center).requiredSize(152.dp).border(2.dp, Accent.main.copy(alpha = 0.7f), Radius.round))
+        Box(Modifier.align(Alignment.Center).requiredSize(size + 12.dp).border(2.dp, Accent.main.copy(alpha = 0.7f), Radius.round))
         Face(partner, vm, rtc, Modifier.matchParentSize(), Radius.round, ring = false)
         Text(
             partner.name, style = AppType.label.copy(fontSize = 12.sp, color = Accent.on), maxLines = 1,
             modifier = Modifier.align(Alignment.BottomCenter).offset(y = 8.dp).background(Accent.main, Radius.pill).padding(horizontal = 10.dp, vertical = 2.dp)
         )
     }
-    if (self != null) Face(self, vm, rtc, Modifier.align(Alignment.BottomEnd).padding(end = 138.dp, bottom = 120.dp).size(46.dp).border(2.dp, Ink.body, Radius.round), Radius.round)
+    if (self != null) Face(self, vm, rtc, Modifier.align(Alignment.BottomEnd).padding(end = selfEnd, bottom = selfBottom).size(46.dp).border(2.dp, Ink.body, Radius.round), Radius.round)
     if (!controls) Row(
         Modifier.align(Alignment.TopStart).padding(14.dp).background(Bg.badge, Radius.pill).padding(horizontal = Space.md, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.sm)

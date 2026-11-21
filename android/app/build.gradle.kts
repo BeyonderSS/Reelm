@@ -58,7 +58,7 @@ android {
             dimension = "device"
             minSdk = 26 // phone keeps API 26+; only tv drops to 22 (Fire TV Stick 2nd gen, Fire OS 5)
             isDefault = true
-            // libwebrtc (watch-party video) is ~12 MB per ABI: no 32-bit x86 phones exist; x86_64 stays for the emulator
+            // libwebrtc (watch-party video) is ~12 MB per ABI: no 32-bit x86 phones exist; x86_64 stays in debug for the emulator
             ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
         }
         create("tv") {
@@ -85,6 +85,13 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+}
+
+// phone release ships ARM only (no x86 phones in the wild); debug keeps x86_64 for the emulator
+androidComponents {
+    onVariants(selector().withBuildType("release").withFlavor("device" to "phone")) {
+        it.packaging.jniLibs.excludes.addAll("lib/x86/**", "lib/x86_64/**")
     }
 }
 

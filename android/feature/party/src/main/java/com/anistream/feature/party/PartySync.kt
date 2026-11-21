@@ -20,6 +20,21 @@ fun targetPosition(position: Long, at: Long, serverNow: Long, playing: Boolean):
 
 fun shouldSeek(local: Long, target: Long) = abs(local - target) >= DRIFT_MS
 
+/** While the room plays, each client checks its drift this often (every 1 s while a rate nudge is on). */
+const val DRIFT_CHECK_MS = 5000L
+/** No drift check this soon after any room event: the event itself is still landing. */
+const val EVENT_QUIET_MS = 5000L
+
+/**
+ * One drift check, [drift] = local − room timeline (ms): null = quiet local seek (over 1.5 s), else the playback rate
+ * to run at: 1.05 when behind / 0.95 when ahead from 0.25 s, held while [nudging] until within 0.1 s, else 1.
+ */
+fun correction(drift: Long, nudging: Boolean): Float? = when {
+    abs(drift) > DRIFT_MS -> null
+    abs(drift) >= 250 || (nudging && abs(drift) > 100) -> if (drift < 0) 1.05f else 0.95f
+    else -> 1f
+}
+
 /** Own broadcast coming back; [self] is null when the server never told us our id. */
 fun isEcho(by: String, self: String?) = self != null && by == self
 
@@ -81,9 +96,20 @@ class Ducker {
     }
 }
 
-/** The room's `source` descriptor (≤1 KB): `{provider, quality, host?, label?}`. */
-fun sourceOf(provider: String, quality: String, host: String?, label: String?): JsonObject = buildJsonObject {
+/** The room's `source` descriptor (≤1 KB): `{provider, quality, host?, label?, durationMs?, codec?}`; [durationMs] = the film's length as played. */
+fun sourceOf(provider: String, quality: String, host: String?, label: String?, durationMs: Long? = null, codec: String? = null): JsonObject = buildJsonObject {
     put("provider", provider); put("quality", quality); host?.let { put("host", it) }; label?.let { put("label", it.take(200)) }
+    durationMs?.takeIf { it > 0 }?.let { put("durationMs", it) }; codec?.let { put("codec", it.take(40)) }
+}
+
+/** Copies of the same cut play within this of each other's length. */
+const val SAME_CUT_MS = 3000L
+
+/** Same cut of the film: both lengths known and within ±3 s. Unknown = not known to be the same. */
+fun sameCut(a: JsonObject?, b: JsonObject?): Boolean {
+    val x = ms(a?.get("durationMs"))?.takeIf { it > 0 } ?: return false
+    val y = ms(b?.get("durationMs"))?.takeIf { it > 0 } ?: return false
+    return abs(x - y) <= SAME_CUT_MS
 }
 
 private fun JsonObject.s(k: String) = (this[k] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
