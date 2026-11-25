@@ -78,7 +78,11 @@ account needed. They proxy `https://rtc.live.cloudflare.com/v1/apps/{appId}/…`
 - **Date night** (`mode=date`): partner as one big round bubble (140 dp), self small; double-tap partner = heart,
   hold = whisper (mic opens only while held if muted); synced hearts burst ("You both tapped at 1:02:14").
 - **Web**: faces in the black bar above the film (112×74 tiles, top-right), keyboard M mute, V camera, R react, H hide;
-  the Together panel becomes a live tile grid with "Save a seat".
+  the Together panel becomes a live tile grid with "Save a seat". Each tile (and date night's bubbles) can be dragged
+  anywhere over the player (snaps to an edge within 24 px), resized from a corner handle, by pinch or + − (96 px to 50 %
+  of the player width), double-clicked to big (40 %; date night: a "Make bigger" button), moved with the arrows when
+  Tab-focused; spots are kept per slot (self, partner, o0…) as fractions of the player in `localStorage["reelm.faces"]`,
+  cleared by "Reset faces" in the Together panel.
 - **Film ducking**: while any remote audio level is above threshold for >150 ms, film volume goes to 35 %, back over
   400 ms after silence. Local echo cancellation on (`echoCancellation`, Android `VOICE_COMMUNICATION`); suggest
   headphones once if echo is likely (speaker output + mic on).

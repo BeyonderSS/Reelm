@@ -88,6 +88,33 @@ export const REACTS = { heart: "❤️", laugh: "😂", gasp: "😮", cry: "😢
 export type ReactKind = keyof typeof REACTS;
 export const VIDEO_SEATS = 4;
 
+/** Face tiles over the player, in px from the player's top-left; height = w * ar. Stored as fractions of the player size
+ *  (x, y of its width/height, w of its width) so a spot survives window resizes and fullscreen. */
+export type Box = { x: number; y: number; w: number };
+export const TILE_MIN = 96, TILE_MAX = 0.5, TILE_BIG = 0.4, SNAP_PX = 24, DRAG_PX = 4, FACES_KEY = "reelm.faces";
+/** 96 px wide up to half the player (and never taller than it), kept inside the player */
+export function clampBox(b: Box, ar: number, W: number, H: number): Box {
+  const w = Math.max(Math.min(TILE_MIN, W * TILE_MAX), Math.min(b.w, W * TILE_MAX, H / ar));
+  return { x: Math.max(0, Math.min(b.x, W - w)), y: Math.max(0, Math.min(b.y, H - w * ar)), w };
+}
+/** dropped within 24 px of an edge: onto it */
+export function snapBox(b: Box, ar: number, W: number, H: number): Box {
+  const h = b.w * ar, x = b.x < SNAP_PX ? 0 : W - b.x - b.w < SNAP_PX ? W - b.w : b.x, y = b.y < SNAP_PX ? 0 : H - b.y - h < SNAP_PX ? H - h : b.y;
+  return { x, y, w: b.w };
+}
+/** a new width, same centre */
+export const resizeAt = (b: Box, w: number, ar: number): Box => ({ x: b.x + (b.w - w) / 2, y: b.y + ((b.w - w) * ar) / 2, w });
+export const toFrac = (b: Box, W: number, H: number): Box => ({ x: b.x / W, y: b.y / H, w: b.w / W });
+export const fromFrac = (f: Box, W: number, H: number): Box => ({ x: f.x * W, y: f.y * H, w: f.w * W });
+/** the saved spots, keeping only well-formed ones */
+export function parseBoxes(s: string | null): Record<string, Box> {
+  try {
+    const o = JSON.parse(s ?? "{}"), out: Record<string, Box> = {};
+    for (const [k, v] of Object.entries(o ?? {}) as [string, Box][]) if ([v?.x, v?.y, v?.w].every((n) => Number.isFinite(n) && n >= 0 && n <= 1)) out[k] = { x: v.x, y: v.y, w: v.w };
+    return out;
+  } catch { return {}; }
+}
+
 /** 3723000 ms -> "1:02:03", 62000 -> "1:02" */
 export const clock = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = String(s % 60).padStart(2, "0");
