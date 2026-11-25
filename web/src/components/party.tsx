@@ -219,6 +219,10 @@ function Tile({ party, layer, dims: [W, H], slot, ar, label, heart, onDrag, clas
     const down = (e: PointerEvent) => {
       if ((e.pointerType === "mouse" && e.button !== 0) || (e.target as Element).closest("button")) return;
       s.pts.set(e.pointerId, [e.clientX, e.clientY]);
+      // no focus from a press (focusin shows the controls, which shifts an unmoved tile out from under the pointer),
+      // and capture now, so a fast first move that lands off the tile still drags it. Not on date night's bubble: capture
+      // there retargets its double-click (the heart) and fires pointerleave, which ends the whisper hold
+      e.preventDefault(); if (!heart) try { t.setPointerCapture(e.pointerId); } catch {}
       if (s.pts.size > 2) return;
       s.from = here(); s.cur = null; s.x = e.clientX; s.y = e.clientY;
       if (s.pts.size === 2) { s.mode = "pinch"; s.d = dist(); s.moved = true; onDrag?.(); }
