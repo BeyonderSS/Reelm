@@ -13,7 +13,7 @@ data class FaceSpot(val x: Float, val y: Float, val w: Float)
  * [snap] > 0, pulled flush to the nearest screen edge or black-bar edge ([bar] px wide on each side) within [snap] px.
  */
 fun fitFace(x: Float, y: Float, w: Float, ratio: Float, sw: Float, sh: Float, minW: Float, bar: Float = 0f, snap: Float = 0f): FaceSpot {
-    val fw = w.coerceIn(minW, maxFaceWidth(ratio, sw, sh, minW))
+    val fw = faceWidth(w, ratio, sw, sh, minW)
     val fh = fw * ratio
     var fx = x.coerceIn(0f, max(0f, sw - fw))
     var fy = y.coerceIn(0f, max(0f, sh - fh))
@@ -24,6 +24,9 @@ fun fitFace(x: Float, y: Float, w: Float, ratio: Float, sw: Float, sh: Float, mi
     }
     return FaceSpot(fx / sw, fy / sh, fw / sw)
 }
+
+/** [w] held to a face's limits: [minW] up to 60 % of the player's width, never taller than it. */
+fun faceWidth(w: Float, ratio: Float, sw: Float, sh: Float, minW: Float) = w.coerceIn(minW, maxFaceWidth(ratio, sw, sh, minW))
 
 private fun maxFaceWidth(ratio: Float, sw: Float, sh: Float, minW: Float) = max(minW, min(sw * 0.6f, sh / ratio))
 

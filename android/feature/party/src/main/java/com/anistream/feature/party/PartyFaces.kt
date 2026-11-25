@@ -290,7 +290,8 @@ private fun BoxWithConstraintsScope.Movable(
                         if (moving) {
                             val c = live ?: base
                             val cw = c.w * sw
-                            val nw = cw * z // pinch grows around the face's centre
+                            // pinch grows around the face's centre; held to the limits first, or a pinch past them walks the face off-centre
+                            val nw = faceWidth(cw * z, ratio, sw, sh, minW)
                             live = fitFace(c.x * sw + (cw - nw) / 2 + pan.x, c.y * sh + (cw - nw) * ratio / 2 + pan.y, nw, ratio, sw, sh, minW)
                             e.changes.forEach { it.consume() }
                         }

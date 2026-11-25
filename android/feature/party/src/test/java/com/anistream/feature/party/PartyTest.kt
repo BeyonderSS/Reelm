@@ -214,6 +214,8 @@ class PartyTest {
         assertEquals(700f / 800f, nearRightBar.x, e); assertEquals(320f / 400f, nearRightBar.y, e) // right bar + bottom edge
         assertEquals(300f / 800f, fitFace(300f, 150f, 80f, 1f, 800f, 400f, 72f, bar = 100f, snap = 16f).x, e) // mid-screen: stays
         assertEquals(0f, fitFace(12f, 150f, 80f, 1f, 800f, 400f, 72f, snap = 16f).x, e) // no bars: screen edge
+        assertEquals(400f, faceWidth(900f, 1f, 800f, 400f, 72f), e) // a pinch past the max stops there (the centre math uses this)
+        assertEquals(72f, faceWidth(10f, 1f, 800f, 400f, 72f), e)
     }
 
     @Test fun sizeButtonCyclesAndSlotsAreSelfThenOthers() {
