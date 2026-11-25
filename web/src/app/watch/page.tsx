@@ -24,6 +24,7 @@ import { iso1, origLangs } from "@/lib/langs";
 import { cn } from "@/lib/utils";
 import { canSend, describe, DRIFT_EVERY_MS, DRIFT_MS, driftFix, EVENT_QUIET_MS, fromMs, guard, hold, matchSource, nextOffset, ownSeek, pickCut, roomPos, sameCopy, sameCut, toMs, clock, type SourceDesc } from "@/lib/party";
 import { Countdown, Faces, Marks, TogetherPanel, useParty, Voices } from "@/components/party";
+import { Handoff } from "@/components/handoff";
 type Source = { src: string; hls: boolean; label: string; codec?: string; dolby?: boolean; height?: number; langs?: string[] };
 type Sub = { url: string; label: string; lang: string; default?: boolean };
 type Skip = { s: number; e: number; type: string };
@@ -778,6 +779,13 @@ function Player() {
                 <button onClick={() => setWatchCredits(pkey)} className={cn(pill.ghost, "h-9 px-4 text-sm")}>Watch credits</button>
               </div>
             </div>
+          )}
+          {/* paused a while on a desktop: carry on on the phone (or the TV); not in a room, while driving a TV, or over other cards */}
+          {p && p.kind !== "live" && (
+            <Handoff on={!!src && paused && !err && !embed && !remote && !room && !panel && !nextCard && !(skip && !credits) && cur > 10 && dur > 0}
+              id={playKey(p)} path={href({ ...p, poster: undefined }, `&t=${Math.floor(cur)}`)} title={p.title} at={cur} dur={dur} video={() => video.current}
+              tv={tvs.length ? <PlayOnTv get={toTv} onSent={sentTo} className={cn(pill.primary, "h-9 px-3.5 text-[13.5px] font-bold [&_svg]:size-4")} />
+                : <Link href="/apps" target="_blank" className={cn(pill.primary, "h-9 px-3.5 text-[13.5px] font-bold")}>Get the TV app</Link>} />
           )}
 
           <Fade className="absolute inset-x-0 top-0 z-20 flex items-center gap-2 bg-gradient-to-b from-black/80 to-transparent px-3 pt-[max(env(safe-area-inset-top),12px)] pb-10 max-sm:pr-32 md:px-6">

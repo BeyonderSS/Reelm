@@ -8,7 +8,7 @@ import { get, GUEST_HIDE, SESSION_ENDED, kindOf, loadSession, reelm, shows, stor
 type Ctx = { s: Session; ready: boolean; set: (s: Session) => void; setHide: (h: Kind[]) => Promise<void> };
 const C = createContext<Ctx>({ s: {}, ready: false, set: () => {}, setHide: async () => {} });
 export const useSession = () => useContext(C);
-const PUBLIC = ["/welcome", "/signin", "/signup", "/pair"];
+const PUBLIC = ["/welcome", "/signin", "/signup", "/pair", "/apps"];
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [s, setS] = useState<Session>({});
