@@ -1,11 +1,11 @@
 "use client";
 // Watch party: faces and voices in a room (Cloudflare Realtime through /v1/rtc/*), reactions, date night.
 // Room sync itself (play/pause/seek/lights/source) stays in the watch page; this owns everything people-shaped.
-import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState, type ReactNode, type RefObject } from "react";
 import { selectControls, usePlayer } from "@videojs/react";
 import { Check, Heart, Lightbulb, Mic, MicOff, Plus, Video, VideoOff } from "lucide-react";
 import { Avatar, pill } from "@/components/app";
-import { clock, duck0, duckGain, duckStep, REACTS, VIDEO_SEATS, type ReactKind } from "@/lib/party";
+import { clampBox, clock, DRAG_PX, duck0, duckGain, duckStep, FACES_KEY, fromFrac, parseBoxes, REACTS, resizeAt, snapBox, TILE_BIG, toFrac, VIDEO_SEATS, type Box, type ReactKind } from "@/lib/party";
 import { Call, rtcIce, type Kind, type Pub } from "@/lib/rtc";
 import { cn } from "@/lib/utils";
 
@@ -24,6 +24,12 @@ export function useParty(room: string, send: (m: object) => void, video: RefObje
   const [, bump] = useReducer((x: number) => x + 1, 0);
   const call = useRef<Call | null>(null), ice = useRef<RTCIceServer[]>([]), warned = useRef(false);
   const member = `${room}:${you}`;
+  // where each face tile sits (fractions of the player), per slot: self, partner, o0, o1... (others in order)
+  const [boxes, setBoxes] = useState<Record<string, Box>>({});
+  useEffect(() => { try { setBoxes(parseBoxes(localStorage.getItem(FACES_KEY))); } catch {} }, []); // eslint-disable-line react-hooks/set-state-in-effect -- storage only after hydration
+  const keep = (n: Record<string, Box>) => { try { localStorage.setItem(FACES_KEY, JSON.stringify(n)); } catch {} return n; };
+  const setBox = useCallback((slot: string, b: Box) => setBoxes((x) => keep({ ...x, [slot]: b })), []);
+  const resetFaces = () => setBoxes(keep({}));
 
   // a new room (or none): start clean, and leaving stops camera and mic and ends the session at once
   useEffect(() => {
@@ -121,7 +127,7 @@ export function useParty(room: string, send: (m: object) => void, video: RefObje
     return () => removeEventListener("keydown", on, true);
   }, [room, you, ok, toggle]);
 
-  return { room, members, you, mode, setMode, ok, cam, mic, busy, toggle, note, hidden, setHidden, tray, setTray, react, floats, marks, burst, onMsg, call, seatsTaken };
+  return { room, members, you, mode, setMode, ok, cam, mic, busy, toggle, note, hidden, setHidden, tray, setTray, react, floats, marks, burst, onMsg, call, seatsTaken, boxes, setBox, resetFaces };
 }
 export type Party = ReturnType<typeof useParty>;
 
@@ -175,6 +181,109 @@ function Face({ party, m, className, big }: { party: Party; m: Member; className
   );
 }
 
+type Layer = { party: Party; layer: HTMLDivElement | null; dims: [number, number] };
+/** A face over the film: drag to move (snaps onto an edge within 24 px), corner handle, pinch or + − to resize, arrows to move,
+ *  double-click (or "Make bigger" when double-click is the heart) for big. Until moved it sits where the layout puts it.
+ *  Pointer and key events are handled natively on the tile: React's handlers run only after an event has passed the
+ *  player's own listeners, too late to keep a drag from pausing the film or showing the controls. */
+function Tile({ party, layer, dims: [W, H], slot, ar, label, heart, onDrag, className, children }: Layer & {
+  slot: string; ar: number; label: string; heart?: boolean; onDrag?: () => void; className?: string; children: ReactNode;
+}) {
+  const el = useRef<HTMLDivElement>(null);
+  const g = useRef({ pts: new Map<number, [number, number]>(), from: null as Box | null, cur: null as Box | null, x: 0, y: 0, d: 1, mode: "", moved: false, up: 0, prev: 0 });
+  const f = party.boxes[slot], b = f && W ? clampBox(fromFrac(f, W, H), ar, W, H) : null;
+  const bigW = clampBox({ x: 0, y: 0, w: W * TILE_BIG }, ar, W, H).w, isBig = !!b && Math.abs(b.w - bigW) < 4;
+
+  const here = (): Box => { const a = el.current!.getBoundingClientRect(), o = layer!.getBoundingClientRect(); return { x: a.left - o.left, y: a.top - o.top, w: a.width }; };
+  const paint = (x: Box) => {
+    x = g.current.cur = clampBox(x, ar, layer!.clientWidth, layer!.clientHeight);
+    Object.assign(el.current!.style, { position: "absolute", left: `${x.x}px`, top: `${x.y}px`, width: `${x.w}px`, height: `${x.w * ar}px` });
+    return x;
+  };
+  const commit = (x: Box, snap = true) => {
+    const W = layer!.clientWidth, H = layer!.clientHeight;
+    x = paint(x); if (snap) x = paint(snapBox(x, ar, W, H));
+    party.setBox(slot, toFrac(x, W, H));
+  };
+  const toggleBig = () => {
+    const x = here(), back = Math.abs(x.w - bigW) < 4 && g.current.prev;
+    if (!back) g.current.prev = x.w;
+    commit(resizeAt(x, back || bigW, ar), false);
+  };
+
+  useEffect(() => {
+    const t = el.current, s = g.current;
+    if (!t || !layer) return;
+    const dist = () => { const [a, c] = [...s.pts.values()]; return Math.hypot(a[0] - c[0], a[1] - c[1]) || 1; };
+    const start = (id: number) => { s.moved = true; try { t.setPointerCapture(id); } catch {} onDrag?.(); };
+    const down = (e: PointerEvent) => {
+      if ((e.pointerType === "mouse" && e.button !== 0) || (e.target as Element).closest("button")) return;
+      s.pts.set(e.pointerId, [e.clientX, e.clientY]);
+      if (s.pts.size > 2) return;
+      s.from = here(); s.cur = null; s.x = e.clientX; s.y = e.clientY;
+      if (s.pts.size === 2) { s.mode = "pinch"; s.d = dist(); s.moved = true; onDrag?.(); }
+      else { s.mode = (e.target as Element).closest("[data-handle]") ? "size" : "move"; s.moved = false; if (s.mode === "size") start(e.pointerId); }
+    };
+    const move = (e: PointerEvent) => {
+      if (!s.pts.has(e.pointerId) || !s.from) return;
+      s.pts.set(e.pointerId, [e.clientX, e.clientY]);
+      const dx = e.clientX - s.x, dy = e.clientY - s.y, f = s.from;
+      if (!s.moved) { if (Math.hypot(dx, dy) < DRAG_PX) return; start(e.pointerId); }
+      e.stopPropagation(); e.preventDefault(); // not the player's show-controls
+      if (s.mode === "move") paint({ x: f.x + dx, y: f.y + dy, w: f.w });
+      else if (s.mode === "size") paint({ x: f.x, y: f.y, w: f.w + (Math.abs(dx) > Math.abs(dy / ar) ? dx : dy / ar) });
+      else if (s.pts.size === 2) paint(resizeAt(f, (f.w * dist()) / s.d, ar));
+    };
+    const up = (e: PointerEvent) => {
+      if (!s.pts.delete(e.pointerId)) return;
+      if (s.moved) { // a drag, resize or pinch: never a click on the film
+        e.stopPropagation();
+        if (s.from && s.cur) commit(s.cur);
+        s.from = null; if (!s.pts.size) s.moved = false;
+        return;
+      }
+      s.from = null;
+      if (e.type === "pointercancel" || heart) return; // date night: double-click is the heart, and the whisper hold needs its pointerup
+      const now = performance.now();
+      if (now - s.up < 300) { e.stopPropagation(); s.up = 0; toggleBig(); } // the second click is ours: not the skin's double-tap seek
+      else s.up = now;
+    };
+    const key = (e: KeyboardEvent) => {
+      // only a tile focused from the keyboard (Tab): one clicked to pause leaves the arrows to the player. M/V/R/H go earlier, on window
+      if (e.target !== t || !t.matches(":focus-visible") || e.metaKey || e.ctrlKey || e.altKey) return;
+      const n = e.shiftKey ? 64 : 16, d = ({ ArrowLeft: [-n, 0], ArrowRight: [n, 0], ArrowUp: [0, -n], ArrowDown: [0, n] } as Record<string, number[]>)[e.key];
+      const k = e.key === "+" || e.key === "=" ? 1.15 : e.key === "-" || e.key === "_" ? 1 / 1.15 : 0;
+      if (!d && !k) return;
+      e.preventDefault(); e.stopPropagation(); // the player's arrow seek and volume only when no tile has focus
+      const x = here();
+      commit(d ? { x: x.x + d[0], y: x.y + d[1], w: x.w } : resizeAt(x, x.w * k, ar), false);
+    };
+    const on: [string, EventListener][] = [["pointerdown", down as EventListener], ["pointermove", move as EventListener], ["pointerup", up as EventListener], ["pointercancel", up as EventListener], ["keydown", key as EventListener]];
+    for (const [n, h] of on) t.addEventListener(n, h);
+    return () => { for (const [n, h] of on) t.removeEventListener(n, h); };
+  });
+
+  return (
+    <div ref={el} role="group" tabIndex={0} aria-label={label} style={b ? { position: "absolute", left: b.x, top: b.y, width: b.w, height: b.w * ar } : undefined}
+      className={cn("group/tile pointer-events-auto relative shrink-0 cursor-grab touch-none outline-none select-none focus-visible:ring-2 focus-visible:ring-primary active:cursor-grabbing", className)}>
+      {children}
+      <span data-handle data-interactive aria-hidden className="absolute -right-1 -bottom-1 z-10 size-5 cursor-nwse-resize rounded-full border-2 border-[#15171f] bg-primary opacity-0 transition-opacity group-hover/tile:opacity-100 group-focus-visible/tile:opacity-100" />
+      {heart && <button onClick={toggleBig} className="absolute top-1 left-1/2 z-10 -translate-x-1/2 rounded-full bg-[#15171f]/80 px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap opacity-0 transition-opacity group-hover/tile:opacity-100 focus-visible:opacity-100">{isBig ? "Make smaller" : "Make bigger"}</button>}
+    </div>
+  );
+}
+/** the player-sized layer the tiles live in, and its size */
+function useLayer() {
+  const [layer, setLayer] = useState<HTMLDivElement | null>(null), [dims, setDims] = useState<[number, number]>([0, 0]);
+  useEffect(() => {
+    if (!layer) return;
+    const o = new ResizeObserver(() => setDims([layer.clientWidth, layer.clientHeight]));
+    o.observe(layer);
+    return () => o.disconnect();
+  }, [layer]);
+  return { layer, dims, setLayer };
+}
+
 /** Remote voices play here, whatever the faces are doing (hidden, date night, panel open). */
 export function Voices({ party }: { party: Party }) {
   const c = party.call.current;
@@ -184,21 +293,25 @@ export function Voices({ party }: { party: Party }) {
 
 /** Faces in the black bar above the film (top right, under the header while the controls show), or date night's bubbles. */
 export function Faces({ party }: { party: Party }) {
-  const controls = usePlayer(selectControls)?.controlsVisible ?? true;
+  const controls = usePlayer(selectControls)?.controlsVisible ?? true, { layer, dims, setLayer } = useLayer();
   if (!party.you) return null;
   const others = party.members.filter((m) => m.id !== party.you), me = party.members.find((m) => m.id === party.you);
   const shown = others.filter((m) => m.cam || m.mic);
   const lastFloat = party.floats.at(-1), who = lastFloat && party.members.find((m) => m.id === lastFloat.by);
   const said = lastFloat && (lastFloat.by === party.you ? "You" : who?.name ?? "Someone") + { heart: " sent a heart", laugh: " laughed", gasp: " gasped", cry: " cried" }[lastFloat.kind];
   const date = party.mode === "date" && others.length > 0, partner = others.find((m) => m.cam) ?? others[0];
+  const t = { party, layer, dims }, mine = "Your video, drag to move", theirs = (m: Member) => `${m.name}'s video, drag to move`;
+  // one player-sized layer: unmoved tiles sit in its flex row (top right, under the header while the controls show), moved ones where they were left
   return (
     <>
-      {!party.hidden && date && <DateNight party={party} partner={partner} me={me} />}
+      {!party.hidden && date && <div ref={setLayer} className="pointer-events-none absolute inset-0 z-20 flex items-end justify-end pr-4 pb-28 md:pr-8"><DateNight t={t} partner={partner} me={me} /></div>}
       {!party.hidden && !date && (shown.length > 0 || party.cam || party.mic) && (
-        <div className={cn("absolute right-2 z-20 flex gap-1.5 transition-[top] duration-300 sm:right-4 sm:gap-2", controls ? "top-[68px] md:top-[76px]" : "top-2.5")}>
-          {shown.slice(0, 4).map((m, i) => <div key={m.id} className={cn("relative", i >= 3 && "max-sm:hidden")}><Face party={party} m={m} className="h-[52px] w-[78px] rounded-[12px] sm:h-[74px] sm:w-[112px] sm:rounded-[14px]" /><Floats party={party} id={m.id} className="top-6" /></div>)}
+        <div ref={setLayer} className={cn("pointer-events-none absolute inset-0 z-20 flex items-start justify-end gap-1.5 pr-2 transition-[padding] duration-300 sm:gap-2 sm:pr-4", controls ? "pt-[68px] md:pt-[76px]" : "pt-2.5")}>
+          {shown.slice(0, 4).map((m, i) => <Tile key={m.id} {...t} slot={`o${i}`} ar={74 / 112} label={theirs(m)} className={cn("h-[52px] w-[78px] rounded-[12px] sm:h-[74px] sm:w-[112px] sm:rounded-[14px]", i >= 3 && "max-sm:hidden")}>
+            <Face party={party} m={m} className="size-full rounded-[12px] sm:rounded-[14px]" /><Floats party={party} id={m.id} className="top-6" /></Tile>)}
           {shown.length > 4 && <span className="grid h-[52px] place-items-center rounded-[12px] bg-[#1E2129] px-2 text-sm font-semibold sm:h-[74px]">+{shown.length - 4}</span>}
-          {me && (party.cam || party.mic) && <div className="relative"><Face party={party} m={me} className="size-[52px] rounded-[12px] opacity-90 sm:size-[74px] sm:rounded-[14px]" /><Floats party={party} id={me.id} className="top-6" /></div>}
+          {me && (party.cam || party.mic) && <Tile {...t} slot="self" ar={1} label={mine} className="size-[52px] rounded-[12px] opacity-90 sm:size-[74px] sm:rounded-[14px]">
+            <Face party={party} m={me} className="size-full rounded-[12px] sm:rounded-[14px]" /><Floats party={party} id={me.id} className="top-6" /></Tile>}
         </div>
       )}
       {party.tray && (
@@ -223,8 +336,8 @@ export function Faces({ party }: { party: Party }) {
 }
 
 /** Date night: the partner as one big round bubble, yourself small. Double-click = heart, hold = whisper (mic only while held). */
-function DateNight({ party, partner, me }: { party: Party; partner: Member; me?: Member }) {
-  const held = useRef(0), whisper = useRef<Promise<void> | null>(null), [hint, setHint] = useState(true);
+function DateNight({ t, partner, me }: { t: Layer; partner: Member; me?: Member }) {
+  const party = t.party, held = useRef(0), whisper = useRef<Promise<void> | null>(null), [hint, setHint] = useState(true);
   useEffect(() => { const t = setTimeout(() => setHint(false), 8000); return () => clearTimeout(t); }, []);
   const down = () => {
     if (!party.ok || party.mic) return;
@@ -235,17 +348,21 @@ function DateNight({ party, partner, me }: { party: Party; partner: Member; me?:
     const w = whisper.current; whisper.current = null;
     w?.then(() => party.toggle("audio", false)); // released before the mic was up: it closes once it is
   };
+  // the self bubble's default spot: just above-left of the partner's (partner: 104 / 140 px, 16 / 32 px from the right, 112 px up)
   return (
-    <div className="absolute right-4 bottom-28 z-20 md:right-8">
-      <div className="relative" onDoubleClick={() => party.react("heart")} onPointerDown={down} onPointerUp={up} onPointerLeave={up} onContextMenu={(e) => e.preventDefault()}>
-        <div className="absolute -inset-1.5 rounded-full shadow-[0_0_0_2px_rgb(242_180_90/0.7),0_0_30px_rgb(242_180_90/0.35)]" />
-        <Face party={party} m={partner} big className="size-[104px] cursor-pointer touch-none rounded-full select-none sm:size-[140px] [&>span:last-of-type]:hidden" />
-        <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-primary px-2.5 py-px text-xs font-bold text-primary-foreground">{partner.name}</span>
-        <Floats party={party} id={partner.id} className="top-4" />
-      </div>
-      {me && (party.cam || party.mic) && <div className="absolute -top-2 -left-12"><Face party={party} m={me} className="size-[46px] rounded-full ring-2 ring-white/55 [&>span:last-of-type]:hidden" /><Floats party={party} id={me.id} className="top-0" /></div>}
-      {hint && <p className="page-in absolute right-0 -bottom-9 w-max max-w-[80vw] rounded-full bg-[#15171f]/70 px-3 py-1 text-xs text-foreground/75">Double-click {partner.name} to send a heart{party.ok ? " · hold to whisper" : ""}</p>}
-    </div>
+    <>
+      <Tile {...t} slot="partner" ar={1} heart onDrag={up} label={`${partner.name}'s video, drag to move`} className="size-[104px] rounded-full sm:size-[140px]">
+        <div className="relative size-full" onDoubleClick={() => party.react("heart")} onPointerDown={down} onPointerUp={up} onPointerLeave={up} onContextMenu={(e) => e.preventDefault()}>
+          <div className="absolute -inset-1.5 rounded-full shadow-[0_0_0_2px_rgb(242_180_90/0.7),0_0_30px_rgb(242_180_90/0.35)]" />
+          <Face party={party} m={partner} big className="size-full cursor-pointer rounded-full [&>span:last-of-type]:hidden" />
+          <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-primary px-2.5 py-px text-xs font-bold text-primary-foreground">{partner.name}</span>
+          <Floats party={party} id={partner.id} className="top-4" />
+        </div>
+        {hint && <p className="page-in absolute right-0 -bottom-9 w-max max-w-[80vw] rounded-full bg-[#15171f]/70 px-3 py-1 text-xs text-foreground/75">Double-click {partner.name} to send a heart{party.ok ? " · hold to whisper" : ""}</p>}
+      </Tile>
+      {me && (party.cam || party.mic) && <Tile {...t} slot="self" ar={1} label="Your video, drag to move" className="absolute right-[122px] bottom-[178px] size-[46px] rounded-full sm:right-[158px] sm:bottom-[214px] md:right-[174px]">
+        <Face party={party} m={me} className="size-full rounded-full ring-2 ring-white/55 [&>span:last-of-type]:hidden" /><Floats party={party} id={me.id} className="top-0" /></Tile>}
+    </>
   );
 }
 
@@ -317,6 +434,7 @@ export function TogetherPanel({ party, link, onLights, onLeave }: { party: Party
         {(Object.keys(REACTS) as ReactKind[]).map((k) => <button key={k} onClick={() => party.react(k)} aria-label={k} className="beam grid h-10 flex-1 place-items-center rounded-full text-2xl hover:bg-white/8">{REACTS[k]}</button>)}
       </div>
       <button className={cn(pill.primary, "w-full")} onClick={onLights}><Lightbulb />Lights down</button>
+      {Object.keys(party.boxes).length > 0 && <button onClick={party.resetFaces} className="text-[13px] font-semibold text-foreground/75 hover:text-foreground">Reset faces <span className="font-normal text-foreground/55">· back to their spots and sizes</span></button>}
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 rounded-2xl bg-[#1F2127] px-3.5 py-3">
         <div className="flex flex-col"><span className="text-xs text-foreground/55">Room code</span>
           <span className="font-display text-[22px] font-extrabold tracking-[0.2em] text-primary">{party.room}</span></div>

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { canSend, clock, describe, driftFix, duck0, duckGain, duckStep, fromMs, guard, hold, matchSource, nextOffset, ownSeek, pickCut, roomPos, sameCopy, sameCut, toMs } from "./party.ts";
+import { canSend, clampBox, clock, fromFrac, parseBoxes, resizeAt, snapBox, toFrac, describe, driftFix, duck0, duckGain, duckStep, fromMs, guard, hold, matchSource, nextOffset, ownSeek, pickCut, roomPos, sameCopy, sameCut, toMs } from "./party.ts";
 
 // positions: integer ms on the wire (the old web sent float seconds: 153.4 meant 153 s to web, 153 ms to the phone)
 assert.equal(toMs(153.4567), 153457); assert.equal(fromMs(153457), 153.457); assert.equal(toMs(NaN), 0);
@@ -62,4 +62,21 @@ assert.deepEqual(driftFix(-150, 1.05, true), { rate: 1.05 }, "keeps nudging unti
 assert.deepEqual(driftFix(1600, 1, true), { rate: 1, seek: true }); assert.deepEqual(driftFix(-5000, 0.95, true), { rate: 1, seek: true });
 
 assert.equal(clock(3723000), "1:02:03"); assert.equal(clock(62000), "1:02");
+// face tiles: inside the player, 96 px to half its width, snapped onto an edge within 24 px, stored as fractions
+const ar = 74 / 112;
+assert.deepEqual(clampBox({ x: -50, y: 990, w: 112 }, ar, 1900, 1000), { x: 0, y: 1000 - 112 * ar, w: 112 });
+assert.equal(clampBox({ x: 0, y: 0, w: 40 }, ar, 1900, 1000).w, 96, "never smaller than 96 px");
+assert.equal(clampBox({ x: 0, y: 0, w: 1500 }, ar, 1900, 1000).w, 950, "never wider than half the player");
+assert.equal(clampBox({ x: 0, y: 0, w: 900 }, 1, 1900, 600).w, 600, "never taller than the player");
+assert.equal(clampBox({ x: 0, y: 0, w: 300 }, ar, 150, 300).w, 75, "a tiny player: half its width wins over 96");
+assert.equal(clampBox({ x: 1850, y: 0, w: 200 }, ar, 1900, 1000).x, 1700);
+assert.deepEqual(snapBox({ x: 20, y: 500, w: 100 }, 1, 1900, 1000), { x: 0, y: 500, w: 100 }, "near the left edge");
+assert.deepEqual(snapBox({ x: 1780, y: 880, w: 100 }, 1, 1900, 1000), { x: 1800, y: 900, w: 100 }, "near the right and bottom");
+assert.deepEqual(snapBox({ x: 30, y: 30, w: 100 }, 1, 1900, 1000), { x: 30, y: 30, w: 100 }, "24 px+ away: stays");
+assert.deepEqual(resizeAt({ x: 100, y: 100, w: 100 }, 200, 0.5), { x: 50, y: 75, w: 200 }, "grows about its centre");
+const fb = toFrac({ x: 950, y: 250, w: 190 }, 1900, 1000);
+assert.deepEqual(fb, { x: 0.5, y: 0.25, w: 0.1 }); assert.deepEqual(fromFrac(fb, 3800, 2000), { x: 1900, y: 500, w: 380 }, "fullscreen: same spot, same share");
+assert.deepEqual(parseBoxes('{"self":{"x":0.1,"y":0.2,"w":0.3},"o0":{"x":"a"},"o1":{"x":2,"y":0,"w":0.1}}'), { self: { x: 0.1, y: 0.2, w: 0.3 } });
+assert.deepEqual(parseBoxes("not json"), {}); assert.deepEqual(parseBoxes(null), {}); assert.deepEqual(parseBoxes("null"), {});
+
 console.log("party ok");
