@@ -208,7 +208,7 @@ function Tile({ party, layer, dims: [W, H], slot, ar, label, heart, onDrag, clas
   const toggleBig = () => {
     const x = here(), back = Math.abs(x.w - bigW) < 4 && g.current.prev;
     if (!back) g.current.prev = x.w;
-    commit(resizeAt(x, back || bigW, ar), false);
+    commit(resizeAt(x, back || bigW, ar, W, H), false);
   };
 
   useEffect(() => {
@@ -236,7 +236,7 @@ function Tile({ party, layer, dims: [W, H], slot, ar, label, heart, onDrag, clas
       e.stopPropagation(); e.preventDefault(); // not the player's show-controls
       if (s.mode === "move") paint({ x: f.x + dx, y: f.y + dy, w: f.w });
       else if (s.mode === "size") paint({ x: f.x, y: f.y, w: f.w + (Math.abs(dx) > Math.abs(dy / ar) ? dx : dy / ar) });
-      else if (s.pts.size === 2) paint(resizeAt(f, (f.w * dist()) / s.d, ar));
+      else if (s.pts.size === 2) paint(resizeAt(f, (f.w * dist()) / s.d, ar, layer.clientWidth, layer.clientHeight));
     };
     const up = (e: PointerEvent) => {
       if (!s.pts.delete(e.pointerId)) return;
@@ -260,7 +260,7 @@ function Tile({ party, layer, dims: [W, H], slot, ar, label, heart, onDrag, clas
       if (!d && !k) return;
       e.preventDefault(); e.stopPropagation(); // the player's arrow seek and volume only when no tile has focus
       const x = here();
-      commit(d ? { x: x.x + d[0], y: x.y + d[1], w: x.w } : resizeAt(x, x.w * k, ar), false);
+      commit(d ? { x: x.x + d[0], y: x.y + d[1], w: x.w } : resizeAt(x, x.w * k, ar, layer.clientWidth, layer.clientHeight), false);
     };
     const on: [string, EventListener][] = [["pointerdown", down as EventListener], ["pointermove", move as EventListener], ["pointerup", up as EventListener], ["pointercancel", up as EventListener], ["keydown", key as EventListener]];
     for (const [n, h] of on) t.addEventListener(n, h);

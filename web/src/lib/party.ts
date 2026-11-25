@@ -102,8 +102,11 @@ export function snapBox(b: Box, ar: number, W: number, H: number): Box {
   const h = b.w * ar, x = b.x < SNAP_PX ? 0 : W - b.x - b.w < SNAP_PX ? W - b.w : b.x, y = b.y < SNAP_PX ? 0 : H - b.y - h < SNAP_PX ? H - h : b.y;
   return { x, y, w: b.w };
 }
-/** a new width, same centre */
-export const resizeAt = (b: Box, w: number, ar: number): Box => ({ x: b.x + (b.w - w) / 2, y: b.y + ((b.w - w) * ar) / 2, w });
+/** a new width (held to clampBox's limits first, so pushing past them doesn't walk the tile off-centre), same centre */
+export const resizeAt = (b: Box, w: number, ar: number, W: number, H: number): Box => {
+  w = clampBox({ x: 0, y: 0, w }, ar, W, H).w;
+  return { x: b.x + (b.w - w) / 2, y: b.y + ((b.w - w) * ar) / 2, w };
+};
 export const toFrac = (b: Box, W: number, H: number): Box => ({ x: b.x / W, y: b.y / H, w: b.w / W });
 export const fromFrac = (f: Box, W: number, H: number): Box => ({ x: f.x * W, y: f.y * H, w: f.w * W });
 /** the saved spots, keeping only well-formed ones */
