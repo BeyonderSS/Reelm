@@ -29,6 +29,9 @@ export const Avatar = ({ id, size = 36, ring }: { id: string; size?: number; rin
   </span>
 );
 
+/** A screen that keeps turning from a phone into a TV and back ("Get the apps"). */
+export const DevMorph = () => <span aria-hidden className="devmorph"><i /><b /></span>;
+
 const LINKS = [["/", "Home", Home], ["/search", "Search", Search], ["/live", "Live TV", Tv], ["/schedule", "Schedule", CalendarDays], ["/library", "Library", Library]] as const;
 /** Nav entries a profile has hidden are gone (Schedule is anime-only). */
 const linksFor = (p?: Profile) => LINKS.filter(([h]) => (h !== "/live" || shows(p, "live")) && (h !== "/schedule" || shows(p, "anime")));
@@ -104,6 +107,9 @@ export function Nav() {
           <input ref={input} aria-label="Search titles" value={q} onChange={(e) => setQ(e.target.value)} onBlur={() => !q && setOpen(false)} onKeyDown={(e) => e.key === "Escape" && (setQ(""), setOpen(false))}
             placeholder="Search anime, movies, series" tabIndex={open ? 0 : -1} className={cn("h-full min-w-0 flex-1 bg-transparent pr-4 text-sm outline-none placeholder:text-foreground/40", !open && "pointer-events-none w-0 opacity-0")} />
         </form>
+        {/* the way to the TV and phone apps; just the morphing icon on phones */}
+        <Link href="/apps" aria-label="Get the apps" aria-current={active(path, "/apps") ? "page" : undefined}
+          className="beam glint -mr-1 flex h-10 shrink-0 items-center gap-2.5 rounded-full bg-primary/12 px-[9px] text-sm font-bold text-primary md:-mr-4 lg:h-[38px] lg:pr-4 lg:pl-3"><DevMorph /><span className="hidden lg:inline">Get the apps</span></Link>
         <div ref={menuRef} className="relative">
           <button aria-haspopup="menu" aria-expanded={menu} aria-label={`${s.profile!.name}, account menu`} onClick={() => setMenu(!menu)} className="beam flex items-center gap-2 rounded-full p-0.5 hover:bg-white/6 lg:pl-3">
             <span className="hidden text-sm text-foreground/72 lg:inline">{s.profile!.name}</span><Avatar id={s.profile!.avatar} size={38} ring={menu} />
@@ -127,6 +133,8 @@ export function Nav() {
                 {adminOn && <Link role="menuitem" href="/admin" className={cn(item, "text-primary")}><ShieldCheck className="size-4" />Open admin</Link>}
               </>}
               <div className="my-1 h-px bg-white/8" />
+              <Link role="menuitem" href="/apps" className={cn(item, "bg-primary/10 hover:bg-primary/16")}><DevMorph />
+                <span className="flex min-w-0 flex-col"><b className="text-[15px] font-semibold">Reelm on your TV and phone</b><span className="text-[12.5px] text-foreground/62">Android TV, Fire TV, Android</span></span></Link>
               <button role="menuitem" onClick={() => { set({}); router.replace("/welcome"); }} className={item}><LogOut className="size-4 text-foreground/60" />{s.token ? "Sign out" : "Leave guest mode"}</button>
             </div>
           )}

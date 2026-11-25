@@ -309,3 +309,106 @@ textarea.giant:focus-visible { outline: none; }
 .burst { animation: burst 1.8s ease-out forwards; }
 @keyframes tick { from { opacity: 0; transform: scale(1.6); } }
 .tick { animation: tick 420ms var(--ease-dusk); }
+
+/* ---- "Get the apps": a screen that morphs from a phone into a TV (header chip, account menu) ---- */
+.devmorph { display: flex; width: 22px; height: 22px; flex: none; flex-direction: column; align-items: center; justify-content: center; gap: 1px; }
+.devmorph > i { box-sizing: border-box; border: 2px solid #f2b45a; animation: morph 4s cubic-bezier(0.2, 0, 0, 1) infinite; }
+.devmorph > b { width: 10px; height: 2px; border-radius: 1px; background: #f2b45a; animation: stand 4s cubic-bezier(0.2, 0, 0, 1) infinite; }
+@keyframes morph { 0%, 30%, 100% { width: 10px; height: 17px; border-radius: 3px; } 50%, 80% { width: 21px; height: 13px; border-radius: 2px; } }
+@keyframes stand { 0%, 30%, 100% { opacity: 0; transform: scaleX(0.2); } 50%, 80% { opacity: 1; transform: scaleX(1); } }
+@keyframes glint { 0%, 100% { box-shadow: 0 0 0 1px rgb(242 180 90 / 0.35); } 50% { box-shadow: 0 0 0 1px rgb(242 180 90 / 0.8), 0 0 18px rgb(242 180 90 / 0.35); } }
+.glint { animation: glint 4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .devmorph > i { width: 10px; height: 17px; border-radius: 3px; } .devmorph > b { opacity: 0; } }
+
+/* ---- "Finish it on the couch": the paused frame flies into a phone (watch page) ---- */
+@keyframes handoff-in { from { opacity: 0; transform: translateY(16px); } }
+@keyframes handoff-fly { 0% { transform: translate(-560px, -230px) scale(4.2); opacity: 0; border-radius: 2px; } 20% { opacity: 0.9; } 100% { transform: none; opacity: 1; } }
+@keyframes handoff-pulse { 50% { box-shadow: 0 0 0 6px rgb(242 180 90 / 0.18); } }
+.handoff { animation: handoff-in 420ms cubic-bezier(0.2, 0, 0, 1); }
+.handoff-fly { animation: handoff-fly 900ms cubic-bezier(0.2, 0, 0, 1) 120ms backwards; }
+.handoff-qr { animation: handoff-pulse 2.4s ease-in-out 3s infinite; }
+
+/* ---- /apps: the dark room (a projector beam you aim at a TV or a phone), then the setup guide ---- */
+.apps { --pit: #0a0b0f; --hair: rgb(233 234 240 / 0.09); --mist2: rgb(233 234 240 / 0.72); --mist3: rgb(233 234 240 / 0.55); --disp: var(--font-bricolage), var(--font-figtree), sans-serif; --ez: cubic-bezier(0.2, 0, 0, 1); }
+.apps h1, .apps h2, .apps h3 { font-family: var(--disp); margin: 0; text-wrap: balance; line-height: 1.02; }
+.apps .room-wrap { position: relative; overflow: hidden; background: #0c0d12; }
+.apps .room { position: relative; height: 620px; max-width: 1400px; margin: 0 auto; cursor: crosshair; touch-action: manipulation; }
+.apps .wall { position: absolute; inset: 0 0 120px 0; background: repeating-linear-gradient(90deg, rgb(233 234 240 / 0.018) 0 2px, transparent 2px 46px), radial-gradient(ellipse at 70% 30%, #171922, #0c0d12 70%); }
+.apps .floor { position: absolute; inset: auto 0 0 0; height: 120px; background: linear-gradient(#111219, #08090c); }
+.apps .words { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none;
+  -webkit-mask: radial-gradient(circle 150px at var(--mx, 30%) var(--my, 40%), #000 30%, transparent 72%);
+          mask: radial-gradient(circle 150px at var(--mx, 30%) var(--my, 40%), #000 30%, transparent 72%); }
+.apps .words span { font-family: var(--disp); font-weight: 800; font-size: clamp(60px, 11vw, 170px); letter-spacing: -0.03em; line-height: 0.88; color: rgb(255 226 176 / 0.16); text-align: center; }
+.apps .spot { position: absolute; width: 300px; height: 300px; margin: -150px 0 0 -150px; border-radius: 50%; pointer-events: none; transition: opacity 0.25s;
+  background: radial-gradient(circle, rgb(255 226 176 / 0.22), rgb(242 180 90 / 0.06) 45%, transparent 70%); }
+.apps .beam2 { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.apps .proj { position: absolute; left: 3%; top: 34px; pointer-events: none; }
+.apps .room-copy { position: absolute; left: 3%; top: 120px; max-width: 440px; pointer-events: none; }
+.apps .room-copy h1 { font-size: clamp(38px, 5vw, 66px); font-weight: 800; letter-spacing: -0.025em; }
+.apps .room-copy p { margin-top: 14px; color: var(--mist2); font-size: 17px; max-width: 36ch; }
+.apps .tv-frame { background: var(--pit); border-radius: 14px; padding: 8px; box-shadow: 0 30px 70px -30px #000, 0 0 0 1px var(--hair); transition: box-shadow 0.5s var(--ez); }
+.apps .tv-frame img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 7px; }
+.apps .ph-frame { background: var(--pit); border-radius: 18px; padding: 4px; box-shadow: 0 30px 60px -20px #000, 0 0 0 1px var(--hair); transition: box-shadow 0.5s var(--ez); }
+.apps .ph-frame img { display: block; width: 100%; aspect-ratio: 9 / 20; object-fit: cover; border-radius: 14px; }
+.apps .console { position: absolute; right: 9%; bottom: 96px; width: min(46%, 560px); }
+.apps .plinth { height: 26px; margin: 0 -6%; background: linear-gradient(#22242c, #16171d); border-radius: 6px; box-shadow: 0 18px 30px -12px #000; }
+.apps .sofa { position: absolute; right: 2%; bottom: 0; width: min(30%, 320px); height: 110px; pointer-events: none; }
+.apps .sofa i { position: absolute; inset: auto 0 0 0; height: 78px; border-radius: 30px 30px 0 0; background: linear-gradient(#1e2029, #131419); }
+.apps .phone2 { position: absolute; right: 5%; bottom: 84px; width: 92px; transform: rotate(-8deg); transform-origin: bottom center; }
+.apps .target { display: block; width: 100%; padding: 0; border: 0; background: none; cursor: pointer; border-radius: 14px; }
+.apps .target:focus-visible { outline: 2px solid #f2b45a; outline-offset: 4px; }
+.apps .spill { position: absolute; inset: auto 0 0 0; height: 120px; pointer-events: none; opacity: 0; transition: opacity 0.6s var(--ez); background: radial-gradient(ellipse at 66% 0%, rgb(242 180 90 / 0.18), transparent 60%); }
+.apps .lit-tv .tv-frame { box-shadow: 0 0 0 1px rgb(242 180 90 / 0.5), 0 0 60px 6px rgb(242 180 90 / 0.22), 0 30px 70px -30px #000; }
+.apps .lit-tv .spill { opacity: 1; }
+.apps .lit-ph .ph-frame { box-shadow: 0 0 0 1px rgb(242 180 90 / 0.6), 0 0 40px 6px rgb(242 180 90 / 0.3); }
+.apps .hint { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); font-size: 14px; color: var(--mist3); pointer-events: none; white-space: nowrap; }
+.apps .grain { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0.06; mix-blend-mode: screen; }
+.apps .below { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; padding-block: 28px 64px; }
+.apps .card { display: flex; min-width: 0; flex-direction: column; gap: 14px; padding: 24px; border-radius: 24px; background: #1d2029; transition: opacity 0.4s var(--ez); }
+.apps .card h2 { font-size: 26px; font-weight: 800; }
+.apps .card.off { opacity: 0.45; }
+.apps .steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 12px; color: var(--mist2); list-style: decimal; }
+.apps .steps b { color: #e9eaf0; }
+.apps .big-url { font-family: var(--disp); font-weight: 800; font-size: clamp(26px, 3.4vw, 38px); letter-spacing: -0.01em; color: #f2b45a; word-break: break-all; }
+.apps .copy { flex: none; border-radius: 9px; padding: 8px 12px; background: #272b37; font-weight: 700; font-size: 13px; }
+.apps .qr { display: grid; flex: none; place-items: center; border-radius: 14px; background: #f2b45a; }
+.apps .qr img { display: block; image-rendering: pixelated; }
+.apps .guide { padding-block: 8px 90px; }
+.apps .guide-head { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+.apps .guide-head h2 { font-size: clamp(32px, 4vw, 48px); font-weight: 800; letter-spacing: -0.02em; }
+.apps .guide-head p { color: var(--mist2); max-width: 46ch; margin-top: 8px; }
+.apps .tabs { display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 5px; border-radius: 99px; background: #1d2029; }
+.apps .tabs button { border-radius: 99px; padding: 10px 18px; font-weight: 700; color: var(--mist2); }
+.apps .tabs button[aria-selected="true"] { background: #f2b45a; color: #1a1408; }
+.apps .steplist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.apps .step { display: grid; grid-template-columns: 72px minmax(0, 1fr) minmax(0, 1.35fr); gap: 22px; align-items: center; padding: 20px 22px; border-radius: 22px; background: #1d2029; }
+.apps .step.phn { grid-template-columns: 72px minmax(0, 1fr) 220px; }
+.apps .step .n { font-family: var(--disp); font-weight: 800; font-size: 56px; line-height: 1; color: #f2b45a; font-variant-numeric: tabular-nums; }
+.apps .step h3 { font-size: 21px; font-weight: 800; }
+.apps .step p { color: var(--mist2); margin-top: 6px; max-width: 44ch; }
+.apps .lbl { font-weight: 600; font-size: 14px; background: #272b37; color: #e9eaf0; border-radius: 7px; padding: 2px 8px; white-space: nowrap; }
+.apps .shot { max-width: 100%; overflow: hidden; border-radius: 12px; background: var(--pit); box-shadow: 0 0 0 1px var(--hair), 0 20px 40px -24px #000; }
+.apps .shot img { display: block; width: 100%; height: auto; }
+.apps .shot.ph { width: 200px; justify-self: end; padding: 5px; border-radius: 22px; }
+.apps .shot.ph img { border-radius: 18px; }
+.apps .shot.tvs { padding: 6px; border-radius: 10px; }
+.apps .illus { position: relative; display: flex; aspect-ratio: 16 / 9; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 20px; border-radius: 10px; background: #101116; box-shadow: 0 0 0 1px var(--hair); }
+.apps .illus .tag { position: absolute; right: 10px; top: 8px; font-size: 12px; color: var(--mist3); }
+.apps .illus .field { display: flex; width: 80%; max-width: 420px; gap: 8px; }
+.apps .illus .field span { flex: 1; padding: 10px 12px; border-radius: 6px; background: #e9eaf0; color: #15171f; font-weight: 700; font-size: 15px; word-break: break-all; }
+.apps .illus .field b { padding: 10px 14px; border-radius: 6px; background: #f2b45a; color: #1a1408; font-size: 15px; }
+@media (max-width: 820px) {
+  .apps .step, .apps .step.phn { grid-template-columns: 48px minmax(0, 1fr); }
+  .apps .step .n { font-size: 40px; }
+  .apps .step .shot, .apps .step .illus { grid-column: 1 / -1; }
+  .apps .shot.ph { justify-self: center; }
+  .apps .room { height: 560px; }
+  .apps .room-copy { top: 96px; right: 4%; }
+  .apps .console { right: 4%; width: 70%; bottom: 120px; }
+  .apps .phone2 { width: 70px; right: 4%; }
+  .apps .sofa { width: 40%; }
+  .apps .below { grid-template-columns: minmax(0, 1fr); }
+  .apps .hint { white-space: normal; text-align: center; width: 90%; }
+}
+/* phones: a taller room so the copy clears the TV */
+@media (max-width: 480px) { .apps .room { height: 620px; } }
