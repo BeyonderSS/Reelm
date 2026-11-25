@@ -198,4 +198,34 @@ class PartyTest {
         assertFalse(samePayload(phone, buildJsonObject { put("kind", "media"); put("mediaId", "mb:9"); put("season", 1); put("episode", 2) }))
         assertTrue(samePayload(buildJsonObject { put("kind", "anime"); put("slug", "x"); put("episode", 3) }, buildJsonObject { put("kind", "anime"); put("slug", "x"); put("episode", 3.0) }))
     }
+
+    @Test fun facesStayOnScreenAndSnapToEdgesAndBars() {
+        // 800×400 player, 100 px bars, 72 px min, 16 px snap, round faces
+        val e = 0.001f
+        val off = fitFace(-50f, 500f, 100f, 1f, 800f, 400f, 72f)
+        assertEquals(0f, off.x, e); assertEquals(300f / 400f, off.y, e) // dragged past the corner: clamped inside
+        assertEquals(72f / 800f, fitFace(10f, 10f, 20f, 1f, 800f, 400f, 72f).w, e) // pinched too small
+        assertEquals(400f / 800f, fitFace(0f, 0f, 700f, 1f, 800f, 400f, 72f).w, e) // too big: under 60 % but no taller than the player
+        assertEquals(480f / 800f, fitFace(0f, 0f, 700f, 0.5f, 800f, 400f, 72f).w, e) // 60 % of the width
+        val nearBar = fitFace(15f, 150f, 80f, 1f, 800f, 400f, 72f, bar = 100f, snap = 16f)
+        assertEquals(20f / 800f, nearBar.x, e) // right side flush with the left bar's inner edge (100 - 80)
+        assertEquals(150f / 400f, nearBar.y, e) // far from top and bottom: unchanged
+        val nearRightBar = fitFace(690f, 310f, 80f, 1f, 800f, 400f, 72f, bar = 100f, snap = 16f)
+        assertEquals(700f / 800f, nearRightBar.x, e); assertEquals(320f / 400f, nearRightBar.y, e) // right bar + bottom edge
+        assertEquals(300f / 800f, fitFace(300f, 150f, 80f, 1f, 800f, 400f, 72f, bar = 100f, snap = 16f).x, e) // mid-screen: stays
+        assertEquals(0f, fitFace(12f, 150f, 80f, 1f, 800f, 400f, 72f, snap = 16f).x, e) // no bars: screen edge
+    }
+
+    @Test fun sizeButtonCyclesAndSlotsAreSelfThenOthers() {
+        assertEquals(200f, nextFaceWidth(72f, 1f, 800f, 400f, 72f), 0.01f)
+        assertEquals(360f, nextFaceWidth(200f, 1f, 800f, 400f, 72f), 0.01f)
+        assertEquals(72f, nextFaceWidth(360f, 1f, 800f, 400f, 72f), 0.01f)
+        assertEquals(200f, nextFaceWidth(80f, 1f, 800f, 400f, 72f), 0.01f)
+        assertEquals(300f, nextFaceWidth(200f, 1f, 800f, 300f, 72f), 0.01f) // "big" capped to the player's height
+        assertEquals(72f, nextFaceWidth(300f, 1f, 800f, 300f, 72f), 0.01f) // ...and the next tap goes back to small
+        val ids = listOf("a", "me", "b", "c")
+        assertEquals(0, faceSlot(ids, "me", "me"))
+        assertEquals(1, faceSlot(ids, "a", "me"))
+        assertEquals(3, faceSlot(ids, "c", "me"))
+    }
 }

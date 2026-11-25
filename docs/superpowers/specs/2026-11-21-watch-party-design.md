@@ -70,6 +70,11 @@ account needed. They proxy `https://rtc.live.cloudflare.com/v1/apps/{appId}/…`
   level bars. Controls showing: the old avatar strip is replaced by the party pill (mic, cam, react, "Party · N")
   centred at the top; Settings gear no longer covered.
 - **Phone portrait** ("The couch"): the empty area under the video becomes a 2×2 grid of tiles + mic/cam + reactions.
+  Each tile has "Pop out": the face floats over the video as a bubble.
+- **Moving faces (phone)**: every face (tiles, bubbles, date-night partner, self) drags anywhere over the player,
+  clamped on screen, snapping flush to an edge or bar edge when dropped within 16 dp. Pinch resizes (72 dp to 60 %
+  of the width, aspect kept); with the controls up a corner button steps small / medium / big. Position and size
+  are saved per seat (self, partner, then others) as fractions of the player; "Reset faces" in the party sheet.
 - **Date night** (`mode=date`): partner as one big round bubble (140 dp), self small; double-tap partner = heart,
   hold = whisper (mic opens only while held if muted); synced hearts burst ("You both tapped at 1:02:14").
 - **Web**: faces in the black bar above the film (112×74 tiles, top-right), keyboard M mute, V camera, R react, H hide;

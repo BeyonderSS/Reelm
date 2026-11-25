@@ -1,6 +1,7 @@
 package com.anistream.feature.party
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -10,8 +11,12 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.BoxWithConstraintsScope
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -36,6 +41,8 @@ import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MicOff
 import androidx.compose.material.icons.rounded.NightsStay
+import androidx.compose.material.icons.rounded.OpenInFull
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.VideocamOff
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -47,9 +54,11 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,7 +69,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -68,6 +80,7 @@ import androidx.compose.ui.unit.coerceAtLeast
 import androidx.compose.ui.unit.coerceIn
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.min
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -91,6 +104,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import org.webrtc.EglBase
 import org.webrtc.RendererCommon
 import org.webrtc.VideoTrack
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 // Phone-only watch-party faces (libwebrtc): reached only when PartyViewModel.rtc is non-null.
@@ -215,52 +229,150 @@ private fun rememberAspect(player: Player): Float? {
     return aspect
 }
 
+/** Where the user left each face (member slot → [FaceSpot]); "Reset faces" in the party sheet clears it. */
+internal object FaceStore {
+    private var rev by mutableIntStateOf(0) // bumped on every write so faces recompose
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("party_faces", Context.MODE_PRIVATE)
+    fun get(ctx: Context, slot: Int): FaceSpot? = prefs(ctx).getString("$slot", null).takeIf { rev >= 0 }
+        ?.split(',')?.mapNotNull(String::toFloatOrNull)?.takeIf { it.size == 3 }?.let { FaceSpot(it[0], it[1], it[2]) }
+    fun put(ctx: Context, slot: Int, s: FaceSpot) { prefs(ctx).edit().putString("$slot", "${s.x},${s.y},${s.w}").apply(); rev++ }
+    fun reset(ctx: Context) { prefs(ctx).edit().clear().apply(); rev++ }
+}
+
+private fun whose(m: Member, me: String?) = if (m.id == me) "Your" else "${m.name}'s"
+
 /**
- * Landscape faces, drawn over the video by the phone player: tiles in the black side bars when the picture is
- * pillarboxed, draggable round bubbles when it isn't; Date night = one big partner bubble. With the controls
- * showing, the party pill (mic, camera, react, "Party · N") sits at the top under the bar, clear of Settings.
+ * A face the user can drag anywhere over the player and pinch to resize (or, with the controls showing, step through
+ * small/medium/big with the corner button). Sits at ([x0], [y0]) and [w0] wide until moved; then at its saved spot.
+ * Dropped within 16 dp of an edge or a black bar's edge, it snaps flush. Touches on it never reach the player.
  */
 @Composable
-fun BoxScope.PartyFaces(player: Player, controls: Boolean, fit: Boolean, vm: PartyViewModel = hiltViewModel()) {
+private fun BoxWithConstraintsScope.Movable(
+    slot: Int, who: String, x0: Dp, y0: Dp, w0: Dp, ratio: Float, bar: Dp, controls: Boolean, onTap: (() -> Unit)?,
+    modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit
+) {
+    val ctx = LocalContext.current
+    val d = LocalDensity.current
+    val sw = constraints.maxWidth.toFloat()
+    val sh = constraints.maxHeight.toFloat()
+    val minW = with(d) { min(72.dp, w0).toPx() }
+    val barPx = with(d) { bar.toPx() }
+    val snap = with(d) { 16.dp.toPx() }
+    val spot = FaceStore.get(ctx, slot)?.let { fitFace(it.x * sw, it.y * sh, it.w * sw, ratio, sw, sh, minW) }
+        ?: with(d) { fitFace(x0.toPx(), y0.toPx(), w0.toPx(), ratio, sw, sh, minW) }
+    val base by rememberUpdatedState(spot)
+    val tap by rememberUpdatedState(onTap)
+    var live by remember { mutableStateOf<FaceSpot?>(null) }
+    fun put(x: Float, y: Float, w: Float) = FaceStore.put(ctx, slot, fitFace(x, y, w, ratio, sw, sh, minW, barPx, snap))
+    val s = live ?: spot
+    val w = with(d) { (s.w * sw).toDp() }
+    Box(
+        Modifier
+            .offset { IntOffset((s.x * sw).roundToInt(), (s.y * sh).roundToInt()) }
+            .size(w, w * ratio)
+            .then(modifier)
+            .semantics { contentDescription = "$who video, drag to move" }
+            .then(if (onTap != null) Modifier.pointerInput(Unit) { detectTapGestures { tap?.invoke() } } else Modifier)
+            .pointerInput(slot, sw, sh, ratio, minW, barPx) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var moving = false
+                    var slop = Offset.Zero
+                    var zoom = 1f
+                    do {
+                        val e = awaitPointerEvent()
+                        val pan = e.calculatePan()
+                        val z = e.calculateZoom()
+                        if (!moving) {
+                            slop += pan; zoom *= z
+                            moving = slop.getDistance() > viewConfiguration.touchSlop || abs(zoom - 1f) > 0.05f
+                        }
+                        if (moving) {
+                            val c = live ?: base
+                            val cw = c.w * sw
+                            val nw = cw * z // pinch grows around the face's centre
+                            live = fitFace(c.x * sw + (cw - nw) / 2 + pan.x, c.y * sh + (cw - nw) * ratio / 2 + pan.y, nw, ratio, sw, sh, minW)
+                            e.changes.forEach { it.consume() }
+                        }
+                    } while (e.changes.any { it.pressed })
+                    live?.let { put(it.x * sw, it.y * sh, it.w * sw); live = null }
+                }
+            }
+    ) {
+        content()
+        if (controls) Box(
+            Modifier.align(Alignment.TopEnd).offset(14.dp, (-14).dp).size(48.dp).clip(Radius.round).clickable(role = Role.Button) {
+                val cw = s.w * sw
+                val nw = nextFaceWidth(cw, ratio, sw, sh, minW)
+                put(s.x * sw + (cw - nw) / 2, s.y * sh + (cw - nw) * ratio / 2, nw)
+            },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Rounded.OpenInFull, contentDescription = "Change size of ${if (who == "Your") "your" else who} video", tint = Ink.high,
+                modifier = Modifier.size(26.dp).background(Bg.badge, Radius.round).padding(5.dp))
+        }
+    }
+}
+
+/**
+ * Faces drawn over the video by the phone player. Fullscreen: tiles in the black side bars when the picture is
+ * pillarboxed, round bubbles when it isn't; Date night = one big partner bubble. Every face can be dragged anywhere
+ * and resized (see [Movable]). With the controls showing, the party pill (mic, camera, react, "Party · N") sits at the
+ * top under the bar, clear of Settings. Not fullscreen: only the faces popped out of the couch, as bubbles.
+ * [onTap] is the player's own tap (show/hide controls), so a tap on a face still does what a tap on the video does.
+ */
+@Composable
+fun BoxScope.PartyFaces(player: Player, controls: Boolean, fit: Boolean, fullscreen: Boolean = true, onTap: () -> Unit = {}, vm: PartyViewModel = hiltViewModel()) {
     val rtc = vm.rtc ?: return
     val room by vm.client.room.collectAsStateWithLifecycle()
     val r = room ?: return
     val aspect = rememberAspect(player)
     val dim = if (controls) 0.55f else 1f
     val me = vm.client.selfId
+    val ids = r.members.map { it.id }
     BoxWithConstraints(Modifier.matchParentSize()) {
+        if (!fullscreen) {
+            r.members.filter { it.id in vm.popped }.forEachIndexed { i, m ->
+                Movable(faceSlot(ids, m.id, me), whose(m, me), maxWidth - 72.dp - Space.sm, Space.sm + 80.dp * i, 72.dp, 1f, 0.dp, controls, onTap) {
+                    Face(m, vm, rtc, Modifier.fillMaxSize(), Radius.round)
+                }
+            }
+            return@BoxWithConstraints
+        }
         val bar = if (fit && aspect != null && aspect < maxWidth / maxHeight) (maxWidth - maxHeight * aspect) / 2 else 0.dp
         val partner = r.members.firstOrNull { it.id != me }
         if (r.mode == "date" && partner != null) {
-            DateNight(partner, r.members.firstOrNull { it.id == me }, player, vm, rtc, controls, bar)
+            DateNight(partner, r.members.firstOrNull { it.id == me }, player, vm, rtc, controls, bar, ids, onTap)
         } else {
             val faces = r.members.take(6)
             if (bar >= 88.dp) {
-                listOf(Alignment.CenterStart to faces.filterIndexed { i, _ -> i % 2 == 0 }, Alignment.CenterEnd to faces.filterIndexed { i, _ -> i % 2 == 1 })
-                    .forEach { (side, list) ->
-                        Column(
-                            Modifier.align(side).width(bar).alpha(dim),
-                            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(Space.sm)
-                        ) {
-                            list.forEach { m ->
-                                Face(m, vm, rtc, Modifier.size(80.dp, 104.dp))
-                                val level = (rtc.levels.collectAsStateWithLifecycle().value[m.id] ?: 0f) > TALK_THRESHOLD
-                                Text(
-                                    if (m.id == me) if (m.mic) "You" else "You · muted" else m.name,
-                                    style = AppType.label.copy(fontSize = 12.sp, color = if (level) Accent.main else Ink.body),
-                                    maxLines = 1, overflow = TextOverflow.Ellipsis
-                                )
-                            }
+                // two columns, centred in the bars: even seats left, odd seats right; each card = 80×104 tile + name
+                val card = 126.dp
+                faces.forEachIndexed { i, m ->
+                    val column = faces.indices.filter { it % 2 == i % 2 }
+                    val top = (maxHeight - card * column.size - Space.sm * (column.size - 1)) / 2
+                    val x = (bar - 80.dp) / 2 + if (i % 2 == 0) 0.dp else maxWidth - bar
+                    Movable(faceSlot(ids, m.id, me), whose(m, me), x, top + (card + Space.sm) * column.indexOf(i), 80.dp, card / 80.dp, bar, controls, onTap, Modifier.alpha(dim)) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Face(m, vm, rtc, Modifier.fillMaxWidth().weight(1f))
+                            val level = (rtc.levels.collectAsStateWithLifecycle().value[m.id] ?: 0f) > TALK_THRESHOLD
+                            Text(
+                                if (m.id == me) if (m.mic) "You" else "You · muted" else m.name,
+                                style = AppType.label.copy(fontSize = 12.sp, color = if (level) Accent.main else Ink.body),
+                                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp)
+                            )
                         }
                     }
+                }
             } else {
-                var drag by remember { mutableStateOf(Offset.Zero) }
-                Column(
-                    Modifier.align(Alignment.BottomEnd).padding(end = Space.lg, bottom = 96.dp)
-                        .offset { IntOffset(drag.x.roundToInt(), drag.y.roundToInt()) }.alpha(dim)
-                        .pointerInput(Unit) { detectDragGestures { c, d -> c.consume(); drag += d } },
-                    verticalArrangement = Arrangement.spacedBy(Space.sm)
-                ) { faces.forEach { Face(it, vm, rtc, Modifier.size(56.dp), Radius.round) } }
+                // a stack of bubbles in the bottom-right corner
+                faces.forEachIndexed { i, m ->
+                    val below = faces.size - 1 - i
+                    Movable(
+                        faceSlot(ids, m.id, me), whose(m, me), maxWidth - Space.lg - 56.dp, maxHeight - 96.dp - 56.dp - (56.dp + Space.sm) * below,
+                        56.dp, 1f, 0.dp, controls, onTap, Modifier.alpha(dim)
+                    ) { Face(m, vm, rtc, Modifier.fillMaxSize(), Radius.round) }
+                }
             }
         }
         if (controls) PartyPill(r, player, vm, rtc, Modifier.align(Alignment.TopCenter).padding(top = 60.dp))
@@ -268,34 +380,38 @@ fun BoxScope.PartyFaces(player: Player, controls: Boolean, fit: Boolean, vm: Par
 }
 
 @Composable
-private fun BoxScope.DateNight(partner: Member, self: Member?, player: Player, vm: PartyViewModel, rtc: PartyRtc, controls: Boolean, bar: Dp) {
+private fun BoxWithConstraintsScope.DateNight(partner: Member, self: Member?, player: Player, vm: PartyViewModel, rtc: PartyRtc, controls: Boolean, bar: Dp, ids: List<String>, onTap: () -> Unit) {
     val t = rememberToggles(rtc)
     // pillarboxed: the bubble lives in the right bar, sized to it (≥ 80 dp), off the picture; no bars: bottom-right corner
     val size = if (bar > 0.dp) (bar - 16.dp).coerceIn(80.dp, 140.dp) else 140.dp
     val end = if (bar > 0.dp) ((bar - size) / 2).coerceAtLeast(4.dp) else 14.dp
-    val selfEnd = if (bar > 0.dp) ((bar - 46.dp) / 2).coerceAtLeast(4.dp) else 138.dp
+    val selfEnd = if (bar > 0.dp) ((bar - 48.dp) / 2).coerceAtLeast(4.dp) else 138.dp
     val selfBottom = if (bar > 0.dp) 18.dp + size + 22.dp else 120.dp
     var hint by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) { kotlinx.coroutines.delay(6000); hint = false }
-    Box(
-        Modifier.align(Alignment.BottomEnd).padding(end = end, bottom = 18.dp).size(size)
-            .pointerInput(partner.id) {
-                var whispering = false
-                detectTapGestures(
-                    onDoubleTap = { vm.react("heart", player.currentPosition) },
-                    onLongPress = { t.askMic { whispering = true; rtc.whisper(true) } },
-                    onPress = { tryAwaitRelease(); if (whispering) { whispering = false; rtc.whisper(false) } }
-                )
-            }
+    val me = self?.id
+    // double-tap = heart and hold = whisper here, so no tap-through: resizing is pinch, or the size button with the controls up
+    Movable(
+        faceSlot(ids, partner.id, me), whose(partner, me), maxWidth - end - size, maxHeight - 18.dp - size, size, 1f, bar, controls, null,
+        Modifier.pointerInput(partner.id) {
+            var whispering = false
+            detectTapGestures(
+                onDoubleTap = { vm.react("heart", player.currentPosition) },
+                onLongPress = { t.askMic { whispering = true; rtc.whisper(true) } },
+                onPress = { tryAwaitRelease(); if (whispering) { whispering = false; rtc.whisper(false) } }
+            )
+        }
     ) {
-        Box(Modifier.align(Alignment.Center).requiredSize(size + 12.dp).border(2.dp, Accent.main.copy(alpha = 0.7f), Radius.round))
+        BoxWithConstraints(Modifier.matchParentSize()) { Box(Modifier.requiredSize(maxWidth + 12.dp).border(2.dp, Accent.main.copy(alpha = 0.7f), Radius.round)) }
         Face(partner, vm, rtc, Modifier.matchParentSize(), Radius.round, ring = false)
         Text(
             partner.name, style = AppType.label.copy(fontSize = 12.sp, color = Accent.on), maxLines = 1,
             modifier = Modifier.align(Alignment.BottomCenter).offset(y = 8.dp).background(Accent.main, Radius.pill).padding(horizontal = 10.dp, vertical = 2.dp)
         )
     }
-    if (self != null) Face(self, vm, rtc, Modifier.align(Alignment.BottomEnd).padding(end = selfEnd, bottom = selfBottom).size(46.dp).border(2.dp, Ink.body, Radius.round), Radius.round)
+    if (self != null) Movable(0, "Your", maxWidth - selfEnd - 48.dp, maxHeight - selfBottom - 48.dp, 48.dp, 1f, bar, controls, onTap) {
+        Face(self, vm, rtc, Modifier.fillMaxSize().border(2.dp, Ink.body, Radius.round), Radius.round)
+    }
     if (!controls) Row(
         Modifier.align(Alignment.TopStart).padding(14.dp).background(Bg.badge, Radius.pill).padding(horizontal = Space.md, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.sm)
@@ -397,7 +513,15 @@ fun PartyCouch(player: Player, vm: PartyViewModel = hiltViewModel()) {
                             onPress = { tryAwaitRelease(); if (whispering) { whispering = false; rtc.whisper(false) } }
                         )
                     } else Modifier
-                    Face(m, vm, rtc, Modifier.weight(1f).height(tall).then(gestures), label = true)
+                    Box(Modifier.weight(1f).height(tall)) {
+                        Face(m, vm, rtc, Modifier.fillMaxSize().then(gestures), label = true)
+                        val out = m.id in vm.popped
+                        val who = if (m.id == me) "your" else whose(m, me)
+                        Box(Modifier.align(Alignment.TopEnd)) {
+                            RoundButton(Icons.Rounded.PictureInPictureAlt, if (out) "Put $who video back" else "Pop out $who video", 48.dp,
+                                tint = if (out) Accent.main else Ink.high) { if (out) vm.popped.remove(m.id) else vm.popped.add(m.id) }
+                        }
+                    }
                 }
                 if (row.size == 1) Spacer(Modifier.weight(1f))
             }
@@ -515,6 +639,10 @@ internal fun PartySheet(payload: JsonObject, vm: PartyViewModel, rtc: PartyRtc) 
                     }
                 }
             }
+            if (configured != false) Text(
+                "Reset faces", style = AppType.label.copy(color = Accent.main),
+                modifier = Modifier.fillMaxWidth().clip(Radius.md).clickable(role = Role.Button) { FaceStore.reset(context); vm.popped.clear() }.padding(vertical = 14.dp)
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = Space.sm)) {
                 PrimaryButton("Lights down", modifier = Modifier.weight(1.4f), onClick = { vm.lights(); vm.sheet = false })
                 SecondaryButton("Leave", modifier = Modifier.weight(1f), onClick = { vm.client.leave(); vm.sheet = false })
