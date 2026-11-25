@@ -889,8 +889,9 @@ function Player() {
                 <ReelMark className="size-10 opacity-70" />
                 <h2 className="font-display text-xl font-semibold">{fe.t}</h2>
                 <p className="text-sm text-foreground/72">{fe.b}</p>
-                <div className="mt-2 flex gap-2">
-                  {err === "helper" && <a href={HELPER_URL()} target="_blank" rel="noreferrer" className={pill.primary}>Install Reelm Helper</a>}
+                {/* the install link gets its own full-width row; three pills side by side wrapped its label inside a fixed-height button */}
+                {err === "helper" && <a href={HELPER_URL()} target="_blank" rel="noreferrer" className={`${pill.primary} mt-2 w-full whitespace-nowrap`}>Install Reelm Helper</a>}
+                <div className={`flex flex-wrap justify-center gap-2 ${err === "helper" ? "" : "mt-2"}`}>
                   <button className={err === "helper" ? pill.secondary : pill.primary} onClick={() => { setErr(""); setSi(-1); setNonce(nonce + 1); }}><RotateCcw />Retry</button>
                   <Link href={back} className={pill.secondary}>Back</Link>
                 </div>
