@@ -176,7 +176,7 @@ fun PlayerScreen(
             tweaks = tweaks,
             pip = pip,
             skips = ui.skips,
-            overlay = { controls, fit -> if (fullscreen) PartyFaces(viewModel.player, controls, fit) },
+            overlay = { controls, fit, tap -> PartyFaces(viewModel.player, controls, fit, fullscreen, tap) },
             topAction = {
                 PartyButton()
                 com.anistream.core.account.ui.PlayOnTvButton(
@@ -346,7 +346,7 @@ internal fun VideoPlayer(
     /** top-bar action left of Lock: "Play on TV" */
     topAction: (@Composable () -> Unit)? = null,
     /** drawn over the video (not in picture-in-picture): watch-party faces; args = controls showing, picture fits (black bars) */
-    overlay: (@Composable BoxScope.(controls: Boolean, fit: Boolean) -> Unit)? = null
+    overlay: (@Composable BoxScope.(controls: Boolean, fit: Boolean, tap: () -> Unit) -> Unit)? = null
 ) {
     var controlsVisible by remember { mutableStateOf(true) }
     var isPlaying by remember { mutableStateOf(player.isPlaying) }
@@ -751,7 +751,7 @@ internal fun VideoPlayer(
             }
         }
 
-        if (overlay != null && !pip && !locked) overlay(controlsVisible, tweaks.resize == Resize.FIT)
+        if (overlay != null && !pip && !locked) overlay(controlsVisible, tweaks.resize == Resize.FIT) { controlsVisible = !controlsVisible }
 
         if (endOverlay != null && !pip) {
             Box(

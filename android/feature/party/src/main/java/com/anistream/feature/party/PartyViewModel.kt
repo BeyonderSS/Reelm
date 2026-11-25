@@ -73,6 +73,8 @@ class PartyViewModel @Inject constructor(
     var note by mutableStateOf<String?>(null)
         private set
     val reactions = mutableStateListOf<Reaction>()
+    /** member ids popped out of the portrait couch into bubbles over the video */
+    val popped = mutableStateListOf<String>()
     /** media position (ms) two of us hearted together; shows the burst */
     var syncHeart by mutableStateOf<Long?>(null)
         private set

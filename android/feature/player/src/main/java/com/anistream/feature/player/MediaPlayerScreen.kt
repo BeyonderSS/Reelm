@@ -106,7 +106,7 @@ fun MediaPlayerScreen(
             tweaks = tweaks,
             pip = pip,
             skips = ui.skips,
-            overlay = if (request?.isLive != false) null else { controls, fit -> if (fullscreen) PartyFaces(viewModel.player, controls, fit) },
+            overlay = if (request?.isLive != false) null else { controls, fit, tap -> PartyFaces(viewModel.player, controls, fit, fullscreen, tap) },
             topAction = request?.takeIf { !it.isLive }?.let { r -> {
                 PartyButton()
                 if (r.historyKey != null) com.anistream.core.account.ui.PlayOnTvButton(
