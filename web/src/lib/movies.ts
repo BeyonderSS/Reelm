@@ -52,17 +52,27 @@ export const movieRoutes: Record<string, (q: URLSearchParams) => Promise<unknown
   // Dramachi has no CORS, so the browser asks our server for it (below); a source that fails drops out alone.
   "movies/dramachi": (q) => dr.streams(q.get("title") ?? "", num(q.get("year")), q.get("type") === "series" ? "series" : "movie", num(q.get("s")), num(q.get("e"))),
   "movies/stream": (q) => streamAll(q),
-  // Mirror mode: a mirror's rows, each title with Cinemeta's art when a Cinemeta title has exactly its name, else the mirror's image
-  "movies/mirror": async (q) => {
-    const t0 = Date.now(), p = q.get("p")!, rows = await (await import("./vega")).mirrorRows(p);
-    console.debug(`[vega] ${p}: ${rows.length} rows in ${Date.now() - t0} ms`);
-    if (!rows.length) throw new Error(`The ${MIRRORS[p]} mirror didn't answer`);
-    return Promise.all(rows.map(async (r) => ({ title: r.title, items: await Promise.all(r.items.map(async (x) => {
-      const h = await byTitle(x.title);
-      return { id: `nm:${p}:${x.link}`, type: h?.type ?? "movie", title: x.title, poster: h?.poster ?? x.image, year: h?.year, rating: h?.rating, genres: h?.genres };
-    })) })));
-  },
 };
+
+export type MirrorRow = { title: string; items: { id: string; type: "movie" | "series"; title: string; poster?: string; year?: number; rating?: number; genres?: string[] }[] };
+/** Mirror mode: a mirror's rows. `on` gets them as soon as the mirror answers (its own images), then again as each row
+ *  borrows Cinemeta's art (a Cinemeta title with exactly its name), so nothing waits for the hundreds of title lookups. */
+export async function mirrorHome(p: string, on: (rows: MirrorRow[]) => void) {
+  const t0 = Date.now(), rows = await (await import("./vega")).mirrorRows(p);
+  console.debug(`[vega] ${p}: ${rows.length} rows in ${Date.now() - t0} ms`);
+  if (!rows.length) throw new Error(`The ${MIRRORS[p]} mirror didn't answer`);
+  const own = (x: { title: string; link: string; image?: string }) => ({ id: `nm:${p}:${x.link}`, type: "movie" as const, title: x.title, poster: x.image });
+  let cur: MirrorRow[] = rows.map((r) => ({ title: r.title, items: r.items.map(own) }));
+  on(cur);
+  await Promise.all(rows.map(async (r, i) => {
+    const items = await Promise.all(r.items.map(async (x) => {
+      const h = await byTitle(x.title);
+      return h ? { ...own(x), type: h.type, poster: h.poster ?? x.image, year: h.year, rating: h.rating, genres: h.genres } : own(x);
+    }));
+    cur = cur.map((c, k) => (k === i ? { ...c, items } : c));
+    on(cur);
+  }));
+}
 
 /** Cinemeta's title with exactly this name, newest first when a film and a series share it (Android's cinemetaByTitle).
  *  ponytail: name only, so a same-named older title can lend its art; play still goes to the mirror's own id. */

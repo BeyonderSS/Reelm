@@ -1,17 +1,20 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Info, Play } from "lucide-react";
+import { ChevronDown, Info, Layers, Play, RotateCw, X } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 import { animeCard, ContinueStrip, Marquee, kidsOk, mediaCard, pill, Rail, RailSkeleton, Row, useContinue } from "@/components/app";
 import { Logo, Meta, PeekProvider, SoundButton, TrailerSurface, useTrailer } from "@/components/trailers";
 import { keyOf, useOverlayOpen, usePreviewGate } from "@/lib/trailer";
 import { audioLang, HomeRecs } from "@/components/home-recs";
 import { INDIAN } from "@/lib/recs-rank";
 import { ShimmerButton } from "@/components/ui/shimmer-button";
+import { AnimatedCircularProgressBar } from "@/components/ui/animated-circular-progress-bar";
 import { useApi, useSession } from "@/lib/session";
 import { entryHref, entrySub, shows, syncFavs, watchHref, type Entry } from "@/lib/core";
 import { cn } from "@/lib/utils";
 import { helperMirror, MIRRORS } from "@/lib/bridge";
+import type { MirrorRow } from "@/lib/movies";
 import { useRouter } from "next/navigation";
 
 type Slide = { key: string; title: string; poster?: string; backdrop?: string; desc?: string; rating?: string | number; year?: number; genres?: string[]; extra: (string | number | undefined)[]; href: string; play?: string; cta?: string; anime?: string };
@@ -125,14 +128,61 @@ function Hero({ slides }: { slides: Slide[] }) {
 
 type Filter = "all" | "movies" | "series" | "anime";
 
+/** Each mirror's logo (drawn white through a mask) and its service colour, the halo glowing behind it. */
+const MIRROR_TINT: Record<string, string> = { netflixMirror: "#E50914", primeMirror: "#1A98FF", disneyMirror: "#3D6BFF" };
+const MIRROR_LOGO: Record<string, [src: string, ratio: number]> = { netflixMirror: ["/mirrors/netflix.svg", 3.7], primeMirror: ["/mirrors/prime.svg", 3.08], disneyMirror: ["/mirrors/hotstar.svg", 1.36] };
+function MirrorLogo({ p, h, lit }: { p: string; h: number; lit?: boolean }) {
+  const [src, ratio] = MIRROR_LOGO[p], tint = MIRROR_TINT[p];
+  return (
+    <span aria-hidden className="relative grid place-items-center" style={{ height: h, width: h * ratio }}>
+      <span className={cn("absolute inset-[-90%_-30%] rounded-full blur-lg transition-opacity duration-300", lit ? "opacity-100" : "opacity-60")}
+        style={{ background: `radial-gradient(closest-side, ${tint}, transparent)` }} />
+      <span className="relative size-full bg-white" style={{ mask: `url(${src}) center / contain no-repeat`, WebkitMask: `url(${src}) center / contain no-repeat` }} />
+    </span>
+  );
+}
+
+/** Seconds since mount, while `on`. */
+function useElapsed(on: boolean) {
+  const [t, setT] = useState(0);
+  useEffect(() => { if (!on) return; const at = Date.now(), id = setInterval(() => setT(Math.floor((Date.now() - at) / 1000)), 1000); return () => clearInterval(id); }, [on]);
+  return t;
+}
+
 /** Mirror mode: one mirror's rows (Helper 1.4+). Cold, the mirror first unlocks (~40 s, then 12 h). */
-function MirrorRows({ p }: { p: string }) {
-  const { s } = useSession(), { data, error } = useApi<{ title: string; items: any[] }[]>(`movies/mirror?p=${p}`);
-  if (error) return <p className="px-4 pt-6 text-foreground/60 md:px-10">The {MIRRORS[p]} mirror didn&apos;t answer. Try again in a minute.</p>;
-  if (!data) return <><p role="status" className="px-4 pt-6 text-sm text-foreground/60 md:px-10">Opening the {MIRRORS[p]} mirror. The first open of the day can take about 40 seconds.</p><RailSkeleton /><RailSkeleton /></>;
+function MirrorRows({ p, onExit, onRetry }: { p: string; onExit: () => void; onRetry: () => void }) {
+  const { s } = useSession(), [data, setData] = useState<MirrorRow[]>(), [error, setError] = useState("");
+  // rows show as soon as the mirror answers; each fills in Cinemeta's art as its lookups finish (the component is keyed by mirror and try)
+  useEffect(() => { let live = true; import("@/lib/movies").then((m) => m.mirrorHome(p, (r) => live && setData(r))).catch((e) => live && setError(e.message)); return () => { live = false; }; }, [p]);
+  const name = MIRRORS[p], tint = MIRROR_TINT[p] ?? "#F2B45A", t = useElapsed(!data && !error);
   return <>
-    <p className="px-4 text-sm text-foreground/60 md:px-10">Playback tries the {MIRRORS[p]} mirror first, then your usual sources.</p>
-    {data.map((r) => <Rail key={r.title} title={r.title} items={r.items.map(mediaCard).filter((c) => kidsOk(c, s.profile?.kids, s.profile))} />)}
+    <motion.section initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, ease: [0.2, 0, 0, 1] }} aria-live="polite"
+      className="relative mx-4 mb-8 overflow-hidden rounded-[24px] bg-slate p-6 ring-1 ring-white/6 md:mx-10 md:p-8">
+      <div aria-hidden className="pointer-events-none absolute -top-32 -left-24 size-96 rounded-full opacity-25 blur-3xl" style={{ background: tint }} />
+      <div className="relative flex flex-wrap items-center gap-x-8 gap-y-5">
+        {!data && !error && (
+          // the ring eases toward the usual ~40 s first open; the centre counts real seconds, not a made-up percentage
+          <AnimatedCircularProgressBar value={Math.min(95, Math.round(100 * (1 - Math.exp(-t / 18))))} gaugePrimaryColor="#F2B45A" gaugeSecondaryColor="rgb(233 234 240 / 0.08)"
+            className="size-24 flex-none font-display text-xl font-bold tabular-nums"><span>{t}s</span></AnimatedCircularProgressBar>
+        )}
+        <div className="min-w-0 flex-[1_1_320px]">
+          <h2 className="flex flex-wrap items-center gap-x-4 gap-y-2 font-display text-[clamp(28px,3.4vw,40px)] leading-none font-extrabold tracking-[-0.02em]">
+            <MirrorLogo p={p} h={p === "disneyMirror" ? 40 : 26} lit /><span><span className="sr-only">{name} </span>mirror</span>
+          </h2>
+          <p className="mt-3 max-w-[60ch] text-foreground/72">
+            {error ? `The ${name} mirror didn't answer. It's usually back within a minute.`
+              : data ? `Playback tries the ${name} mirror first, then your usual sources.`
+              : `Unlocking the ${name} mirror. The first open of the day takes about 40 seconds; after that it stays open for 12 hours.`}
+          </p>
+        </div>
+        <div className="flex flex-none gap-2">
+          {error && <button type="button" onClick={onRetry} className={pill.primary}><RotateCw />Try again</button>}
+          <button type="button" onClick={onExit} className={pill.secondary}><X />Exit mirror</button>
+        </div>
+      </div>
+    </motion.section>
+    {!data && !error && <><RailSkeleton /><RailSkeleton /></>}
+    {data?.map((r) => <Rail key={r.title} title={r.title} items={r.items.map(mediaCard).filter((c) => kidsOk(c, s.profile?.kids, s.profile))} />)}
   </>;
 }
 
@@ -147,7 +197,8 @@ export default function HomePage() {
   const [cw, removeCw] = useContinue();
   const [f, setF] = useState<Filter>("all");
   // Mirror mode: the chip leads the filters with Helper 1.4+ (hidden otherwise); picking a service swaps Home to its rows
-  const [canMirror, setCanMirror] = useState(false), [mOpen, setMOpen] = useState(false), [mirror, setMirror] = useState("");
+  const [canMirror, setCanMirror] = useState(false), [mOpen, setMOpen] = useState(false), [mirror, setMirror] = useState(""), [tries, setTries] = useState(0);
+  const exitMirror = () => { setMirror(""); setMOpen(false); };
   useEffect(() => { if (helperMirror()) { setCanMirror(true); import("@/lib/vega").then((v) => v.prewarm()); } }, []);
   const k = s.profile?.kids;
   const is = (x: Filter) => f === "all" || f === x;
@@ -172,14 +223,31 @@ export default function HomePage() {
     <main className="pb-16">
       <div role="radiogroup" aria-label="Show" className="no-scrollbar flex gap-2 overflow-x-auto px-4 pt-1 pb-3 md:px-10">
         {canMirror && (sh("movies") || sh("series")) && <>
-          <button type="button" aria-expanded={mOpen || !!mirror} onClick={() => setMOpen(!mOpen)} className="opt flex-none" aria-pressed={!!mirror}>
-            Mirrors<ChevronDown className={cn("size-3.5 transition-transform", (mOpen || mirror) && "rotate-180")} /></button>
-          {(mOpen || mirror) && Object.entries(MIRRORS).map(([x, l]) => <button key={x} type="button" role="radio" aria-checked={mirror === x} onClick={() => setMirror(x)} className="opt solid flex-none">{l}</button>)}
+          {/* the mirrors live in their own capsule: the services slide out of "Mirrors", and the picked one carries the amber pill */}
+          <div className="flex flex-none items-center rounded-full bg-white/[0.04] p-0.5 ring-1 ring-white/8">
+            <button type="button" aria-expanded={mOpen || !!mirror} onClick={() => (mirror ? exitMirror() : setMOpen(!mOpen))} className="opt flex-none" aria-pressed={!!mirror}>
+              <Layers className="size-3.5" />Mirrors<ChevronDown className={cn("size-3.5 transition-transform duration-300", (mOpen || mirror) && "rotate-180")} /></button>
+            <AnimatePresence initial={false}>
+              {(mOpen || mirror) && Object.entries(MIRRORS).map(([x, l], i) => (
+                <motion.button key={x} type="button" role="radio" aria-checked={mirror === x} onClick={() => setMirror(x)}
+                  initial={{ width: 0, opacity: 0 }} animate={{ width: "auto", opacity: 1 }} exit={{ width: 0, opacity: 0 }}
+                  transition={{ duration: 0.32, delay: (mOpen || mirror) ? i * 0.05 : 0, ease: [0.2, 0, 0, 1] }}
+                  aria-label={l} title={l}
+                  className={cn("group relative flex-none rounded-full transition-opacity", mirror === x ? "opacity-100" : "opacity-75 hover:opacity-100")}>
+                  {mirror === x && <motion.span layoutId="mirror-pill" className="absolute inset-0 rounded-full bg-white/10 ring-1 ring-primary/70 shadow-[0_0_18px_rgb(242_180_90/0.3)]" transition={{ type: "spring", bounce: 0.2, duration: 0.45 }} />}
+                  <span className="relative flex h-[32px] items-center px-4">
+                    <MirrorLogo p={x} h={x === "disneyMirror" ? 22 : x === "primeMirror" ? 15 : 13} lit={mirror === x} />
+                  </span>
+                </motion.button>
+              ))}
+            </AnimatePresence>
+          </div>
+          <span aria-hidden className="mx-1 h-5 w-px flex-none self-center bg-white/10" />
         </>}
-        {chips.map(([x, l]) => <button key={x} type="button" role="radio" aria-checked={!mirror && f === x} onClick={() => { setF(x); setMirror(""); setMOpen(false); }} className="opt flex-none">{l}</button>)}
+        {chips.map(([x, l]) => <button key={x} type="button" role="radio" aria-checked={!mirror && f === x} onClick={() => { setF(x); exitMirror(); }} className="opt flex-none">{l}</button>)}
         {sh("live") && <Link href="/live" className="opt flex-none">Live TV</Link>}
       </div>
-      {mirror ? <MirrorRows key={mirror} p={mirror} /> : <>
+      {mirror ? <MirrorRows key={`${mirror}-${tries}`} p={mirror} onExit={exitMirror} onRetry={() => setTries((n) => n + 1)} /> : <>
       {loading && !slides.length ? <div className="skel mx-4 h-[500px] rounded-[24px] md:mx-10 md:h-[min(620px,74vh)]" /> : slides.length ? <Hero slides={slides} /> : <div className="h-8" />}
       <div className="relative z-10 mt-6 md:mt-8"><ContinueStrip items={cw} onRemove={removeCw} /></div>
       {f === "all" ? <HomeRecs /> : null}
