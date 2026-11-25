@@ -3,5 +3,6 @@ import type { NextConfig } from "next";
 const DL = "https://reelm-api.ssbeyonder.workers.dev/dl";
 export default {
   images: { unoptimized: true },
+  experimental: { agentUpgrade: "security" }, // next upgrade keeps this app on security releases
   redirects: async () => [{ source: "/tv", destination: `${DL}/Reelm-TV.apk`, statusCode: 302 }, { source: "/app", destination: `${DL}/Reelm.apk`, statusCode: 302 }],
 } satisfies NextConfig;

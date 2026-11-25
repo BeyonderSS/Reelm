@@ -23,3 +23,5 @@ release/
 # Internal session notes
 PROJECT_HANDOFF.md
 .vercel
+config.bat
+node_modules
